@@ -10,6 +10,25 @@ You can access the live demo here:
 
 > Note: The demo environment may be reset periodically.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Dashboard" width="900" />
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/campaigns.png" alt="Campaigns" /></td>
+    <td width="50%"><img src="docs/screenshots/leads.png" alt="Leads" /></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/mailboxes.png" alt="Mailboxes" width="900" />
+</p>
+
+> Want to add more? Drop PNGs into `docs/screenshots/` and link them here.
+
 ## Features
 - Campaigns + multi-step sequences
 - Lead import + dedupe
