@@ -1,0 +1,3894 @@
+import dayjs from "dayjs";
+import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
+import { decrypt } from "@/lib/crypto";
+import { prisma } from "@/lib/prisma";
+import { env } from "@/lib/env";
+import { appLogAsync } from "@/lib/app-log";
+import { renderTemplate, stripHtml } from "@/lib/template";
+import { sendEmail } from "@/lib/mailer";
+import { dispatchWebhooks } from "@/lib/webhooks";
+import { classifySmtpError, getRecipientDomain, parseDomainCaps, pickWeightedVariant, maybeAutoPauseCampaign } from "@/lib/deliverability";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as dns from "node:dns/promises";
+import { writeTenantFiles } from "@/lib/mailstack";
+import { encrypt } from "@/lib/crypto";
+import nodemailer from "nodemailer";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function clip(s: string, n: number) {
+  if (!s) return s;
+  return s.length > n ? s.slice(0, n) : s;
+}
+
+// ---------------------------
+// Domains: DNS health checking
+// ---------------------------
+
+function flattenTxt(rr: string[][]): string[] {
+  // dns.resolveTxt returns string[][] where each entry is an array of chunks
+  const out: string[] = [];
+  for (const row of rr || []) {
+    out.push((row || []).join(""));
+  }
+  return out;
+}
+
+async function resolveTxt(name: string): Promise<string[]> {
+  try {
+    const rr = await dns.resolveTxt(name);
+    return flattenTxt(rr).map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function resolveMx(name: string): Promise<Array<{ exchange: string; priority: number }>> {
+  try {
+    const rr = await dns.resolveMx(name);
+    return (rr || []).map((r) => ({ exchange: String(r.exchange || "").toLowerCase(), priority: Number(r.priority || 0) }));
+  } catch {
+    return [];
+  }
+}
+
+async function resolveCname(name: string): Promise<string[]> {
+  try {
+    const rr = await dns.resolveCname(name);
+    return (rr || []).map((s) => String(s || "").toLowerCase()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function resolveA(name: string): Promise<string[]> {
+  try {
+    const rr = await dns.resolve4(name);
+    return (rr || []).map((s) => String(s || "")).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function parseTagValue(record: string, key: string): string | null {
+  const k = String(key || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = record.match(new RegExp(`${k}\\s*=\\s*([^;\\s]+)`, "i"));
+  return m ? String(m[1]).trim() : null;
+}
+
+function spfLookupEstimate(spf: string): number {
+  const s = (spf || "").trim();
+  if (!s.toLowerCase().startsWith("v=spf1")) return 0;
+  const parts = s.split(/\s+/).slice(1);
+  let lookups = 0;
+  for (const p of parts) {
+    const t = p.trim();
+    if (!t) continue;
+    const tt = t.replace(/^([+\-~?])/, "");
+    if (tt.startsWith("include:")) lookups += 1;
+    if (tt === "a" || tt.startsWith("a:")) lookups += 1;
+    if (tt === "mx" || tt.startsWith("mx:")) lookups += 1;
+    if (tt === "ptr" || tt.startsWith("ptr:")) lookups += 1;
+    if (tt.startsWith("exists:")) lookups += 1;
+    if (tt.startsWith("redirect=")) lookups += 1;
+  }
+  return lookups;
+}
+
+function cfHeaders(token: string) {
+  return {
+    Authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+}
+
+async function cfFindZoneId(token: string, domain: string): Promise<{ zoneId: string | null; zoneName: string | null }> {
+  const parts = String(domain || "").toLowerCase().split(".").filter(Boolean);
+  // Try exact, then parent zones: a.b.c -> b.c -> c
+  for (let i = 0; i < parts.length - 1; i++) {
+    const name = parts.slice(i).join(".");
+    try {
+      const url = `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(name)}&status=active&per_page=50`;
+      const j = await fetch(url, { headers: cfHeaders(token) }).then((r) => r.json());
+      const z = Array.isArray(j?.result) ? j.result[0] : null;
+      if (z?.id) return { zoneId: String(z.id), zoneName: String(z.name || name) };
+    } catch {
+      // ignore
+    }
+  }
+  return { zoneId: null, zoneName: null };
+}
+
+async function cfList(token: string, zoneId: string, type: string, name: string): Promise<any[]> {
+  try {
+    const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=${encodeURIComponent(type)}&name=${encodeURIComponent(name)}&per_page=100`;
+    const j = await fetch(url, { headers: cfHeaders(token) }).then((r) => r.json());
+    return Array.isArray(j?.result) ? j.result : [];
+  } catch {
+    return [];
+  }
+}
+
+async function handleDomainDnsCheck(jobId: string, payload: any) {
+  const domainId = String(payload?.domainId || "");
+  const workspaceId = String(payload?.workspaceId || "");
+
+  if (!domainId) {
+    await logJob(jobId, "❌ MISSING domainId");
+    return;
+  }
+
+  const d = await prisma.domain.findUnique({ where: { id: domainId } });
+  if (!d) {
+    await logJob(jobId, "❌ DOMAIN_NOT_FOUND");
+    return;
+  }
+  if (workspaceId && String(d.workspaceId) !== workspaceId) {
+    await logJob(jobId, "❌ WORKSPACE_MISMATCH");
+    return;
+  }
+
+  const checkedAt = new Date();
+  const domain = String(d.name || "").toLowerCase();
+  const selectorRaw = String(d.dkimSelector || "").trim();
+  // Mailstack uses selector "default"; older UI stored "cm".
+  const selectorPreferred = selectorRaw && selectorRaw.toLowerCase() !== "cm" ? selectorRaw : "default";
+  const selectorCandidates = Array.from(
+    new Set([selectorPreferred, selectorRaw, "default"].filter(Boolean).map((x) => String(x).trim()))
+  );
+  const expectedDkimP = String(d.dkimPublic || "").replaceAll(/\s+/g, "").trim();
+  const tracking = d.trackingSubdomain ? String(d.trackingSubdomain).toLowerCase() : null;
+
+  // Optional expectations from Mailstack
+  const p: any = prisma as any;
+  const hasMailstackModels = !!p.mailstackTenantDomain && !!p.mailstackConfig;
+
+  const tenantDomain = hasMailstackModels
+    ? await p.mailstackTenantDomain.findFirst({
+        where: { domainName: domain, tenant: { workspaceId: d.workspaceId } },
+        include: { tenant: true },
+      })
+    : null;
+
+  const cfg = hasMailstackModels ? await p.mailstackConfig.findUnique({ where: { workspaceId: d.workspaceId } }) : null;
+
+  const mailHost = `mail.${domain}`;
+  const expectedServerIp = (tenantDomain?.tenant?.serverIp || cfg?.serverIp || "").toString().trim();
+
+  // DNS: SPF
+  const txtRoot = await resolveTxt(domain);
+  const spf = txtRoot.find((x) => x.toLowerCase().startsWith("v=spf1")) || null;
+  const spfLookups = spf ? spfLookupEstimate(spf) : 0;
+  const spfAll = spf ? (spf.match(/\s([\-~?]all)\b/i)?.[1] || "") : "";
+  const spfOk = !!spf;
+
+  // DNS: DKIM
+  const dkimName = `${selectorPreferred}._domainkey.${domain}`;
+  const txtDkimAll = (await Promise.all(selectorCandidates.map((sel) => resolveTxt(`${sel}._domainkey.${domain}`)))).flat();
+  const dkimRec = txtDkimAll.find((x) => x.toLowerCase().includes("v=dkim1")) || (txtDkimAll[0] || null);
+  const dkimP = dkimRec ? (parseTagValue(dkimRec, "p") || "") : "";
+  const dkimOk = !!(dkimRec && dkimRec.toLowerCase().includes("v=dkim1") && dkimP);
+  const dkimMatch = dkimOk && expectedDkimP ? dkimP.replaceAll(/\s+/g, "") === expectedDkimP : dkimOk;
+
+  // DNS: DMARC
+  const dmarcName = `_dmarc.${domain}`;
+  const txtDmarc = await resolveTxt(dmarcName);
+  const dmarcRec = txtDmarc.find((x) => x.toLowerCase().startsWith("v=dmarc1")) || (txtDmarc[0] || null);
+  const dmarcPolicy = dmarcRec ? (parseTagValue(dmarcRec, "p") || "") : "";
+  const dmarcOk = !!(dmarcRec && dmarcRec.toLowerCase().startsWith("v=dmarc1") && dmarcPolicy);
+
+  // DNS: MX
+  const mx = await resolveMx(domain);
+  const mxOk = mx.length > 0;
+  const mxHasMail = mx.some((m) => m.exchange.replace(/\.$/, "") === mailHost);
+
+  // DNS: mail.<domain> A (optional expectation)
+  const mailA = await resolveA(mailHost);
+  const mailAOk = mailA.length > 0;
+  const mailIpMatch = expectedServerIp ? mailA.includes(expectedServerIp) : null;
+
+  // DNS: tracking CNAME
+  const trackingCname = tracking ? await resolveCname(tracking) : [];
+  const appHost = (() => {
+    try {
+      return new URL(env.PUBLIC_APP_URL).host.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+  const trackingOk = tracking ? trackingCname.some((c) => c.replace(/\.$/, "") === appHost) : null;
+
+  // Cloudflare view (optional)
+  let cf: any = { enabled: false, zoneFound: false, zoneName: null, records: {} };
+  let token = "";
+  try {
+    if (cfg?.cloudflareTokenEnc) {
+      token = decrypt(cfg.cloudflareTokenEnc).trim();
+    }
+  } catch {}
+
+  if (token) {
+    cf.enabled = true;
+    const { zoneId, zoneName } = await cfFindZoneId(token, domain);
+    cf.zoneName = zoneName;
+    if (zoneId) {
+      cf.zoneFound = true;
+      const [cfTxtRoot, cfDkim, cfDmarc, cfMx, cfMailA, cfTracking] = await Promise.all([
+        cfList(token, zoneId, "TXT", domain),
+        cfList(token, zoneId, "TXT", dkimName),
+        cfList(token, zoneId, "TXT", dmarcName),
+        cfList(token, zoneId, "MX", domain),
+        cfList(token, zoneId, "A", mailHost),
+        tracking ? cfList(token, zoneId, "CNAME", tracking) : Promise.resolve([]),
+      ]);
+      cf.records = {
+        txtRoot: cfTxtRoot,
+        dkim: cfDkim,
+        dmarc: cfDmarc,
+        mx: cfMx,
+        mailA: cfMailA,
+        tracking: cfTracking,
+      };
+    }
+  }
+
+  const issues: string[] = [];
+  if (!spfOk) issues.push("Missing SPF (v=spf1) TXT record at root");
+  if (spfOk && spfLookups > 10) issues.push(`SPF has too many DNS lookups (estimated ${spfLookups}/10)`);
+  if (spfOk && spfAll && spfAll.toLowerCase() !== "-all") issues.push(`SPF ends with ${spfAll} (recommended: -all for strict senders)`);
+
+  if (!dkimOk) issues.push(`Missing DKIM TXT at ${dkimName}`);
+  if (dkimOk && !dkimMatch) issues.push("DKIM public key does not match the key generated in app (wrong selector or old record)");
+
+  if (!dmarcOk) issues.push(`Missing DMARC TXT at ${dmarcName}`);
+  if (dmarcOk && String(dmarcPolicy).toLowerCase() === "none") issues.push("DMARC policy is p=none (ok for testing, but weaker trust)");
+
+  if (!mxOk) issues.push("Missing MX records (inbound mail may not work)");
+  if (tenantDomain && mxOk && !mxHasMail) issues.push(`MX does not point to ${mailHost} (Mailstack expected)`);
+
+  if (expectedServerIp && mailAOk && mailIpMatch === false) issues.push(`mail.${domain} A record does not match configured server IP (${expectedServerIp})`);
+  if (expectedServerIp && !mailAOk) issues.push(`Missing A record for ${mailHost} (Mailstack expected)`);
+
+  if (tracking && trackingOk === false) issues.push(`Tracking CNAME should point to ${appHost}`);
+  if (tracking && trackingCname.length === 0) issues.push("Tracking CNAME record missing");
+
+  // Score
+  let score = 0;
+  if (spfOk) score += 25;
+  if (dkimOk && dkimMatch) score += 30;
+  if (dmarcOk) score += 20;
+  if (mxOk) score += 10;
+  if (!expectedServerIp || (mailAOk && mailIpMatch !== false)) score += 10;
+  if (!tracking || trackingOk) score += 5;
+  score = Math.max(0, Math.min(100, score));
+
+  let status: "unknown" | "healthy" | "warning" | "fail" = "healthy";
+  if (!spfOk || !dkimOk || !dkimMatch) status = "fail";
+  else if (issues.length) status = "warning";
+
+  const result: any = {
+    kind: "domain_dns_check",
+    domainId,
+    domain,
+    checkedAt: checkedAt.toISOString(),
+    summary: {
+      status,
+      score,
+      issues,
+    },
+    records: {
+      spf: {
+        ok: spfOk,
+        value: spf,
+        lookups: spfLookups,
+        all: spfAll,
+        detail: spfOk ? `found (${spfAll || "no all"}, lookups~${spfLookups})` : "missing",
+      },
+      dkim: {
+        ok: dkimOk && dkimMatch,
+        selector,
+        name: dkimName,
+        value: dkimRec,
+        matchesAppKey: dkimMatch,
+        detail: dkimOk ? (dkimMatch ? "found (matches app key)" : "found (mismatch)") : "missing",
+      },
+      dmarc: {
+        ok: dmarcOk,
+        name: dmarcName,
+        policy: dmarcPolicy,
+        value: dmarcRec,
+        detail: dmarcOk ? `found (p=${dmarcPolicy})` : "missing",
+      },
+      mx: {
+        ok: mxOk && (!tenantDomain || mxHasMail),
+        records: mx,
+        expected: tenantDomain ? mailHost : null,
+        detail: mxOk ? (tenantDomain ? (mxHasMail ? `ok (points to ${mailHost})` : `not pointing to ${mailHost}`) : `found (${mx.length})`) : "missing",
+      },
+      mailA: {
+        ok: expectedServerIp ? (mailAOk && mailIpMatch !== false) : mailAOk,
+        name: mailHost,
+        ips: mailA,
+        expectedIp: expectedServerIp || null,
+      },
+      tracking: tracking
+        ? {
+            ok: trackingOk === true,
+            name: tracking,
+            cnames: trackingCname,
+            expectedHost: appHost,
+          }
+        : null,
+    },
+    cloudflare: cf,
+  };
+
+  await prisma.job.update({ where: { id: jobId }, data: { lastError: JSON.stringify(result) } }).catch(() => {});
+  await logJob(jobId, `✅ DNS check complete for ${domain} (${status}, score ${score})`);
+  if (issues.length) {
+    await logJob(jobId, `⚠ Issues: ${clip(issues.join(" | "), 500)}`);
+  }
+}
+
+async function handleMailboxHealthcheck(jobId: string, payload: any) {
+  const mailboxId = String(payload?.mailboxId || "");
+  const force = Boolean(payload?.force);
+  const workspaceId = String(payload?.workspaceId || "");
+  const mode = String(payload?.mode || "both"); // smtp|imap|both
+
+  if (!mailboxId) {
+    await logJob(jobId, "❌ MISSING mailboxId");
+    return;
+  }
+
+  const mb = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
+  if (!mb) {
+    await logJob(jobId, "❌ MAILBOX_NOT_FOUND");
+    return;
+  }
+  if (workspaceId && String(mb.workspaceId) !== workspaceId) {
+    await logJob(jobId, "❌ WORKSPACE_MISMATCH");
+    return;
+  }
+
+  const checkedAt = new Date();
+  const result: any = {
+    kind: "mailbox_healthcheck",
+    mailboxId,
+    checkedAt: checkedAt.toISOString(),
+    smtp: null,
+    imap: null,
+  };
+
+  // SMTP
+  if (mode === "smtp" || mode === "both") {
+    const started = Date.now();
+    try {
+      const pass = decrypt(mb.smtpPassEnc);
+      const smtpTlsSkipVerify = Boolean(env.SMTP_TLS_SKIP_VERIFY || mb.imapTlsSkipVerify);
+      const transporter = nodemailer.createTransport({
+        host: mb.smtpHost,
+        port: mb.smtpPort,
+        secure: mb.smtpSecure,
+        auth: { user: mb.smtpUser, pass },
+        tls: {
+          servername: mb.smtpHost,
+          rejectUnauthorized: !smtpTlsSkipVerify,
+        },
+        localAddress: mb.localAddress || env.DEFAULT_SMTP_LOCAL_ADDRESS || undefined,
+        connectionTimeout: 25_000,
+        greetingTimeout: 20_000,
+        socketTimeout: 45_000,
+      });
+
+      await transporter.verify();
+      const ms = Date.now() - started;
+      result.smtp = { ok: true, ms };
+      await logJob(jobId, `✅ SMTP OK (${ms}ms) ${mb.smtpHost}:${mb.smtpPort}`);
+    } catch (e: any) {
+      const ms = Date.now() - started;
+      const msg = clip(String(e?.message || e), 200);
+      result.smtp = { ok: false, ms, error: msg };
+      await logJob(jobId, `❌ SMTP FAIL (${ms}ms): ${msg}`);
+    }
+  }
+
+  // IMAP
+  if (mode === "imap" || mode === "both") {
+    if (!mb.imapHost || !mb.imapUser || !mb.imapPassEnc) {
+      result.imap = { ok: true, skipped: true };
+      await logJob(jobId, "ℹ️  IMAP skipped (not configured)");
+    } else {
+      const started = Date.now();
+      let client: any = null;
+      try {
+        const pass = decrypt(mb.imapPassEnc);
+        client = new ImapFlow({
+          host: mb.imapHost,
+          port: mb.imapPort,
+          secure: !!mb.imapSecure,
+          auth: { user: mb.imapUser, pass },
+          tls: { rejectUnauthorized: !mb.imapTlsSkipVerify },
+          logger: false,
+          socketTimeout: 25_000,
+          greetingTimeout: 20_000,
+          authTimeout: 25_000,
+        } as any);
+
+        await client.connect();
+        await client.logout().catch(() => {});
+        const ms = Date.now() - started;
+        result.imap = { ok: true, ms };
+        await logJob(jobId, `✅ IMAP OK (${ms}ms) ${mb.imapHost}:${mb.imapPort}`);
+      } catch (e: any) {
+        const ms = Date.now() - started;
+        const msg = clip(String(e?.message || e), 200);
+        result.imap = { ok: false, ms, error: msg };
+        await logJob(jobId, `❌ IMAP FAIL (${ms}ms): ${msg}`);
+        try {
+          await client?.logout?.();
+        } catch {}
+      }
+    }
+  }
+
+  // Store structured result in job.lastError for the UI (no schema changes)
+  try {
+    await prisma.job.update({ where: { id: jobId }, data: { lastError: JSON.stringify(result) } });
+  } catch {}
+}
+
+async function handleMailboxTestSend(jobId: string, payload: any) {
+  const mailboxId = String(payload?.mailboxId || "");
+  const workspaceId = String(payload?.workspaceId || "");
+  const to = String(payload?.to || "").trim();
+  const subject = String(payload?.subject || "Test email").trim();
+  const text = String(payload?.text || "").trim();
+  const messageRowId = String(payload?.messageRowId || "");
+
+  const started = Date.now();
+  const result: any = {
+    kind: "mailbox_test_send",
+    mailboxId,
+    to,
+    at: new Date().toISOString(),
+    ok: false,
+    ms: 0,
+    error: null,
+    messageId: null,
+    messageRowId: messageRowId || null,
+  };
+
+  try {
+    if (!mailboxId) throw new Error("MISSING_MAILBOX");
+    if (!to || !to.includes("@")) throw new Error("INVALID_TO");
+
+    const mb = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
+    if (!mb) throw new Error("MAILBOX_NOT_FOUND");
+    if (workspaceId && String(mb.workspaceId) !== workspaceId) throw new Error("WORKSPACE_MISMATCH");
+
+    // Ensure message row exists
+    let msgRow = null as any;
+    if (messageRowId) {
+      msgRow = await prisma.message.findFirst({ where: { id: messageRowId, mailboxId, workspaceId: mb.workspaceId } });
+    }
+
+    // Send
+    const res = await sendEmail({
+      mailboxId,
+      to,
+      subject: subject || "Test email",
+      text: text || "This is a test email from ColdMailPro.",
+      log: (msg, meta) => warmupLog(jobId, msg, meta),
+      headers: {
+        "X-ColdMailPro-Test": "1",
+        ...(msgRow ? { "X-ColdMailPro-Message": msgRow.id } : {}),
+      },
+    });
+
+    result.ok = true;
+    result.messageId = res.messageId || null;
+    result.ms = Date.now() - started;
+    await logJob(jobId, `✅ TEST SENT (${result.ms}ms) to ${to} (${res.messageId || ""})`);
+
+    if (msgRow) {
+      await prisma.message
+        .update({
+          where: { id: msgRow.id },
+          data: { status: "sent", sentAt: new Date(), messageId: res.messageId || null, error: null },
+        })
+        .catch(() => {});
+      await prisma.event
+        .create({ data: { messageId: msgRow.id, type: "sent", meta: JSON.stringify({ to, kind: "test" }) } })
+        .catch(() => {});
+    }
+  } catch (e: any) {
+    const msg = clip(String(e?.message || e), 220);
+    result.ok = false;
+    result.error = msg;
+    result.ms = Date.now() - started;
+    await logJob(jobId, `❌ TEST FAILED (${result.ms}ms): ${msg}`);
+    if (messageRowId) {
+      await prisma.message.updateMany({ where: { id: messageRowId }, data: { status: "failed", error: msg } }).catch(() => {});
+    }
+  }
+
+  try {
+    await prisma.job.update({ where: { id: jobId }, data: { lastError: JSON.stringify(result) } });
+  } catch {}
+}
+
+
+async function logJob(jobId: string, line: string) {
+  console.log(`[job ${jobId}]`, line);
+
+  appLogAsync({ level: "info", category: "worker", event: "job_log", message: line, entityType: "job", entityId: jobId });
+  try {
+    await prisma.jobLog.create({ data: { jobId, line } });
+  } catch {
+    // ignore if table not created yet
+  }
+}
+
+async function runCmd(jobId: string, cmd: string, args: string[], opts?: { cwd?: string }) {
+  await logJob(jobId, `$ ${cmd} ${args.join(" ")}`);
+  return await new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], cwd: opts?.cwd });
+    child.stdout.on("data", (d) => logJob(jobId, String(d).trimEnd()));
+    child.stderr.on("data", (d) => logJob(jobId, String(d).trimEnd()));
+    child.on("error", (e) => reject(e));
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} exited with code ${code}`));
+    });
+  });
+}
+
+function sudoWrap(cmd: string): string[] {
+  // If worker runs as root, you can set PROVISION_USE_SUDO=0.
+  const useSudo = String(process.env.PROVISION_USE_SUDO || "1") === "1";
+  if (!useSudo) return [cmd];
+  return ["sudo", "-n", cmd];
+}
+
+function shQuote(s: string): string {
+  // Safe single-quote for bash -lc
+  return `'${String(s).replace(/'/g, `'"'"'`)}'`;
+}
+
+async function ensureEximDkimMaps(jobId: string, domain: string, selector: string) {
+  const dom = String(domain || "").trim().toLowerCase().replace(/\.$/, "");
+  const sel = (String(selector || "").trim() || "default").toLowerCase();
+  if (!dom) return;
+
+  const script = `
+set -e
+dom=${shQuote(dom)}
+sel=${shQuote(sel)}
+key="/etc/exim/dkim/${dom}/${sel}.private"
+if [ ! -f "$key" ]; then
+  key="/etc/exim/dkim/${dom}/default.private"
+  sel="default"
+fi
+if [ ! -f "$key" ]; then
+  echo "⚠️  DKIM key file not found for ${dom} (skip Exim map upsert)"
+  exit 0
+fi
+map_key="/etc/exim/maps/domain-dkim-key.map"
+map_sel="/etc/exim/maps/domain-dkim-selector.map"
+mkdir -p /etc/exim/maps
+touch "$map_key" "$map_sel"
+chmod 644 "$map_key" "$map_sel" || true
+
+upsert(){
+  local file="$1" d="$2" v="$3"
+  awk -F: -v d="$d" -v v="$v" 'BEGIN{done=0}{ if(tolower($1)==tolower(d)){ print d ":" v; done=1; next } if (NF>0) print } END{ if (!done) print d ":" v }' "$file" > "${file}.tmp" && mv -f "${file}.tmp" "$file"
+}
+
+upsert "$map_key" "$dom" "$key"
+upsert "$map_sel" "$dom" "$sel"
+
+if getent group exim >/dev/null 2>&1; then
+  chown root:exim "$map_key" "$map_sel" 2>/dev/null || true
+fi
+
+systemctl reload exim >/dev/null 2>&1 || systemctl restart exim >/dev/null 2>&1 || true
+echo "✅ Ensured Exim DKIM maps for ${dom} (selector=${sel})"
+`;
+
+  const [cmd, ...baseArgs] = sudoWrap("bash");
+  await runCmd(jobId, cmd, [...baseArgs, "-lc", script], { cwd: "/root" });
+}
+
+async function cloudflareDeleteMailstackRecords(
+  jobId: string,
+  token: string,
+  domain: string
+) {
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  } as const;
+
+  const zoneRes = await fetch(`https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(domain)}`, {
+    headers,
+  }).then((r) => r.json());
+
+  const zone = zoneRes?.result?.[0];
+  if (!zone?.id) {
+    await logJob(jobId, `⚠️  Cloudflare zone not found for ${domain}`);
+    return;
+  }
+
+  const zoneId = String(zone.id);
+
+  async function delByName(type: string, name: string, contentIncludes?: string) {
+    const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=${encodeURIComponent(
+      type
+    )}&name=${encodeURIComponent(name)}`;
+    const list = await fetch(url, { headers }).then((r) => r.json());
+    const records = Array.isArray(list?.result) ? list.result : [];
+    const filtered = contentIncludes
+      ? records.filter((x: any) => String(x?.content || "").includes(contentIncludes))
+      : records;
+
+    for (const rec of filtered) {
+      const rid = rec?.id;
+      if (!rid) continue;
+      await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${rid}`, {
+        method: "DELETE",
+        headers,
+      }).then((r) => r.json());
+      await logJob(jobId, `✅ Cloudflare deleted ${type} ${name}`);
+    }
+  }
+
+  // Records created by mailstack-addon.sh
+  await delByName("A", `mail.${domain}`);
+  await delByName("MX", domain, `mail.${domain}`);
+  // SPF TXT at root: only delete TXT that looks like SPF
+  await delByName("TXT", domain, "v=spf1");
+  // DKIM TXT: script uses default._domainkey.<domain>, but also try cm._domainkey for safety
+  await delByName("TXT", `default._domainkey.${domain}`, "v=DKIM1");
+  await delByName("TXT", `cm._domainkey.${domain}`, "v=DKIM1");
+  // DMARC
+  await delByName("TXT", `_dmarc.${domain}`, "v=DMARC1");
+}
+
+async function handleMailstackJob(jobId: string, type: string, payload: any) {
+  const resolveMaybeRelative = (p: string) => (p && !p.startsWith("/") ? path.resolve(process.cwd(), p) : p);
+  const projectMailstack = path.resolve(process.cwd(), "scripts/mailstack.sh");
+  const projectAddon = path.resolve(process.cwd(), "scripts/mailstack-addon.sh");
+
+  const mailstack = resolveMaybeRelative(env.MAILSTACK_SCRIPT || process.env.MAILSTACK_SCRIPT || (fs.existsSync(projectMailstack) ? projectMailstack : "/root/mailstack.sh"));
+  const addon = resolveMaybeRelative(env.MAILSTACK_ADDON_SCRIPT || process.env.MAILSTACK_ADDON_SCRIPT || (fs.existsSync(projectAddon) ? projectAddon : "/root/mailstack-addon.sh"));
+
+  if (type === "mailstack:init-cloudflare") {
+    const workspaceId = String(payload.workspaceId || "");
+    const cfg = await prisma.mailstackConfig.findUnique({ where: { workspaceId } });
+    if (!cfg?.cloudflareTokenEnc) throw new Error("Cloudflare token not set in Mailstack settings");
+    const token = decrypt(cfg.cloudflareTokenEnc).trim();
+    if (!token) throw new Error("Cloudflare token decrypt failed");
+
+    // Used by acme.sh when registering an ACME account (must be a real email with a dot-domain)
+    const acmeEmail = (env as any).MAILSTACK_ACME_EMAIL || process.env.MAILSTACK_ACME_EMAIL || "sales@bullten.com";
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    const args = [...prefixArgs, "init-cloudflare", token, String(acmeEmail)];
+    await runCmd(jobId, runner, args, { cwd: "/root" });
+    await logJob(jobId, "✅ Cloudflare initialized");
+    return;
+  }
+
+  const tenantId = String(payload.tenantId || "");
+  const t = await prisma.mailstackTenant.findUnique({
+    where: { id: tenantId },
+    include: { domains: true, ips: true, users: true, mailboxes: true, workspace: true },
+  });
+  if (!t) throw new Error("Tenant not found");
+
+  const domains = t.domains.map((d) => d.domainName);
+  const ips = t.ips.map((i) => i.ip);
+  const users = t.users.map((u) => u.email);
+
+  if (type === "mailstack:dkim-rotate") {
+    const domainName = String((payload as any)?.domainName || (payload as any)?.domain || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, "");
+    if (!domainName) throw new Error("domainName missing");
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    await runCmd(jobId, runner, [...prefixArgs, "dkim-rotate", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+
+    // Sync the new DKIM public key (p=...) into Domain table so UI shows the exact server key.
+    try {
+      const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
+      const selFile = path.join("/etc/mailstack/tenants", t.name, "dkim-selector.map");
+      let activeSel = "default";
+      if (fs.existsSync(selFile)) {
+        const selRaw = fs.readFileSync(selFile, "utf8");
+        const m = selRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .find((l) => l.split(":")[0]?.trim().toLowerCase() === domainName.toLowerCase());
+        const maybe = (m?.split(":")[1] || "").trim();
+        if (maybe) activeSel = maybe;
+      }
+
+      // Safety net: ensure Exim DKIM maps exist for this domain+selector on the server.
+      await ensureEximDkimMaps(jobId, domainName, activeSel);
+      if (fs.existsSync(dnsFile)) {
+        const dnsRaw = fs.readFileSync(dnsFile, "utf8");
+        const lines = dnsRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
+        const needle = `${activeSel}._domainkey.${domainName}`.toLowerCase();
+        const line = lines.find((l) => l.toLowerCase().includes(needle) && l.toLowerCase().includes("p="));
+        if (line) {
+          const pm = line.match(/\bp=([^;,\s\"]+)/i);
+          const p = (pm?.[1] || "").replace(/\s+/g, "").trim();
+          if (p) {
+            await prisma.domain.updateMany({
+              where: { workspaceId: t.workspaceId, name: domainName },
+              data: { dkimSelector: activeSel, dkimPublic: p },
+            });
+            await logJob(jobId, `✅ Synced DKIM public key into app DB for ${domainName}`);
+          }
+        }
+      }
+    } catch {
+      await logJob(jobId, `⚠️  Could not sync DKIM key into app DB for ${domainName} (continuing)`);
+    }
+
+    await logJob(jobId, `✅ DKIM rotated for ${domainName} (tenant=${t.name}). Refresh the domain page to view updated TXT.`);
+    return;
+  }
+
+  if (type === "mailstack:dkim-stage") {
+    const domainName = String((payload as any)?.domainName || (payload as any)?.domain || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, "");
+    if (!domainName) throw new Error("domainName missing");
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    await runCmd(jobId, runner, [...prefixArgs, "dkim-stage", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+
+    try {
+      const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
+      const pendingFile = path.join("/etc/mailstack/tenants", t.name, "dkim-pending.map");
+      if (fs.existsSync(dnsFile) && fs.existsSync(pendingFile)) {
+        const pendingRaw = fs.readFileSync(pendingFile, "utf8");
+        const pm = pendingRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .find((l) => l.split(":")[0]?.trim().toLowerCase() === domainName.toLowerCase());
+        const pendingSel = (pm?.split(":")[1] || "").trim();
+        if (pendingSel) {
+          const dnsRaw = fs.readFileSync(dnsFile, "utf8");
+          const lines = dnsRaw
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean);
+          const needle = `${pendingSel}._domainkey.${domainName}`.toLowerCase();
+          const line = lines.find((l) => l.toLowerCase().includes(needle) && l.toLowerCase().includes("p="));
+          const p = (line?.match(/\bp=([^;,\s\"]+)/i)?.[1] || "").replace(/\s+/g, "").trim();
+          await prisma.domain.updateMany({
+            where: { workspaceId: t.workspaceId, name: domainName },
+            data: {
+              pendingDkimSelector: pendingSel,
+              pendingDkimPublic: p || null,
+              pendingDkimCreatedAt: new Date(),
+            },
+          });
+          await logJob(jobId, `✅ DKIM staged in app DB for ${domainName} (pending selector: ${pendingSel})`);
+        }
+      }
+    } catch {
+      await logJob(jobId, `⚠️  Could not sync staged DKIM into app DB for ${domainName} (continuing)`);
+    }
+
+    await logJob(jobId, `✅ DKIM staged for ${domainName} (tenant=${t.name}). Wait for DNS propagation, then activate.`);
+    return;
+  }
+
+  if (type === "mailstack:dkim-activate") {
+    const domainName = String((payload as any)?.domainName || (payload as any)?.domain || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, "");
+    if (!domainName) throw new Error("domainName missing");
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    await runCmd(jobId, runner, [...prefixArgs, "dkim-activate", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+
+    try {
+      const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
+      const selFile = path.join("/etc/mailstack/tenants", t.name, "dkim-selector.map");
+      let activeSel = "default";
+      if (fs.existsSync(selFile)) {
+        const selRaw = fs.readFileSync(selFile, "utf8");
+        const m = selRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .find((l) => l.split(":")[0]?.trim().toLowerCase() === domainName.toLowerCase());
+        const maybe = (m?.split(":")[1] || "").trim();
+        if (maybe) activeSel = maybe;
+      }
+      let p: string | null = null;
+      if (fs.existsSync(dnsFile)) {
+        const dnsRaw = fs.readFileSync(dnsFile, "utf8");
+        const lines = dnsRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
+        const needle = `${activeSel}._domainkey.${domainName}`.toLowerCase();
+        const line = lines.find((l) => l.toLowerCase().includes(needle) && l.toLowerCase().includes("p="));
+        p = (line?.match(/\bp=([^;,\s\"]+)/i)?.[1] || "").replace(/\s+/g, "").trim() || null;
+      }
+
+      await prisma.domain.updateMany({
+        where: { workspaceId: t.workspaceId, name: domainName },
+        data: {
+          dkimSelector: activeSel,
+          dkimPublic: p,
+          pendingDkimSelector: null,
+          pendingDkimPublic: null,
+          pendingDkimCreatedAt: null,
+        },
+      });
+      await logJob(jobId, `✅ DKIM activated in app DB for ${domainName} (selector: ${activeSel})`);
+    } catch {
+      await logJob(jobId, `⚠️  Could not sync activated DKIM into app DB for ${domainName} (continuing)`);
+    }
+
+    await logJob(jobId, `✅ DKIM activated for ${domainName} (tenant=${t.name}). New emails will sign with the new selector.`);
+    return;
+  }
+
+  if (type === "mailstack:dns-sync") {
+    // Fix A: make Cloudflare DNS match what the SERVER uses (DKIM keys, SPF ips, etc.).
+    const domainName = String((payload as any)?.domainName || (payload as any)?.domain || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, "");
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    const args: string[] = ["dns-sync", "--tenant", t.name];
+    if ((t as any)?.createZones) args.push("--create-zones");
+    await runCmd(jobId, runner, [...prefixArgs, ...args], { cwd: "/root" });
+
+    // After syncing, refresh DKIM fields in the app DB from server-generated dns-records.txt.
+    try {
+      const tdir = path.join("/etc/mailstack/tenants", t.name);
+      const dnsFile = path.join(tdir, "dns-records.txt");
+      const selFile = path.join(tdir, "dkim-selector.map");
+      const pendingFile = path.join(tdir, "dkim-pending.map");
+      const dnsRaw = fs.existsSync(dnsFile) ? fs.readFileSync(dnsFile, "utf8") : "";
+      const lines = dnsRaw
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      // Active selector
+      let activeSel = "default";
+      if (fs.existsSync(selFile)) {
+        const selRaw = fs.readFileSync(selFile, "utf8");
+        const m = selRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .find((l) => l.split(":")[0]?.trim().toLowerCase() === domainName.toLowerCase());
+        const maybe = (m?.split(":")[1] || "").trim();
+        if (maybe) activeSel = maybe;
+      }
+      const activeNeedle = `${activeSel}._domainkey.${domainName}`.toLowerCase();
+      const activeLine = lines.find((l) => l.toLowerCase().includes(activeNeedle) && l.toLowerCase().includes("p="));
+      const activeP = (activeLine?.match(/\bp=([^;,\s\"]+)/i)?.[1] || "").replace(/\s+/g, "").trim();
+
+      // Pending selector (if any)
+      let pendingSel: string | null = null;
+      if (fs.existsSync(pendingFile)) {
+        const pendingRaw = fs.readFileSync(pendingFile, "utf8");
+        const pm = pendingRaw
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .find((l) => l.split(":")[0]?.trim().toLowerCase() === domainName.toLowerCase());
+        const maybe = (pm?.split(":")[1] || "").trim();
+        if (maybe) pendingSel = maybe;
+      }
+      let pendingP: string | null = null;
+      if (pendingSel) {
+        const pendingNeedle = `${pendingSel}._domainkey.${domainName}`.toLowerCase();
+        const pendingLine = lines.find((l) => l.toLowerCase().includes(pendingNeedle) && l.toLowerCase().includes("p="));
+        pendingP = (pendingLine?.match(/\bp=([^;,\s\"]+)/i)?.[1] || "").replace(/\s+/g, "").trim() || null;
+      }
+
+      await prisma.domain.updateMany({
+        where: { workspaceId: t.workspaceId, name: domainName },
+        data: {
+          dkimSelector: activeSel,
+          dkimPublic: activeP || null,
+          pendingDkimSelector: pendingSel,
+          pendingDkimPublic: pendingP,
+        },
+      });
+
+      await logJob(jobId, `✅ DNS sync complete. DKIM synced from server for ${domainName} (active=${activeSel}${pendingSel ? `, pending=${pendingSel}` : ""}).`);
+    } catch {
+      await logJob(jobId, `⚠️  DNS sync completed, but could not refresh DKIM fields in app DB (continuing).`);
+    }
+    return;
+  }
+
+  if (type === "mailstack:tenant-setup") {
+    const files = writeTenantFiles({ tenant: t.name, domains, ips, users });
+
+    const args2: string[] = [
+      "tenant-setup",
+      "--tenant", t.name,
+      "--domains", files.domainsFile,
+      "--ips", files.ipsFile,
+      "--users", files.usersFile,
+      "--server-ip", t.serverIp,
+      "--helo-template", t.heloTemplate,
+      "--dmarc-policy", t.dmarcPolicy,
+      "--dmarc-rua", t.dmarcRuaTemplate,
+    ];
+    if (t.createZones) args2.push("--create-zones");
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    await runCmd(jobId, runner, [...prefixArgs, ...args2], { cwd: "/root" });
+
+    // Sync DKIM public key from the server-generated dns-records.txt into the app's Domain table.
+    // This avoids mismatches (or invalid key formats) if the domain was created in-app earlier.
+    try {
+      const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
+      if (fs.existsSync(dnsFile)) {
+        const dnsRaw = fs.readFileSync(dnsFile, "utf8");
+	        // Parse per-line to handle different formatting styles.
+	        const lines = dnsRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+	        for (const dom of domains) {
+	          const needle = `default._domainkey.${dom}`.toLowerCase();
+	          const line = lines.find((l) => l.toLowerCase().includes(needle) && l.toLowerCase().includes("p="));
+	          if (!line) continue;
+	          // Extract p=... from DKIM TXT record.
+	          const pm = line.match(/\bp=([^;,\s\"]+)/i);
+	          const p = (pm?.[1] || "").replace(/\s+/g, "").trim();
+	          if (!p) continue;
+	          await prisma.domain.updateMany({
+	            where: { workspaceId: t.workspaceId, name: dom },
+	            data: { dkimSelector: "default", dkimPublic: p },
+	          });
+	        }
+        await logJob(jobId, `✅ Synced DKIM public keys from ${dnsFile}`);
+      }
+    } catch (e) {
+      await logJob(jobId, `⚠️  Could not sync DKIM keys into app DB (continuing)`);
+    }
+
+    // try to import mailboxes.csv created by the script
+    const tenantDir = path.join("/etc/mailstack/tenants", t.name);
+    const mbCsv = path.join(tenantDir, "mailboxes.csv");
+    if (fs.existsSync(mbCsv)) {
+      const raw = fs.readFileSync(mbCsv, "utf8");
+      const lines = raw.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      const pairs: Array<{ email: string; pass: string }> = [];
+      for (const line of lines) {
+        const parts = line.split(",");
+        if (parts.length < 2) continue;
+        const email = parts[0].trim();
+        const pass = parts.slice(1).join(",").trim();
+        // skip header row
+        if (email.toLowerCase() === "email" && pass.toLowerCase().startsWith("pass")) continue;
+        if (!email.includes("@")) continue;
+        if (email && pass) pairs.push({ email, pass });
+      }
+
+      // Import into DB (idempotent): dedupe + upsert by (tenantId,email)
+      const byEmail = new Map<string, string>();
+      for (const p of pairs) byEmail.set(p.email.toLowerCase(), p.pass);
+
+      for (const [emailLower, pass] of byEmail.entries()) {
+        await prisma.mailstackMailbox.upsert({
+          where: { tenantId_email: { tenantId: t.id, email: emailLower } },
+          update: { passwordEnc: encrypt(pass) },
+          create: { tenantId: t.id, email: emailLower, passwordEnc: encrypt(pass) },
+        });
+      }
+
+      // Also create/update sending Mailbox records for this workspace (SMTP/IMAP)
+      // If TLS certs were issued successfully for mail.<domain>, we can enforce strict IMAP TLS.
+      // The addon script writes: /etc/mailstack/tenants/<tenant>/certs-ok.txt with one hostname per line.
+      const okHosts = new Set<string>();
+      try {
+        const okFile = path.join("/etc/mailstack/tenants", t.name, "certs-ok.txt");
+        if (fs.existsSync(okFile)) {
+          const okRaw = fs.readFileSync(okFile, "utf8");
+          for (const line of okRaw.split(/\r?\n/)) {
+            const h = line.trim();
+            if (h) okHosts.add(h);
+          }
+        }
+      } catch {}
+
+      for (const p of pairs) {
+        const host = `mail.${p.email.split("@")[1]}`;
+        const existing = await prisma.mailbox.findFirst({
+          where: { workspaceId: t.workspaceId, fromEmail: p.email },
+        });
+
+        const data = {
+          name: String((payload as any)?.senderName || "").trim() || p.email,
+          fromEmail: p.email,
+          smtpHost: host,
+          smtpPort: 587,
+          smtpUser: p.email,
+          smtpPassEnc: encrypt(p.pass),
+          smtpSecure: false,
+          imapHost: host,
+          imapPort: 993,
+          imapSecure: true,
+          imapUser: p.email,
+          imapPassEnc: encrypt(p.pass),
+          imapTlsSkipVerify: okHosts.has(host) ? false : true,
+          isActive: true,
+          warmupEnabled: false,
+        };
+
+        if (existing) {
+          await prisma.mailbox.update({ where: { id: existing.id }, data });
+        } else {
+          await prisma.mailbox.create({
+            data: {
+              workspaceId: t.workspaceId,
+              ...data,
+            },
+          });
+        }
+      }
+
+      await logJob(jobId, `✅ Imported ${pairs.length} mailboxes from ${mbCsv}`);
+    } else {
+      await logJob(jobId, `⚠ mailboxes.csv not found at ${mbCsv} (you can still run tenant-mailboxes-create manually)`);
+    }
+
+    return;
+  }
+
+  if (type === "mailstack:tenant-prepare") {
+    const files = writeTenantFiles({ tenant: t.name, domains, ips, users });
+
+    const args2: string[] = [
+      "tenant-prepare",
+      "--tenant", t.name,
+      "--domains", files.domainsFile,
+      "--ips", files.ipsFile,
+      "--users", files.usersFile,
+      "--server-ip", t.serverIp,
+      "--helo-template", t.heloTemplate,
+      "--dmarc-policy", t.dmarcPolicy,
+      "--dmarc-rua", t.dmarcRuaTemplate,
+    ];
+
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    await runCmd(jobId, runner, [...prefixArgs, ...args2], { cwd: "/root" });
+
+    // Sync DKIM public key from the server-generated dns-records.txt into the app's Domain table.
+    // This ensures the DKIM TXT value shown in the UI is the REAL server key.
+    try {
+      const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
+      if (fs.existsSync(dnsFile)) {
+        const dnsRaw = fs.readFileSync(dnsFile, "utf8");
+        const lines = dnsRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        for (const dom of domains) {
+          const needle = `default._domainkey.${dom}`.toLowerCase();
+          const line = lines.find((l) => l.toLowerCase().includes(needle) && l.toLowerCase().includes("p="));
+          if (!line) continue;
+          const pm = line.match(/\bp=([^;,\s\"]+)/i);
+          const p = (pm?.[1] || "").replace(/\s+/g, "").trim();
+          if (!p) continue;
+          await prisma.domain.updateMany({
+            where: { workspaceId: t.workspaceId, name: dom },
+            data: { dkimSelector: "default", dkimPublic: p },
+          });
+        }
+        await logJob(jobId, `✅ Prepared tenant DNS + synced DKIM keys from ${dnsFile}`);
+      } else {
+        await logJob(jobId, `⚠️  Tenant prepare finished, but ${dnsFile} was not found (continuing).`);
+      }
+    } catch {
+      await logJob(jobId, `⚠️  Tenant prepare finished, but could not sync DKIM keys into app DB (continuing).`);
+    }
+    return;
+  }
+
+  if (type === "mailstack:tenant-reset") {
+    const deleteDns = Boolean(payload?.deleteDns);
+
+    // 1) Optional: remove Cloudflare DNS records created by Mailstack
+    if (deleteDns) {
+      const cfg = await prisma.mailstackConfig.findUnique({ where: { workspaceId: t.workspaceId } });
+      if (!cfg?.cloudflareTokenEnc) throw new Error("Cloudflare token not set in Mailstack settings");
+      const token = decrypt(cfg.cloudflareTokenEnc).trim();
+      if (!token) throw new Error("Cloudflare token decrypt failed");
+
+      for (const d of domains) {
+        await cloudflareDeleteMailstackRecords(jobId, token, d);
+      }
+    }
+
+    // 2) Suspend tenant (best-effort), then remove tenant folder and rebuild maps
+    try {
+      const [runner, ...prefixArgs] = sudoWrap(addon);
+      await runCmd(jobId, runner, [...prefixArgs, "tenant-suspend", "--tenant", t.name], { cwd: "/root" });
+    } catch {
+      await logJob(jobId, "⚠️  tenant-suspend failed (continuing)");
+    }
+
+    // Remove tenant folder(s) on the server
+    try {
+      const [cmd, ...baseArgs] = sudoWrap("bash");
+      await runCmd(jobId, cmd, [...baseArgs, "-lc", `rm -rf /etc/mailstack/tenants/${t.name} /tmp/coldmail-mailstack/${t.name}`], {
+        cwd: "/",
+      });
+    } catch {
+      await logJob(jobId, "⚠️  Could not remove tenant folder(s) (continuing)");
+    }
+
+    try {
+      const [runner, ...prefixArgs] = sudoWrap(addon);
+      await runCmd(jobId, runner, [...prefixArgs, "exim-rebuild"], { cwd: "/root" });
+    } catch {
+      await logJob(jobId, "⚠️  exim-rebuild failed (continuing)");
+    }
+
+    // 3) Delete app mailboxes created for sending + delete tenant from DB
+    const mailboxEmails = new Set<string>();
+    for (const m of t.mailboxes) mailboxEmails.add(m.email);
+    for (const u of users) {
+      const v = String(u || "").trim();
+      if (!v) continue;
+      if (v.includes("@")) {
+        mailboxEmails.add(v);
+      } else {
+        for (const d of domains) mailboxEmails.add(`${v}@${d}`);
+      }
+    }
+
+    if (mailboxEmails.size > 0) {
+      await prisma.mailbox.deleteMany({
+        where: { workspaceId: t.workspaceId, fromEmail: { in: Array.from(mailboxEmails) } },
+      });
+    }
+
+    await prisma.mailstackTenant.delete({ where: { id: t.id } });
+    await logJob(jobId, `✅ Tenant reset complete: ${t.name}`);
+    return;
+  }
+
+  if (type === "mailstack:domain-delete") {
+    const domainName = String(payload?.domainName || payload?.domain || "").trim().toLowerCase().replace(/\.$/, "");
+    if (!domainName) throw new Error("domainName missing");
+
+    // Execute server-side deletion: remove domain from tenant + delete mail users/maildirs + rebuild maps
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    await runCmd(jobId, runner, [...prefixArgs, "tenant-remove-domain", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+
+    // DB cleanup (best-effort) in case API deleted partially
+    try {
+      await prisma.mailstackMailbox.deleteMany({ where: { tenantId: t.id, email: { endsWith: `@${domainName}` } } });
+    } catch {}
+    try {
+      await prisma.mailstackTenantUser.deleteMany({ where: { tenantId: t.id, email: { endsWith: `@${domainName}` } } });
+    } catch {}
+    try {
+      await prisma.mailstackTenantDomain.deleteMany({ where: { tenantId: t.id, domainName } });
+    } catch {}
+
+    await logJob(jobId, `✅ Server-side domain deletion completed: ${domainName} (tenant=${t.name})`);
+    return;
+  }
+
+  const map: Record<string, string[]> = {
+    "mailstack:tenant-dns-sync": ["dns-sync", "--tenant", t.name],
+    "mailstack:tenant-rotate-now": ["rotate-now", "--tenant", t.name],
+    "mailstack:tenant-suspend": ["tenant-suspend", "--tenant", t.name],
+    "mailstack:tenant-unsuspend": ["tenant-unsuspend", "--tenant", t.name],
+    "mailstack:tenant-exim-rebuild": ["exim-rebuild"],
+    "mailstack:tenant-tls-issue": ["tls-issue", "--tenant", t.name],
+  };
+
+  const cmdArgs = map[type];
+  if (!cmdArgs) throw new Error(`Unknown mailstack job type: ${type}`);
+
+  const [runner, ...prefixArgs] = sudoWrap(addon);
+  await runCmd(jobId, runner, [...prefixArgs, ...cmdArgs], { cwd: "/root" });
+
+  if (type === "mailstack:tenant-tls-issue") {
+    // After issuing TLS, mark matching app mailboxes as strict TLS (turn off skip-verify)
+    try {
+      const okFile = path.join("/etc/mailstack/tenants", t.name, "certs-ok.txt");
+      const okHosts = new Set<string>();
+      if (fs.existsSync(okFile)) {
+        const okRaw = fs.readFileSync(okFile, "utf8");
+        for (const line of okRaw.split(/\r?\n/)) {
+          const h = line.trim();
+          if (h) okHosts.add(h);
+        }
+      }
+      if (okHosts.size > 0) {
+        await prisma.mailbox.updateMany({
+          where: { workspaceId: t.workspaceId, imapHost: { in: Array.from(okHosts) } },
+          data: { imapTlsSkipVerify: false },
+        });
+        await logJob(jobId, `✅ Updated ${okHosts.size} host(s) to strict IMAP TLS (skip-verify OFF)`);
+      } else {
+        await logJob(jobId, "⚠️  No TLS certs marked OK yet (certs-ok.txt empty). Check Cloudflare delegation/permissions and retry.");
+      }
+    } catch (e: any) {
+      await logJob(jobId, `⚠️  Could not update mailbox TLS flags: ${String(e?.message||e)}`);
+    }
+  }
+
+
+  if (type === "mailstack:tenant-suspend") {
+    await prisma.mailstackTenant.updateMany({ where: { id: t.id }, data: { status: "suspended" } });
+  }
+  if (type === "mailstack:tenant-unsuspend") {
+    await prisma.mailstackTenant.updateMany({ where: { id: t.id }, data: { status: "active" } });
+  }
+}
+
+
+/**
+ * Worker loops:
+ * 1) schedule_campaign: convert queued enrollments into send_message jobs (respecting delays)
+ * 2) send_message: select mailbox, create Message, send via SMTP, log events, schedule next step
+ *
+ * This is intentionally simple so you can extend:
+ * - send windows (hours)
+ * - timezones
+ * - better mailbox load balancing
+ * - reply detection (IMAP) and bounce mailbox parsing
+ */
+
+async function lockNextJob() {
+  const now = new Date();
+  // find one due job and lock it (poor man's queue)
+  const job = await prisma.job.findFirst({
+    where: { status: "queued", runAt: { lte: now } },
+    orderBy: [{ runAt: "asc" }, { createdAt: "asc" }],
+  });
+  if (!job) return null;
+
+  // attempt lock
+  const locked = await prisma.job.updateMany({
+    where: { id: job.id, status: "queued" },
+    data: { status: "running", lockedAt: new Date() },
+  });
+  if (locked.count !== 1) return null;
+
+  return job;
+}
+
+async function handleScheduleCampaign(payload: any) {
+  const { campaignId, workspaceId } = payload;
+  const camp = await prisma.campaign.findFirst({
+    where: { id: campaignId, workspaceId },
+    include: { steps: true },
+  });
+  if (!camp) return;
+
+  // For queued enrollments, mark active and schedule send step 1 now
+  const enrs = await prisma.enrollment.findMany({
+    where: { campaignId, status: { in: ["queued", "active"] } },
+    include: { lead: true },
+    take: 5000,
+  });
+
+  const step1 = await prisma.sequenceStep.findFirst({
+    where: { campaignId, stepNumber: 1 },
+  });
+  if (!step1) return;
+
+  for (const e of enrs) {
+    if (e.status === "queued") {
+      await prisma.enrollment.update({ where: { id: e.id }, data: { status: "active" } });
+    }
+    // schedule send for any enrollment due now (nextRunAt <= now)
+    if (e.nextRunAt <= new Date()) {
+      await prisma.job.create({
+        data: {
+          type: "send_next_step",
+          payload: JSON.stringify({ enrollmentId: e.id, workspaceId }),
+          runAt: new Date(),
+          status: "queued",
+        },
+      });
+    }
+  }
+}
+
+
+async function pickMailbox(workspaceId: string, campaignId: string, mailboxStrategy: string, mailboxPoolId?: string | null) {
+  // Priority:
+  // 1) Explicit campaign sender pool (CampaignMailbox)
+  // 2) Campaign mailboxPoolId (MailboxPoolMember)
+  // 3) All active mailboxes
+
+  const selected = await prisma.campaignMailbox
+    .findMany({
+      where: { campaignId, isActive: true, mailbox: { workspaceId, isActive: true } },
+      include: { mailbox: true },
+      orderBy: { createdAt: "asc" },
+    })
+    .catch(() => [] as any[]);
+
+  let poolMembers: Array<{ mailbox: any; weight: number }> = selected
+    .map((x: any) => ({ mailbox: x.mailbox, weight: 1 }))
+    .filter((x) => x.mailbox);
+
+  if (poolMembers.length === 0 && mailboxPoolId) {
+    const members = await prisma.mailboxPoolMember
+      .findMany({
+        where: {
+          poolId: mailboxPoolId,
+          isActive: true,
+          mailbox: { workspaceId, isActive: true },
+        },
+        include: { mailbox: true },
+        orderBy: { createdAt: "asc" },
+      })
+      .catch(() => [] as any[]);
+
+    poolMembers = members
+      .map((m: any) => ({ mailbox: m.mailbox, weight: Math.max(1, Number(m.weight || 1)) }))
+      .filter((x) => x.mailbox);
+  }
+
+  if (poolMembers.length === 0) {
+    const all = await prisma.mailbox.findMany({
+      where: { workspaceId, isActive: true },
+      orderBy: { createdAt: "asc" },
+    });
+    poolMembers = all.map((m: any) => ({ mailbox: m, weight: 1 }));
+  }
+
+  if (poolMembers.length === 0) throw new Error("NO_ACTIVE_MAILBOX");
+
+  let mailboxes = poolMembers.map((x) => x.mailbox);
+
+  // Auto-throttle: exclude mailboxes that are currently on cooldown for this campaign.
+  const now = new Date();
+  const throttled = await prisma.mailboxThrottle
+    .findMany({
+      where: { campaignId, until: { gt: now } },
+      select: { mailboxId: true, until: true },
+      orderBy: { until: "asc" },
+    })
+    .catch(() => [] as any[]);
+
+  if (throttled.length) {
+    const set = new Set(throttled.map((t: any) => t.mailboxId));
+    const filtered = mailboxes.filter((m: any) => !set.has(m.id));
+    if (filtered.length === 0) {
+      const soonest = throttled[0]?.until ? new Date(throttled[0].until) : new Date(Date.now() + 5 * 60000);
+      throw new Error(`ALL_THROTTLED:${soonest.toISOString()}`);
+    }
+    mailboxes = filtered;
+  }
+
+  if (mailboxStrategy === "random") {
+    return mailboxes[Math.floor(Math.random() * mailboxes.length)];
+  }
+
+  if (mailboxStrategy === "weighted") {
+    // Weighted random pick. If weights are missing (e.g. campaignMailboxes), all weights default to 1.
+    const members = poolMembers
+      .filter((x) => mailboxes.find((m) => m.id === x.mailbox.id))
+      .map((x) => ({ id: x.mailbox.id, w: Math.max(1, Number(x.weight || 1)) }));
+
+    const total = members.reduce((a, b) => a + b.w, 0);
+    let r = Math.random() * Math.max(1, total);
+    for (const m of members) {
+      r -= m.w;
+      if (r <= 0) {
+        return mailboxes.find((x) => x.id === m.id) || mailboxes[0];
+      }
+    }
+    return mailboxes[0];
+  }
+
+  if (mailboxStrategy === "least_recent") {
+    // Pick the mailbox that was used least recently for this campaign (sentAt max).
+    const ids = mailboxes.map((m: any) => String(m.id));
+    const last = await prisma.message
+      .groupBy({
+        by: ["mailboxId"],
+        where: { campaignId, mailboxId: { in: ids }, status: "sent", sentAt: { not: null } },
+        _max: { sentAt: true },
+      })
+      .catch(() => [] as any[]);
+
+    const lastMap = new Map<string, number>();
+    for (const r of last as any[]) {
+      const t = (r._max?.sentAt as Date | null) ? new Date(r._max.sentAt).getTime() : 0;
+      lastMap.set(String(r.mailboxId), t);
+    }
+
+    // Choose the smallest timestamp (0 means never used, so it's preferred).
+    let best = mailboxes[0];
+    let bestT = lastMap.get(String(best.id)) ?? 0;
+    for (const m of mailboxes) {
+      const t = lastMap.get(String(m.id)) ?? 0;
+      if (t === 0 && bestT !== 0) {
+        best = m;
+        bestT = t;
+      } else if (bestT !== 0 && t !== 0 && t < bestT) {
+        best = m;
+        bestT = t;
+      } else if (bestT === 0 && t === 0) {
+        // tie-break with stable hash
+        if (String(m.id) < String(best.id)) best = m;
+      }
+    }
+    return best;
+  }
+
+  // round_robin (default): stable-ish per minute + campaign hash
+  const base = Math.floor(Date.now() / 60000);
+  let h = 0;
+  for (const ch of campaignId) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const idx = (base + h) % mailboxes.length;
+  return mailboxes[idx];
+}
+
+async function maybeThrottleMailboxOnSpike(camp: any, mailboxId: string) {
+  try {
+    if (!camp?.autoThrottleEnabled) return;
+
+    const windowMin = Math.max(5, Number(camp.autoThrottleWindowMinutes ?? 60));
+    const minSent = Math.max(1, Number(camp.autoThrottleMinSent ?? 20));
+    const maxHard = Math.max(0, Number(camp.autoThrottleMaxHardBounceRate ?? 0.08));
+    const maxTotal = Math.max(0, Number(camp.autoThrottleMaxBounceRate ?? 0.12));
+    const cooldownMin = Math.max(5, Number(camp.autoThrottleCooldownMinutes ?? 120));
+
+    const since = new Date(Date.now() - windowMin * 60 * 1000);
+    const sent = await prisma.message
+      .count({ where: { campaignId: camp.id, mailboxId, status: "sent", sentAt: { gte: since } } })
+      .catch(() => 0);
+    if (sent < minSent) return;
+
+    const [hard, soft] = await Promise.all([
+      prisma.event.count({ where: { type: "bounce_hard", createdAt: { gte: since }, message: { campaignId: camp.id, mailboxId } } }).catch(() => 0),
+      prisma.event.count({ where: { type: "bounce_soft", createdAt: { gte: since }, message: { campaignId: camp.id, mailboxId } } }).catch(() => 0),
+    ]);
+
+    const total = hard + soft;
+    const hardRate = hard / sent;
+    const totalRate = total / sent;
+
+    if (hardRate >= maxHard || totalRate >= maxTotal) {
+      const until = new Date(Date.now() + cooldownMin * 60 * 1000);
+      const reason = `Bounce spike (${windowMin}m): sent=${sent}, hard=${hard} (${(hardRate * 100).toFixed(1)}%), total=${total} (${(totalRate * 100).toFixed(1)}%)`;
+
+      await prisma.mailboxThrottle.upsert({
+        where: { campaignId_mailboxId: { campaignId: camp.id, mailboxId } },
+        create: { campaignId: camp.id, mailboxId, until, reason },
+        update: { until, reason },
+      });
+    }
+  } catch {
+    // never crash the worker due to throttling logic
+  }
+}
+
+
+
+function parseSendingWindow(win: string | null | undefined): { start: number; end: number } {
+  const s = String(win || "09:00-18:00").trim();
+  const m = s.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+  if (!m) return { start: 9 * 60, end: 18 * 60 };
+  const sh = Math.min(23, Math.max(0, Number(m[1])));
+  const sm = Math.min(59, Math.max(0, Number(m[2])));
+  const eh = Math.min(23, Math.max(0, Number(m[3])));
+  const em = Math.min(59, Math.max(0, Number(m[4])));
+  return { start: sh * 60 + sm, end: eh * 60 + em };
+}
+
+function tzParts(date: Date, timeZone: string) {
+  // weekday: 0=Sun..6=Sat
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = dtf.formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || "";
+
+  const wd = get("weekday");
+  const weekday =
+    wd === "Sun" ? 0 :
+    wd === "Mon" ? 1 :
+    wd === "Tue" ? 2 :
+    wd === "Wed" ? 3 :
+    wd === "Thu" ? 4 :
+    wd === "Fri" ? 5 :
+    6;
+
+  return {
+    weekday,
+    year: Number(get("year")),
+    month: Number(get("month")),
+    day: Number(get("day")),
+    hour: Number(get("hour")),
+    minute: Number(get("minute")),
+  };
+}
+
+function isAllowedBySchedule(camp: any, when: Date): boolean {
+  const tz = String(camp?.timezone || "UTC");
+  const { start, end } = parseSendingWindow(camp?.sendingWindow);
+  const p = tzParts(when, tz);
+  const mins = p.hour * 60 + p.minute;
+
+  let days: number[] | null = null;
+  try {
+    const v = JSON.parse(String(camp?.daysOfWeek || ""));
+    if (Array.isArray(v)) days = v.map((x: any) => Number(x)).filter((x: any) => Number.isFinite(x));
+  } catch {}
+
+  if (days && days.length > 0 && !days.includes(p.weekday)) return false;
+
+  // window can cross midnight
+  if (start === end) return true;
+  if (start < end) return mins >= start && mins < end;
+  return mins >= start || mins < end;
+}
+
+function nextAllowedBySchedule(camp: any, from: Date): Date {
+  // Step forward in 30-minute increments up to 14 days to find the next allowed time.
+  // This avoids pulling in timezone libs, but still respects the campaign timezone via Intl.
+  const stepMs = 30 * 60 * 1000;
+  let t = new Date(from.getTime() + stepMs);
+  for (let i = 0; i < (14 * 24 * 2); i++) {
+    if (isAllowedBySchedule(camp, t)) return t;
+    t = new Date(t.getTime() + stepMs);
+  }
+  // Fallback: 1 hour later
+  return new Date(from.getTime() + 60 * 60 * 1000);
+}
+
+function effectiveDailyLimit(camp: any): number {
+  const base = Number(camp?.dailySendLimit || 0) || 0;
+  if (!camp?.rampEnabled) return base > 0 ? base : 0;
+
+  const start = Number(camp?.rampStartLimit || 20);
+  const inc = Number(camp?.rampDailyIncrease || 20);
+  const max = Number(camp?.rampMaxLimit || base || 0) || base || 0;
+
+  const since = camp?.startAt ? new Date(camp.startAt) : camp?.createdAt ? new Date(camp.createdAt) : new Date();
+  const days = Math.max(0, Math.floor((Date.now() - since.getTime()) / (24 * 60 * 60 * 1000)));
+
+  const v = start + days * inc;
+  const clamped = max > 0 ? Math.min(v, max) : v;
+  return base > 0 ? Math.min(base, clamped) : clamped;
+}
+
+function injectTracking(htmlOrText: string, messageId: string, isHtml: boolean) {
+  const openUrl = `${env.PUBLIC_APP_URL}/t/open?m=${encodeURIComponent(messageId)}`;
+  if (isHtml) {
+    const pixel = `<img src="${openUrl}" width="1" height="1" style="display:none" alt="" />`;
+    if (htmlOrText.includes("</body>")) return htmlOrText.replace("</body>", `${pixel}</body>`);
+    return htmlOrText + pixel;
+  } else {
+    // for text, append open pixel url (not ideal) - better: send multipart with html
+    return htmlOrText + `\n\n[open-tracking] ${openUrl}`;
+  }
+}
+
+function wrapClickTracking(body: string, messageId: string) {
+  // Very simple: replace http(s) links with tracking redirect
+  return body.replace(/https?:\/\/[^\s)]+/g, (m) => {
+    const tracked = `${env.PUBLIC_APP_URL}/t/click?m=${encodeURIComponent(messageId)}&to=${encodeURIComponent(m)}`;
+    return tracked;
+  });
+}
+
+async function isSuppressed(workspaceId: string, email: string) {
+  const s = await prisma.suppression.findUnique({
+    where: { workspaceId_email: { workspaceId, email } },
+  });
+  return !!s;
+}
+
+function randInt(min: number, max: number) {
+  const lo = Math.floor(Math.min(min, max));
+  const hi = Math.floor(Math.max(min, max));
+  if (hi <= lo) return lo;
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+
+async function nextPacedSendTime(camp: any, mailboxId: string, now: Date): Promise<Date | null> {
+  // Global pacing (env-based): enforce a random gap between sends per mailbox.
+  // This avoids "send to all leads instantly" behavior when a campaign starts.
+  const minGap = Number(env.SEND_GAP_MIN_SECONDS ?? 60);
+  const maxGap = Number(env.SEND_GAP_MAX_SECONDS ?? 180);
+  const gapSec = randInt(Math.max(0, minGap), Math.max(0, maxGap));
+  if (gapSec <= 0) return null;
+
+  const last = await prisma.message
+    .findFirst({
+      where: {
+        campaignId: camp.id,
+        mailboxId,
+        status: "sent",
+        sentAt: { not: null },
+      },
+      orderBy: { sentAt: "desc" },
+      select: { sentAt: true },
+    })
+    .catch(() => null as any);
+
+  const lastAt: Date | null = last?.sentAt ? new Date(last.sentAt) : null;
+  if (!lastAt) return null;
+
+  const earliest = new Date(lastAt.getTime() + gapSec * 1000);
+  if (earliest <= now) return null;
+  return earliest;
+}
+
+async function handleSendNextStep(payload: any) {
+  const { enrollmentId, workspaceId } = payload;
+  const enr = await prisma.enrollment.findFirst({
+    where: { id: enrollmentId },
+    include: { campaign: true, lead: true },
+  });
+  if (!enr) return;
+  if (enr.status !== "active") return;
+
+  const lead = enr.lead;
+  if (!lead) return;
+
+  // stop if suppressed
+  if (await isSuppressed(workspaceId, lead.email)) {
+    await prisma.enrollment.update({ where: { id: enr.id }, data: { status: "stopped" } });
+    await prisma.lead.update({ where: { id: lead.id }, data: { status: "suppressed" } }).catch(() => {});
+    return;
+  }
+
+  const camp = enr.campaign;
+  if (!camp || camp.status !== "running") return;
+
+  // Archived campaigns should not send
+  if ((camp as any).archivedAt) {
+    await prisma.enrollment.update({ where: { id: enr.id }, data: { status: "stopped", stopReason: "archived" } }).catch(() => {});
+    return;
+  }
+
+  const now = new Date();
+  // Campaign start/end gating
+  if ((camp as any).startAt && now < new Date((camp as any).startAt)) {
+    const runAt = new Date((camp as any).startAt);
+    await prisma.job.create({
+      data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+    }).catch(() => {});
+    return;
+  }
+  if ((camp as any).endAt && now > new Date((camp as any).endAt)) {
+    await prisma.enrollment.update({ where: { id: enr.id }, data: { status: "stopped", stopReason: "campaign_ended" } }).catch(() => {});
+    return;
+  }
+
+  // Sending window + weekday gating (campaign timezone)
+  if (!isAllowedBySchedule(camp as any, now)) {
+    const runAt = nextAllowedBySchedule(camp as any, now);
+    await prisma.job.create({
+      data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+    }).catch(() => {});
+    return;
+  }
+
+  // Daily limit (with optional ramp-up). This is enforced at send-time to keep logic simple.
+  const limit = effectiveDailyLimit(camp as any);
+  if (limit > 0) {
+    const startOfDay = dayjs().startOf("day").toDate();
+    const endOfDay = dayjs().endOf("day").toDate();
+    const sentToday = await prisma.message.count({
+      where: { campaignId: camp.id, status: "sent", sentAt: { gte: startOfDay, lte: endOfDay } },
+    }).catch(() => 0);
+
+    if (sentToday >= limit) {
+      // push to next day
+      const runAt = nextAllowedBySchedule(camp as any, dayjs().add(1, "day").startOf("day").toDate());
+      await prisma.job.create({
+        data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+      }).catch(() => {});
+      return;
+    }
+  }
+
+  const step = await prisma.sequenceStep.findFirst({
+    where: { campaignId: camp.id, stepNumber: enr.currentStep },
+    include: { variants: { where: { isActive: true }, orderBy: { createdAt: "asc" } } },
+  });
+  if (!step) {
+    await prisma.enrollment.update({ where: { id: enr.id }, data: { status: "completed" } });
+    return;
+  }
+
+  let mailbox: any;
+  try {
+    mailbox = await pickMailbox(workspaceId, camp.id, camp.mailboxStrategy, (camp as any).mailboxPoolId || null);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.startsWith("ALL_THROTTLED:")) {
+      const iso = msg.split(":")[1];
+      const until = iso ? new Date(iso) : new Date(Date.now() + 5 * 60000);
+      const runAt = new Date(until.getTime() + 30 * 1000);
+      await prisma.job
+        .create({
+          data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+        })
+        .catch(() => {});
+      return;
+    }
+    throw e;
+  }
+
+  // ------------------------------------------------------------
+  // Pacing: random gap between sends per mailbox.
+  // This prevents the app from sending to all leads back-to-back.
+  // Controlled globally via SEND_GAP_MIN_SECONDS / SEND_GAP_MAX_SECONDS.
+  // ------------------------------------------------------------
+  const pacedAt = await nextPacedSendTime(camp as any, String(mailbox.id), now);
+  if (pacedAt) {
+    const runAt = isAllowedBySchedule(camp as any, pacedAt) ? pacedAt : nextAllowedBySchedule(camp as any, pacedAt);
+    await prisma.job
+      .create({
+        data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+      })
+      .catch(() => {});
+    return;
+  }
+
+  // Throttling: per mailbox per minute (campaign scope)
+  const perMin = Number((camp as any).perMailboxPerMinute ?? 20);
+  if (Number.isFinite(perMin) && perMin > 0) {
+    const since = new Date(Date.now() - 60 * 1000);
+    const sentLastMin = await prisma.message
+      .count({ where: { campaignId: camp.id, mailboxId: mailbox.id, status: "sent", sentAt: { gte: since } } })
+      .catch(() => 0);
+    if (sentLastMin >= perMin) {
+      // retry shortly; other enrollments/domains might still send
+      const runAt = new Date(Date.now() + 30 * 1000);
+      await prisma.job
+        .create({
+          data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+        })
+        .catch(() => {});
+      return;
+    }
+  }
+
+  // Domain daily caps (campaign scope)
+  const rcptDomain = getRecipientDomain(lead.email);
+  if (rcptDomain) {
+    const caps = parseDomainCaps((camp as any).domainCaps);
+    const cap = Number(caps[rcptDomain] ?? (camp as any).domainDailyCap ?? 25);
+    if (Number.isFinite(cap) && cap > 0) {
+      const startOfDay = dayjs().startOf("day").toDate();
+      const endOfDay = dayjs().endOf("day").toDate();
+      const sentTodayToDomain = await prisma.message
+        .count({
+          where: {
+            campaignId: camp.id,
+            status: "sent",
+            sentAt: { gte: startOfDay, lte: endOfDay },
+            lead: { email: { endsWith: `@${rcptDomain}` } },
+          },
+        })
+        .catch(() => 0);
+
+      if (sentTodayToDomain >= cap) {
+        const runAt = nextAllowedBySchedule(camp as any, dayjs().add(1, "day").startOf("day").toDate());
+        await prisma.job
+          .create({
+            data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt, status: "queued" },
+          })
+          .catch(() => {});
+        return;
+      }
+    }
+  }
+
+  // Pick step variant (A/B testing). If no variants exist, fallback to base step templates.
+  const variants: any[] = Array.isArray((step as any).variants) ? (step as any).variants : [];
+  let chosenVariant: any = null;
+  if (variants.length > 0) {
+    // Prefer A when not running AB
+    const isAB = Boolean((step as any).abEnabled) && variants.length >= 2;
+    if (isAB) {
+      chosenVariant = pickWeightedVariant(`${enr.id}:${(step as any).id}`, variants);
+    } else {
+      chosenVariant = variants.find((v) => String(v.name || "").toUpperCase() === "A") || variants[0];
+    }
+  }
+
+  const subject = renderTemplate(chosenVariant?.subjectTpl || step.subjectTpl, {
+    firstName: lead.firstName,
+    lastName: lead.lastName,
+    email: lead.email,
+    company: lead.company,
+    website: lead.website,
+    senderName: mailbox.name,
+    senderEmail: mailbox.fromEmail,
+  });
+
+  const bodyText = renderTemplate(chosenVariant?.bodyTpl || step.bodyTpl, {
+    firstName: lead.firstName,
+    lastName: lead.lastName,
+    email: lead.email,
+    company: lead.company,
+    website: lead.website,
+    senderName: mailbox.name,
+    senderEmail: mailbox.fromEmail,
+  });
+
+  // create message row first so tracking has id
+  const msg = await prisma.message.create({
+    data: {
+      workspaceId,
+      campaignId: camp.id,
+      mailboxId: mailbox.id,
+      leadId: lead.id,
+      stepNumber: enr.currentStep,
+      stepVariantId: chosenVariant?.id || null,
+      subject,
+      bodyText,
+      status: "queued",
+    },
+  });
+
+  // Build HTML version from text (simple)
+  let html = bodyText
+    .split("\n")
+    .map((l) => `<p>${escapeHtml(l)}</p>`)
+    .join("");
+  html = wrapClickTracking(html, msg.id);
+  html = injectTracking(html, msg.id, true);
+
+  const textTracked = wrapClickTracking(bodyText, msg.id);
+
+  try {
+    const fromDomain = (mailbox.fromEmail.split("@")[1] || "local").trim();
+const forcedMessageId = `<${msg.id}@${fromDomain}>`;
+const listUnsub = `${env.PUBLIC_APP_URL}/t/unsub?m=${encodeURIComponent(msg.id)}&email=${encodeURIComponent(lead.email)}&mb=${mailbox.id}`;
+
+const res = await sendEmail({
+  mailboxId: mailbox.id,
+  to: lead.email,
+  subject,
+  text: textTracked,
+  html,
+  messageId: msg.messageId || forcedMessageId,
+  headers: {
+    "X-Campaign-Id": camp.id,
+    "X-Enrollment-Id": enr.id,
+    "X-Message-Id": msg.id,
+    "List-Unsubscribe": `<${listUnsub}>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  },
+});
+
+    await prisma.message.update({
+      where: { id: msg.id },
+      data: { status: "sent", sentAt: new Date(), messageId: res.messageId || undefined },
+    });
+
+    await prisma.event.create({ data: { messageId: msg.id, type: "sent" } });
+
+    // deliverability guardrails (auto-pause) - best effort
+    await maybeAutoPauseCampaign(camp.id).catch(() => {});
+
+    await dispatchWebhooks(workspaceId, "sent", { messageId: msg.id, to: lead.email, campaignId: camp.id });
+
+    // schedule next step
+    const nextStep = enr.currentStep + 1;
+    const next = await prisma.sequenceStep.findFirst({ where: { campaignId: camp.id, stepNumber: nextStep } });
+    if (!next) {
+      await prisma.enrollment.update({ where: { id: enr.id }, data: { status: "completed" } });
+      return;
+    }
+
+    const nextRunAt = dayjs().add(next.delayDays, "day").toDate();
+    await prisma.enrollment.update({
+      where: { id: enr.id },
+      data: { currentStep: nextStep, nextRunAt },
+    });
+
+    await prisma.job.create({
+      data: {
+        type: "send_next_step",
+        payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }),
+        runAt: nextRunAt,
+        status: "queued",
+      },
+    });
+  } catch (e: any) {
+    const err = String(e?.message || e);
+    const c = classifySmtpError(err);
+    const isHard = c.bounceClass === "hard";
+    const isSoft = c.bounceClass === "soft";
+
+    await prisma.message
+      .update({
+        where: { id: msg.id },
+        data: {
+          status: isHard ? "bounced" : "failed",
+          error: err,
+          smtpCode: c.smtpCode ?? null,
+          bounceType: c.bounceType ?? null,
+        },
+      })
+      .catch(() => {});
+
+    const evType = isHard ? "bounce_hard" : isSoft ? "bounce_soft" : "failed";
+    await prisma.event
+      .create({ data: { messageId: msg.id, type: evType, meta: JSON.stringify({ error: err, smtpCode: c.smtpCode, bounceType: c.bounceType }) } })
+      .catch(() => {});
+
+    // deliverability guardrails (auto-pause) - best effort
+    if (isHard || isSoft) {
+      await maybeAutoPauseCampaign(camp.id).catch(() => {});
+
+      // Auto mailbox throttling: if a specific sender spikes bounces, put it on cooldown.
+      await maybeThrottleMailboxOnSpike(camp as any, mailbox.id).catch(() => {});
+    }
+
+    // Hard bounce: suppress + optionally stop
+    if (isHard) {
+      if (camp.stopOnBounce) {
+        await prisma.enrollment.update({ where: { id: enr.id }, data: { status: "stopped", stopReason: "bounce" } }).catch(() => {});
+      }
+      await prisma.lead.update({ where: { id: lead.id }, data: { status: "bounced" } }).catch(() => {});
+      await prisma.suppression
+        .upsert({
+          where: { workspaceId_email: { workspaceId, email: lead.email } },
+          update: { reason: "bounce" },
+          create: { workspaceId, email: lead.email, reason: "bounce" },
+        })
+        .catch(() => {});
+      await dispatchWebhooks(workspaceId, "bounce", { messageId: msg.id, to: lead.email, error: err, campaignId: camp.id }).catch(() => {});
+      return;
+    }
+
+    // Soft bounce: retry later (keeps enrollment active)
+    if (isSoft) {
+      const retryAt = dayjs().add(6, "hour").toDate();
+      await prisma.enrollment
+        .update({ where: { id: enr.id }, data: { nextRunAt: retryAt } })
+        .catch(() => {});
+      await prisma.job
+        .create({ data: { type: "send_next_step", payload: JSON.stringify({ enrollmentId: enr.id, workspaceId }), runAt: retryAt, status: "queued" } })
+        .catch(() => {});
+      return;
+    }
+  }
+}
+
+
+
+function getJobStaleMinutes(): number {
+  const v = process.env.IMAP_JOB_STALE_MINUTES || process.env.JOB_STALE_MINUTES || "5";
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 5;
+}
+
+async function recoverStaleRunningJobs() {
+  const imapDebug = String(process.env.DEBUG_IMAP || "") === "1";
+  const staleMs = getJobStaleMinutes() * 60 * 1000;
+  const cutoff = new Date(Date.now() - staleMs);
+
+  // Re-queue stale running jobs (for example if worker crashed previously)
+  const res1 = await prisma.job.updateMany({
+    where: {
+      status: "running",
+      OR: [{ lockedAt: null }, { lockedAt: { lt: cutoff } }],
+    },
+    data: { status: "queued", lockedAt: null },
+  }).catch(() => null);
+
+  if (imapDebug && res1) {
+    console.log("[worker] recovered stale running jobs", { count: res1.count, staleMinutes: getJobStaleMinutes() });
+  }
+}
+
+
+async function enqueueImapSyncJobs() {
+  const imapDebug = String(process.env.DEBUG_IMAP || "") === "1";
+
+  const mailboxes = await prisma.mailbox.findMany({
+    where: { isActive: true, imapHost: { not: null }, imapUser: { not: null }, imapPassEnc: { not: null } },
+    select: { id: true },
+  });
+
+  if (imapDebug) {
+    console.log("[imap] sweep", { mailboxes: mailboxes.length });
+  }
+
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const mb of mailboxes) {
+    const already = await prisma.job.findFirst({
+      where: { type: "sync_imap", status: { in: ["queued", "running"] }, payload: { contains: mb.id } },
+      select: { id: true, status: true, lockedAt: true, createdAt: true },
+    });
+
+    if (already) {
+      const staleMs = getJobStaleMinutes() * 60 * 1000;
+      const cutoff = new Date(Date.now() - staleMs);
+      const isStaleRunning =
+        already.status === "running" && (!already.lockedAt || already.lockedAt < cutoff);
+
+      if (isStaleRunning) {
+        await prisma.job
+          .update({
+            where: { id: already.id },
+            data: { status: "failed", lastError: `stale sync_imap job (>${getJobStaleMinutes()}m) auto-cleared` },
+          })
+          .catch(() => {});
+        if (imapDebug) {
+          console.log("[imap] stale job cleared", {
+            mailboxId: mb.id,
+            jobId: already.id,
+            status: already.status,
+            lockedAt: already.lockedAt,
+          });
+        }
+      } else {
+        skipped++;
+        if (imapDebug) {
+          console.log("[imap] skip enqueue", {
+            mailboxId: mb.id,
+            reason: "job_exists",
+            jobId: already.id,
+            status: already.status,
+            lockedAt: already.lockedAt,
+          });
+        }
+        continue;
+      }
+    }
+
+    try {
+      await prisma.job.create({
+        data: { type: "sync_imap", payload: JSON.stringify({ mailboxId: mb.id }), runAt: new Date(), status: "queued" },
+      });
+      enqueued++;
+    } catch {
+      // ignore
+    }
+  }
+
+  if (imapDebug) {
+    console.log("[imap] sweep done", { enqueued, skipped });
+  }
+}
+
+
+
+function safeJsonParse(v: any) {
+  try {
+    return JSON.parse(String(v || "{}"));
+  } catch {
+    return null;
+  }
+}
+
+function isHealthOk(r: any): boolean {
+  if (!r) return false;
+  const smtp = r.smtp;
+  const imap = r.imap;
+  if (smtp) {
+    if (!smtp.ok) return false;
+  }
+  if (imap) {
+    if (imap.skipped) return true;
+    if (!imap.ok) return false;
+  }
+  return true;
+}
+
+async function enqueueMailboxHealthcheckSweep() {
+  if (!env.AUTO_HEALTHCHECK_ENABLED) return;
+
+  const mailboxes = await prisma.mailbox.findMany({
+    where: { isActive: true },
+    select: { id: true, workspaceId: true },
+  });
+
+  if (!mailboxes.length) return;
+
+  // Latest done/failed per mailbox
+  const recent = await prisma.job.findMany({
+    where: { type: "mailbox_healthcheck", status: { in: ["done", "failed"] } },
+    orderBy: { createdAt: "desc" },
+    take: 2000,
+    select: { payload: true, lastError: true, createdAt: true, status: true },
+  });
+
+  const latest = new Map<string, { createdAt: Date; status: string; result: any }>();
+  for (const j of recent as any[]) {
+    const p = safeJsonParse(j.payload);
+    if (!p) continue;
+    const mbid = String(p.mailboxId || "");
+    if (!mbid) continue;
+    if (!latest.has(mbid)) {
+      const r = safeJsonParse(j.lastError);
+      latest.set(mbid, { createdAt: j.createdAt, status: j.status, result: r });
+    }
+  }
+
+  const staleCutoff = new Date(Date.now() - env.HEALTHCHECK_STALE_HOURS * 60 * 60 * 1000);
+
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const mb of mailboxes as any[]) {
+    if (enqueued >= 200) break;
+
+    const pending = await prisma.job.findFirst({
+      where: { type: "mailbox_healthcheck", status: { in: ["queued", "running"] }, payload: { contains: mb.id } },
+      select: { id: true },
+    });
+
+    if (pending) {
+      skipped++;
+      continue;
+    }
+
+    const last = latest.get(mb.id);
+    let should = false;
+
+    if (!last) {
+      should = true;
+    } else {
+      if (last.createdAt < staleCutoff) should = true;
+      if (!should) {
+        const ok = isHealthOk(last.result);
+        if (!ok || String(last.status) === "failed") should = true;
+      }
+    }
+
+    if (!should) continue;
+
+    try {
+      await prisma.job.create({
+        data: {
+          type: "mailbox_healthcheck",
+          payload: JSON.stringify({ workspaceId: mb.workspaceId, mailboxId: mb.id, mode: "both", source: "auto" }),
+          runAt: new Date(),
+          status: "queued",
+        },
+      });
+      enqueued++;
+    } catch {
+      // ignore
+    }
+  }
+
+  console.log("[healthcheck] sweep", { total: mailboxes.length, enqueued, skipped, staleHours: env.HEALTHCHECK_STALE_HOURS });
+}
+
+async function enqueueDomainDnsCheckSweep() {
+  if (!env.AUTO_DOMAIN_DNSCHECK_ENABLED) return;
+
+  const domains = await prisma.domain.findMany({
+    select: { id: true, workspaceId: true, name: true },
+  });
+
+  if (!domains.length) return;
+
+  const recent = await prisma.job.findMany({
+    where: { type: "domain_dns_check", status: { in: ["done", "failed"] } },
+    orderBy: { createdAt: "desc" },
+    take: 2000,
+    select: { payload: true, lastError: true, createdAt: true },
+  });
+
+  const latest = new Map<string, { createdAt: Date; result: any }>();
+  for (const j of recent as any[]) {
+    const p = safeJsonParse(j.payload);
+    if (!p) continue;
+    const did = String(p.domainId || "");
+    if (!did) continue;
+    if (!latest.has(did)) {
+      const r = safeJsonParse(j.lastError);
+      latest.set(did, { createdAt: j.createdAt, result: r });
+    }
+  }
+
+  const staleCutoff = new Date(Date.now() - env.DOMAIN_DNSCHECK_STALE_HOURS * 60 * 60 * 1000);
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const d of domains as any[]) {
+    if (enqueued >= 150) break;
+
+    const pending = await prisma.job.findFirst({
+      where: { type: "domain_dns_check", status: { in: ["queued", "running"] }, payload: { contains: d.id } },
+      select: { id: true },
+    });
+    if (pending) {
+      skipped++;
+      continue;
+    }
+
+    const last = latest.get(d.id);
+    let should = false;
+    if (!last) {
+      should = true;
+    } else {
+      if (last.createdAt < staleCutoff) should = true;
+      const st = String(last?.result?.summary?.status || "");
+      if (st === "fail") should = true;
+    }
+    if (!should) continue;
+
+    try {
+      await prisma.job.create({
+        data: {
+          type: "domain_dns_check",
+          payload: JSON.stringify({ workspaceId: d.workspaceId, domainId: d.id, source: "auto" }),
+          runAt: new Date(),
+          status: "queued",
+        },
+      });
+      enqueued++;
+    } catch {
+      // ignore
+    }
+  }
+
+  console.log("[domain-dns] sweep", { total: domains.length, enqueued, skipped, staleHours: env.DOMAIN_DNSCHECK_STALE_HOURS });
+}
+
+function cleanMsgId(v: any): string | null {
+  if (!v) return null;
+  const s = String(v).trim();
+  const m = s.match(/<[^>]+>/);
+  return (m ? m[0] : s) || null;
+}
+
+function keywordList(v: any): string[] {
+  if (!v) return [];
+  return String(v)
+    .split(/[\n,]/g)
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function anyKeywordIn(blob: string, keys: string[]): boolean {
+  if (!blob) return false;
+  const b = blob.toLowerCase();
+  for (const k of keys) {
+    const kk = (k || "").toString().trim().toLowerCase();
+    if (!kk) continue;
+    if (b.includes(kk)) return true;
+  }
+  return false;
+}
+
+async function handleSyncImap(payload: any) {
+  const { mailboxId } = payload;
+  const mb = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
+  if (!mb || !mb.isActive || !mb.imapHost || !mb.imapUser || !mb.imapPassEnc) return;
+
+  const pass = decrypt(mb.imapPassEnc);
+
+  // Enable verbose IMAP protocol logging only when DEBUG_IMAP=1
+  const imapDebug = String(process.env.DEBUG_IMAP || "") === "1";
+
+  const client = new ImapFlow({
+    host: mb.imapHost,
+    port: mb.imapPort,
+    secure: mb.imapSecure,
+    auth: { user: mb.imapUser, pass },
+
+    // TEMP workaround: allow skipping TLS certificate hostname verification for IMAP only.
+    // When imapTlsSkipVerify is enabled, we skip CA/hostname validation (NOT recommended for production).
+    tls: mb.imapTlsSkipVerify
+      ? { rejectUnauthorized: false, servername: mb.imapHost }
+      : { servername: mb.imapHost },
+
+    // Print raw IMAP traffic only in debug mode.
+    logger: imapDebug ? console : (false as any),
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+			// We store checkpoint as UID, so FETCH must use UID ranges.
+			// ImapFlow's fetch() signature is fetch(range, query, options) where options.uid=true means range contains UIDs.
+			// Also: avoid ranges like "1:*" when the mailbox is empty (Dovecot returns "Invalid messageset").
+			const startUid = (mb.imapLastUid || 0) + 1;
+			const uidNext = client.mailbox?.uidNext || 1; // next UID that would be assigned
+			const endUid = uidNext - 1; // last existing UID
+
+			// Nothing to fetch (empty mailbox or no new messages since last checkpoint)
+			if (endUid < startUid) {
+				return;
+			}
+
+			const range = `${startUid}:${endUid}`;
+			for await (const msg of client.fetch(range, { uid: true, envelope: true, source: true, flags: true }, { uid: true })) {
+        const uid = (msg as any).uid as number;
+        if (!uid) continue;
+
+        const parsed = await simpleParser((msg as any).source);
+        const inReplyTo = cleanMsgId(parsed.inReplyTo);
+        const rawRefs: any = (parsed as any).references;
+        let refList: any[] = [];
+        if (Array.isArray(rawRefs)) refList = rawRefs;
+        else if (typeof rawRefs === "string") refList = rawRefs.split(/\s+/).filter(Boolean);
+        else if (rawRefs && typeof (rawRefs as any)[Symbol.iterator] === "function") refList = Array.from(rawRefs as any);
+        else if (rawRefs) refList = [rawRefs];
+        const refs = refList.map(cleanMsgId).filter(Boolean) as string[];
+        const candidates = [inReplyTo, ...refs].filter(Boolean) as string[];
+        if (candidates.length === 0) {
+          await prisma.mailbox.update({ where: { id: mb.id }, data: { imapLastUid: Math.max(mb.imapLastUid || 0, uid) } }).catch(()=>{});
+          continue;
+        }
+
+        if (imapDebug) {
+          console.log("[imap] parsed", {
+            uid,
+            subject: parsed.subject || null,
+            from: parsed.from?.text || null,
+            inReplyTo,
+            refs,
+            candidates,
+          });
+        }
+
+        // Find an outbound message in this workspace that matches any reference id.
+        // Some outbound rows may have mailboxId=NULL (eg. test emails or older data), so allow both.
+        let out = await prisma.message.findFirst({
+          where: {
+            workspaceId: mb.workspaceId,
+            messageId: { in: candidates },
+            OR: [{ mailboxId: mb.id }, { mailboxId: null }],
+          },
+          include: { campaign: true, lead: true },
+        });
+
+        // Fallback matcher: some clients (or forwarded replies) may omit In-Reply-To/References.
+        // If we can identify the sender email, match to the most recent sent message to that lead.
+        if (!out) {
+          const senderAddr = (parsed as any)?.from?.value?.[0]?.address
+            ? String((parsed as any).from.value[0].address).toLowerCase()
+            : null;
+          if (senderAddr) {
+            const lead = await prisma.lead
+              .findUnique({ where: { workspaceId_email: { workspaceId: mb.workspaceId, email: senderAddr } } })
+              .catch(() => null);
+            if (lead) {
+              out = await prisma.message.findFirst({
+                where: {
+                  workspaceId: mb.workspaceId,
+                  leadId: lead.id,
+                  OR: [{ mailboxId: mb.id }, { mailboxId: null }],
+                  status: { in: ["sent", "replied"] },
+                  sentAt: { not: null },
+                },
+                orderBy: { sentAt: "desc" },
+                include: { campaign: true, lead: true },
+              });
+            }
+          }
+        }
+
+        if (imapDebug) {
+          console.log("[imap] match", { uid, matched: Boolean(out), outId: out?.id || null, outMessageId: out?.messageId || null });
+        }
+
+        if (out) {
+          // Allow MULTIPLE replies per outbound message.
+          // We dedupe on the inbound reply's Message-ID when available; otherwise on (mailboxId, uid).
+          const replyMessageId = cleanMsgId((parsed as any)?.messageId) || null;
+
+          const already = replyMessageId
+            ? await prisma.event.findFirst({
+                where: {
+                  messageId: out.id,
+                  type: "reply",
+                  // meta is stored as a compact JSON string (JSON.stringify), so this is stable.
+                  meta: { contains: `"replyMessageId":"${replyMessageId}"` },
+                },
+              })
+            : await prisma.event.findFirst({
+                where: {
+                  messageId: out.id,
+                  type: "reply",
+                  AND: [
+                    { meta: { contains: `"mailboxId":"${mb.id}"` } },
+                    { meta: { contains: `"uid":${uid}` } },
+                  ],
+                },
+              });
+          // Extract inbound reply content once (so we can both create and reconcile).
+          const fromAddress = (parsed as any)?.from?.value?.[0]?.address
+            ? String((parsed as any).from.value[0].address).toLowerCase()
+            : null;
+
+          const bodyTextRaw = (parsed.text || "").toString();
+          const bodyHtmlRaw = typeof parsed.html === "string" ? parsed.html : parsed.html ? String(parsed.html) : "";
+          const bodyText = bodyTextRaw?.trim() || (bodyHtmlRaw ? stripHtml(bodyHtmlRaw) : "").trim();
+          const snippet = (bodyText || "").replace(/\s+/g, " ").trim().slice(0, 240) || null;
+
+          // Cap stored payload sizes to avoid huge meta rows from long threads.
+          const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
+
+          const blob = `${(parsed.subject || "").toString()}\n${(bodyText || "").toString()}`.toLowerCase();
+
+          if (already) {
+            // Backfill body/meta for older rows that were created before we stored reply body.
+            // This will only run if you re-scan the message (eg. by lowering imapLastUid for that mailbox).
+            try {
+              let oldMeta: any = {};
+              try { oldMeta = JSON.parse(already.meta || "{}"); } catch { oldMeta = {}; }
+
+              if (!oldMeta?.bodyText && !oldMeta?.bodyHtml) {
+                await prisma.event.update({
+                  where: { id: already.id },
+                  data: {
+                    meta: JSON.stringify({
+                      ...oldMeta,
+                      mailboxId: oldMeta.mailboxId || mb.id,
+                      from: oldMeta.from || parsed.from?.text || null,
+                      fromAddress: oldMeta.fromAddress || fromAddress,
+                      subject: oldMeta.subject || parsed.subject || null,
+                      date: oldMeta.date || (parsed.date ? parsed.date.toISOString() : null),
+                      replyMessageId: oldMeta.replyMessageId || cleanMsgId((parsed as any)?.messageId) || null,
+                      bodyText: bodyText ? clip(bodyText, 200_000) : null,
+                      bodyHtml: bodyHtmlRaw ? clip(bodyHtmlRaw, 200_000) : null,
+                      snippet: oldMeta.snippet || snippet,
+                      uid: oldMeta.uid || uid,
+                    }),
+                  },
+                }).catch(()=>{});
+              }
+            } catch {
+              // ignore backfill errors
+            }
+          }
+
+          let created = false;
+          if (!already) {
+            created = true;
+            // Store enough metadata to render the reply nicely in the UI.
+            await prisma.event.create({
+              data: {
+                messageId: out.id,
+                type: "reply",
+                meta: JSON.stringify({
+                  mailboxId: mb.id,
+                  from: parsed.from?.text || null,
+                  fromAddress,
+                  subject: parsed.subject || null,
+                  date: parsed.date ? parsed.date.toISOString() : null,
+                  replyMessageId: cleanMsgId((parsed as any)?.messageId) || null,
+                  bodyText: bodyText ? clip(bodyText, 200_000) : null,
+                  bodyHtml: bodyHtmlRaw ? clip(bodyHtmlRaw, 200_000) : null,
+                  snippet,
+                  uid,
+                }),
+              },
+            }).catch(()=>{});
+          }
+
+          // Always reconcile message/lead status and stop rules (even if the reply event already existed).
+          await prisma.message.update({ where: { id: out.id }, data: { status: "replied" } }).catch(()=>{});
+          if (out.leadId) {
+            // Don't overwrite stronger states like unsubscribed/bounced.
+            await prisma.lead.updateMany({
+              where: { id: out.leadId, status: { notIn: ["unsubscribed", "bounced"] } },
+              data: { status: "replied" },
+            }).catch(()=>{});
+          }
+
+          // stop enrollment if configured
+          if (out.campaignId && out.leadId && out.campaign) {
+            const camp2: any = out.campaign as any;
+
+            const oooDefaults = ["out of office", "auto-reply", "autoreply", "vacation", "away from the office", "automatic reply"];
+            const niDefaults = ["not interested", "no thanks", "stop emailing", "stop e-mailing", "do not contact", "don't contact", "remove me", "take me off", "unsubscribe"];
+
+            const oooKeys = [...keywordList(camp2.oooKeywords), ...oooDefaults];
+            const niKeys = [...keywordList(camp2.notInterestedKeywords), ...keywordList(camp2.stopKeywords), ...niDefaults];
+
+            const isOOO = Boolean(camp2.stopOnOOO) && anyKeywordIn(blob, oooKeys);
+            const isNI = anyKeywordIn(blob, niKeys);
+            const isUnsubReply = anyKeywordIn(blob, ["unsubscribe", "remove me", "do not email", "stop emailing", "opt out"]);
+
+            // If reply contains "unsubscribe"-type language, treat as unsubscribe (best-effort)
+            if (isUnsubReply && camp2.stopOnUnsubscribe) {
+              await prisma.suppression
+                .upsert({
+                  where: { workspaceId_email: { workspaceId: mb.workspaceId, email: out.lead?.email || "" } },
+                  update: { reason: "unsubscribe" },
+                  create: { workspaceId: mb.workspaceId, email: out.lead?.email || "", reason: "unsubscribe" },
+                })
+                .catch(() => {});
+              if (out.leadId) {
+                await prisma.lead.update({ where: { id: out.leadId }, data: { status: "unsubscribed" } }).catch(() => {});
+              }
+              await prisma.enrollment
+                .updateMany({
+                  where: { campaignId: out.campaignId, leadId: out.leadId, status: { in: ["queued", "active"] } },
+                  data: { status: "stopped", stopReason: "unsubscribe" },
+                })
+                .catch(() => {});
+            } else if (camp2.stopOnReply) {
+              const reason = isOOO ? "ooo" : isNI ? "not_interested" : "reply";
+              await prisma.enrollment
+                .updateMany({
+                  where: { campaignId: out.campaignId, leadId: out.leadId, status: { in: ["queued", "active"] } },
+                  data: { status: "stopped", stopReason: reason },
+                })
+                .catch(() => {});
+
+              // Tag lead (best-effort)
+              if (out.leadId && (isOOO || isNI)) {
+                const cur = (out.lead?.tags || "").toString();
+                const existing = cur.split(",").map((x) => x.trim()).filter(Boolean);
+                const add = isOOO ? "ooo" : "not_interested";
+                if (!existing.includes(add)) existing.push(add);
+                await prisma.lead.update({ where: { id: out.leadId }, data: { tags: existing.join(",") } }).catch(() => {});
+              }
+            }
+          }
+
+          if (created) {
+            await dispatchWebhooks(mb.workspaceId, "reply", {
+              mailboxId: mb.id,
+              messageId: out.id,
+              leadEmail: out.lead?.email || null,
+              from: parsed.from?.text || null,
+              subject: parsed.subject || null,
+            }).catch(()=>{});
+          }
+        }
+
+        // advance checkpoint
+        await prisma.mailbox.update({ where: { id: mb.id }, data: { imapLastUid: Math.max(mb.imapLastUid || 0, uid) } }).catch(()=>{});
+      }
+    } finally {
+      lock.release();
+    }
+  } catch (e: any) {
+    // ImapFlow often throws a generic "Command failed" without printing the server response.
+    // Log the structured fields so we can see AUTHENTICATIONFAILED, NO, BAD, etc.
+    const details = {
+      message: e?.message,
+      code: e?.code,
+      command: e?.command,
+      responseText: e?.responseText,
+      responseStatus: e?.response?.status,
+      responseCode: e?.response?.code,
+    };
+    console.warn("[imap] sync failed", mailboxId, details);
+
+    if (String(process.env.DEBUG_IMAP || "") === "1") {
+      console.warn("[imap] raw error", e);
+    }
+  } finally {
+    try { await client.logout(); } catch {}
+  }
+}
+
+async function reconcileReplyStops() {
+  // Best-effort reconciliation: if we have replies recorded but enrollments are still active/queued,
+  // stop them so the campaign can reach a "completed" derived state.
+  try {
+    const pairs = await prisma.message.findMany({
+      where: {
+        status: "replied",
+        campaignId: { not: null },
+        leadId: { not: null },
+      },
+      select: { campaignId: true, leadId: true },
+      // Message model does not have updatedAt; use createdAt to fetch most recent reply records.
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const conds = pairs
+      .filter((p) => p.campaignId && p.leadId)
+      .map((p) => ({ campaignId: String(p.campaignId), leadId: String(p.leadId) }));
+
+    if (!conds.length) return;
+
+    await prisma.enrollment.updateMany({
+      where: {
+        status: { in: ["queued", "active"] },
+        campaign: { stopOnReply: true },
+        OR: conds,
+      },
+      data: { status: "stopped", stopReason: "reply" },
+    });
+  } catch {
+    // ignore
+  }
+}
+
+
+function escapeHtml(s: string) {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function main() {
+  console.log("[worker] starting", new Date().toISOString());
+  const imapDebug = String(process.env.DEBUG_IMAP || "") === "1";
+  if (imapDebug) {
+    console.log("[worker] config", { IMAP_POLL_MINUTES: env.IMAP_POLL_MINUTES, SEND_TICK_SECONDS: env.SEND_TICK_SECONDS });
+  }
+  await recoverStaleRunningJobs();
+  let lastImapSweep = 0;
+  let lastHealthSweep = 0;
+  let lastDomainSweep = 0;
+  let lastWarmupSweep = 0;
+  let lastWarmupSeedSweep = 0;
+  let lastReplyReconcile = 0;
+  let lastIdleLog = 0;
+  while (true) {
+    // periodic IMAP sweep: enqueue sync jobs for active mailboxes
+    const now = Date.now();
+    if (now - lastImapSweep > env.IMAP_POLL_MINUTES * 60 * 1000) {
+      lastImapSweep = now;
+      if (imapDebug) console.log("[imap] sweep tick");
+      await enqueueImapSyncJobs().catch((e) => { if (imapDebug) console.warn("[imap] sweep error", String(e?.message || e)); });
+    }
+
+    // periodic mailbox healthcheck sweep
+    if (now - lastHealthSweep > env.HEALTHCHECK_POLL_MINUTES * 60 * 1000) {
+      lastHealthSweep = now;
+      await enqueueMailboxHealthcheckSweep().catch(() => {});
+    }
+
+    // periodic domain DNS check sweep
+    if (now - lastDomainSweep > env.DOMAIN_DNSCHECK_POLL_MINUTES * 60 * 1000) {
+      lastDomainSweep = now;
+      await enqueueDomainDnsCheckSweep().catch(() => {});
+    }
+
+    // periodic warmup sweep
+    if (now - lastWarmupSweep > env.WARMUP_POLL_MINUTES * 60 * 1000) {
+      lastWarmupSweep = now;
+      await enqueueWarmupTickSweep().catch(() => {});
+    }
+
+    // periodic warmup seed placement check sweep
+    if (now - lastWarmupSeedSweep > env.WARMUP_SEEDCHECK_POLL_MINUTES * 60 * 1000) {
+      lastWarmupSeedSweep = now;
+      await enqueueWarmupSeedCheckSweep().catch(() => {});
+    }
+
+    // Reconcile reply-based stops periodically (helps older campaigns reach a completed state).
+    if (now - lastReplyReconcile > 10 * 60 * 1000) {
+      lastReplyReconcile = now;
+      await reconcileReplyStops();
+    }
+
+    const job = await lockNextJob();
+    if (!job) {
+      if (imapDebug) {
+        const now2 = Date.now();
+        if (now2 - lastIdleLog > 30000) {
+          lastIdleLog = now2;
+          const queued = await prisma.job.count({ where: { status: "queued" } }).catch(() => -1);
+          const running = await prisma.job.count({ where: { status: "running" } }).catch(() => -1);
+          console.log("[worker] idle", { queued, running });
+        }
+      }
+      await sleep(env.SEND_TICK_SECONDS * 1000);
+      continue;
+    }
+
+    if (imapDebug) {
+      console.log("[worker] job", { id: job.id, type: job.type, runAt: job.runAt });
+    }
+
+    let payload: any = null;
+
+    try {
+      payload = JSON.parse(job.payload || "{}");
+      if (job.type === "schedule_campaign") {
+        await handleScheduleCampaign(payload);
+      } else if (job.type === "send_next_step") {
+        await handleSendNextStep(payload);
+      } else if (job.type === "sync_imap") {
+        await handleSyncImap(payload);
+      } else if (job.type === "mailbox_healthcheck") {
+        await handleMailboxHealthcheck(job.id, payload);
+      } else if (job.type === "mailbox_test_send") {
+        await handleMailboxTestSend(job.id, payload);
+      } else if (job.type === "domain_dns_check") {
+        await handleDomainDnsCheck(job.id, payload);
+      } else if (job.type === "warmup_tick") {
+        await handleWarmupTick(job.id, payload);
+      } else if (job.type === "warmup_reply") {
+        await handleWarmupReply(job.id, payload);
+      } else if (job.type === "warmup_seed_check") {
+        await handleWarmupSeedCheck(job.id, payload);
+      } else if (job.type === "warmup_seed_reply") {
+        await handleWarmupSeedReply(job.id, payload);
+      } else if (job.type === "warmup_seed_rescue") {
+        await handleWarmupSeedRescue(job.id, payload);
+      } else if (job.type.startsWith("mailstack:") || job.type === "mailstack:init-cloudflare") {
+        await handleMailstackJob(job.id, job.type, payload);
+
+        // Keep tenant last-job status in sync.
+        // NOTE: tenant-reset deletes the tenant row; don't try to update it afterwards.
+        if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
+          await prisma.mailstackTenant
+            .updateMany({ where: { id: String(payload.tenantId) }, data: { lastJobStatus: "done" } })
+            .catch(() => {});
+        }
+      } else {
+        // unknown
+      }
+
+      await prisma.job.update({ where: { id: job.id }, data: { status: "done" } });
+    } catch (e: any) {
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: "failed",
+          attempts: { increment: 1 },
+          lastError: String(e?.message || e),
+        },
+      }).catch(()=>{});
+
+      await logJob(job.id, `❌ FAILED: ${String(e?.message || e)}`);
+
+      if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
+        await prisma.mailstackTenant
+          .updateMany({
+            where: { id: String(payload.tenantId) },
+            data: { lastJobStatus: "failed" },
+          })
+          .catch(() => {});
+      }
+    }
+
+  }
+}
+
+
+
+// --------------------
+// Warmup Suite (Option B)
+// --------------------
+function warmupMeta(meta?: any) {
+  try {
+    return meta ? JSON.stringify(meta) : "";
+  } catch {
+    return String(meta);
+  }
+}
+
+async function warmupLog(jobId: string, msg: string, meta?: any) {
+  if (!env.WARMUP_DEBUG) return;
+  const line = meta ? `${msg} ${warmupMeta(meta)}` : msg;
+  console.log("[warmup]", line);
+  await logJob(jobId, `[warmup] ${line}`).catch(() => {});
+}
+
+async function warmupError(jobId: string, msg: string, meta?: any) {
+  const line = meta ? `${msg} ${warmupMeta(meta)}` : msg;
+  console.error("[warmup]", line);
+  await logJob(jobId, `[warmup] ${line}`).catch(() => {});
+}
+
+function normalizeMessageId(maybe: any): string | null {
+  const s = String(maybe || "").trim();
+  if (!s) return null;
+  if (s.startsWith("<") && s.endsWith(">")) return s;
+  // some libs return plain ids; wrap for RFC5322 headers
+  return `<${s.replace(/[<>]/g, "")}>`;
+}
+
+async function sendSeedSmtpEmail(args: {
+  seed: any;
+  to: string;
+  subject: string;
+  text: string;
+  html?: string | null;
+  inReplyTo?: string | null;
+  references?: string | null;
+  headers?: Record<string, string>;
+  // optional debug logger (job-scoped)
+  log?: (msg: string, meta?: any) => Promise<void> | void;
+}) {
+  const seed = args.seed;
+  const host = String(seed.smtpHost || "").trim();
+
+  // NOTE: Port + "secure" are a common source of errors:
+  // - port 465 => implicit TLS => secure MUST be true
+  // - port 587 => STARTTLS => secure MUST be false
+  // If user misconfigures, we auto-normalize to the safe default.
+  let port = Number(seed.smtpPort || (seed.smtpSecure ? 465 : 587));
+  let secure = Boolean(seed.smtpSecure);
+  if (port === 587) secure = false;
+  if (port === 465) secure = true;
+
+  const user = String(seed.smtpUser || seed.email || "").trim();
+  const pass = seed.smtpPassEnc ? decrypt(seed.smtpPassEnc) : "";
+
+  if (!host || !user || !pass) {
+    throw new Error("SEED_SMTP_NOT_CONFIGURED");
+  }
+  const fromName = String(seed.name || "Seed").trim();
+  const from = seed.email ? `"${fromName.replace(/\"/g, "")}" <${seed.email}>` : user;
+
+
+  // Create transport with sensible defaults.
+  // If secure=false (STARTTLS), require TLS upgrade so creds aren't sent in cleartext.
+  const mkTransport = (s: boolean, p: number) =>
+    nodemailer.createTransport({
+      host,
+      port: p,
+      secure: s,
+      requireTLS: !s,
+      auth: { user, pass },
+      tls: {
+        rejectUnauthorized: !env.SMTP_TLS_SKIP_VERIFY,
+        servername: host || undefined,
+      },
+    } as any);
+
+  let transport = mkTransport(secure, port);
+
+  // Extra safety: if a mis-match still slips through (common "wrong version number"),
+  // retry once with flipped secure/port pairing.
+  const sendWithRetry = async () => {
+    try {
+      return await transport.sendMail({
+        from,
+        to: args.to,
+        subject: args.subject,
+        text: args.text,
+        html: args.html || undefined,
+        inReplyTo: args.inReplyTo || undefined,
+        references: args.references || undefined,
+        headers: args.headers || undefined,
+        replyTo: seed.email || undefined,
+      });
+    } catch (e: any) {
+      const msg = String(e?.message || e || "");
+      const looksLikeTlsMismatch =
+        msg.includes("wrong version number") ||
+        msg.includes("ssl3_get_record") ||
+        msg.includes("SSL routines");
+      if (!looksLikeTlsMismatch) throw e;
+
+      // Flip pairing:
+      // - If we tried implicit TLS, fall back to STARTTLS on 587
+      // - If we tried STARTTLS, fall back to implicit TLS on 465
+      const altSecure = !secure;
+      const altPort = altSecure ? 465 : 587;
+
+      args.log?.("seed_reply: SMTP retry due to TLS mismatch", {
+        host,
+        tried: { secure, port },
+        retry: { secure: altSecure, port: altPort },
+        error: msg.slice(0, 250),
+      });
+
+      transport = mkTransport(altSecure, altPort);
+      return await transport.sendMail({
+        from,
+        to: args.to,
+        subject: args.subject,
+        text: args.text,
+        html: args.html || undefined,
+        inReplyTo: args.inReplyTo || undefined,
+        references: args.references || undefined,
+        headers: args.headers || undefined,
+        replyTo: seed.email || undefined,
+      });
+    }
+  };
+
+  return sendWithRetry();
+}
+
+function getLocalMinutes(date: Date, timeZone: string): { minutes: number; weekday: number } {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+      hour12: false,
+    }).formatToParts(date);
+    const hh = Number(parts.find((p) => p.type === "hour")?.value || "0");
+    const mm = Number(parts.find((p) => p.type === "minute")?.value || "0");
+    const wd = parts.find((p) => p.type === "weekday")?.value || "Mon";
+    const map: any = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return { minutes: hh * 60 + mm, weekday: map[wd] ?? 1 };
+  } catch {
+    return { minutes: date.getUTCHours() * 60 + date.getUTCMinutes(), weekday: date.getUTCDay() };
+  }
+}
+
+function inWindow(now: Date, tz: string, startMin: number, endMin: number, weekdaysOnly: boolean) {
+  const { minutes, weekday } = getLocalMinutes(now, tz || "UTC");
+  if (weekdaysOnly && (weekday === 0 || weekday === 6)) return false;
+  if (startMin === endMin) return true;
+  if (startMin < endMin) return minutes >= startMin && minutes <= endMin;
+  // overnight window (eg 22:00-06:00)
+  return minutes >= startMin || minutes <= endMin;
+}
+
+function startOfUtcDay(d: Date) {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+}
+
+async function ensureWarmupProfile(workspaceId: string, mailboxId: string) {
+  const existing = await prisma.warmupProfile.findUnique({ where: { mailboxId } });
+  if (existing) return existing;
+  return prisma.warmupProfile.create({
+    data: {
+      workspaceId,
+      mailboxId,
+      mode: "hybrid",
+      startPerDay: 2,
+      increasePerDay: 1,
+      maxPerDay: 10,
+      timezone: "UTC",
+      windowStartMin: 540,
+      windowEndMin: 1020,
+      weekdaysOnly: true,
+      isActive: true,
+      startedAt: new Date(),
+    } as any,
+  });
+}
+
+async function pickWarmupTemplate(workspaceId: string, type: "initial" | "reply") {
+  const list = await prisma.warmupTemplate.findMany({
+    where: { workspaceId, type, isActive: true },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    select: { subject: true, text: true, html: true },
+  });
+  if (list.length) return list[Math.floor(Math.random() * list.length)];
+  if (type === "reply") {
+    // NOTE: keep this as a single string literal (no raw newlines) to avoid TS/esbuild parse errors.
+    return { subject: "Re: [WU]", text: "Thanks! Appreciate it.\n\nHave a great day.", html: null };
+  }
+  // NOTE: keep as a single literal (no raw newlines).
+  return { subject: "[WU] Quick question", text: "Hey! Quick question — are you using any tool to manage outbound email?\n\nJust curious. Thanks!", html: null };
+}
+
+async function handleWarmupTick(jobId: string, payload: any) {
+  const workspaceId = String(payload?.workspaceId || "");
+  const mailboxId = String(payload?.mailboxId || "");
+  const force = Boolean(payload?.force);
+  if (!workspaceId || !mailboxId) {
+    await warmupError(jobId, "tick: missing workspaceId/mailboxId", { workspaceId, mailboxId });
+    return;
+  }
+
+  const mb = await prisma.mailbox.findFirst({
+    where: { id: mailboxId, workspaceId },
+    select: { id: true, isActive: true, warmupEnabled: true, fromEmail: true, name: true },
+  });
+  if (!mb) {
+    await warmupError(jobId, "tick: mailbox not found", { workspaceId, mailboxId });
+    return;
+  }
+  if (!mb.isActive) {
+    await warmupLog(jobId, "tick: mailbox inactive (skipping)", { mailboxId, fromEmail: mb.fromEmail });
+    return;
+  }
+  if (!mb.warmupEnabled) {
+    await warmupLog(jobId, "tick: warmupEnabled=false (enable Warmup toggle in UI)", { mailboxId, fromEmail: mb.fromEmail });
+    return;
+  }
+
+  const prof = await ensureWarmupProfile(workspaceId, mailboxId);
+  if (!prof.isActive) {
+    await warmupLog(jobId, "tick: warmup profile inactive", { mailboxId });
+    return;
+  }
+
+  const now = new Date();
+  if (!force && !inWindow(now, prof.timezone, prof.windowStartMin, prof.windowEndMin, prof.weekdaysOnly)) {
+    const lm = getLocalMinutes(now, prof.timezone || "UTC");
+    await warmupLog(jobId, "tick: outside sending window", {
+      mailboxId,
+      tz: prof.timezone,
+      localMinutes: lm.minutes,
+      windowStartMin: prof.windowStartMin,
+      windowEndMin: prof.windowEndMin,
+      weekdaysOnly: prof.weekdaysOnly,
+      weekday: lm.weekday,
+    });
+    return;
+  }
+
+  const daysSince = Math.max(0, Math.floor((now.getTime() - new Date(prof.startedAt as any).getTime()) / (24 * 60 * 60 * 1000)));
+  const targetPerDay = Math.min(prof.maxPerDay, prof.startPerDay + daysSince * prof.increasePerDay);
+
+  const today = startOfUtcDay(now);
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  const sentToday = await prisma.warmupMessage.count({
+    where: { workspaceId, mailboxId, direction: "outbound", sentAt: { gte: today, lt: tomorrow } },
+  });
+  if (sentToday >= targetPerDay) {
+    await warmupLog(jobId, "tick: already met target for today", { mailboxId, sentToday, targetPerDay });
+    return;
+  }
+
+  await warmupLog(jobId, "tick: starting", {
+    mailboxId,
+    fromEmail: mb.fromEmail,
+    mode: prof.mode,
+    sentToday,
+    targetPerDay,
+  });
+
+  // Pick target according to mode
+  const seeds = await prisma.warmupSeedInbox.findMany({
+    where: { workspaceId, isActive: true },
+    select: { id: true, email: true },
+    take: 50,
+  });
+
+  let targetType: "mailbox" | "seed" = "mailbox";
+  if (prof.mode === "seeds") targetType = "seed";
+  else if (prof.mode === "hybrid") targetType = seeds.length && Math.random() < 0.6 ? "seed" : "mailbox";
+
+  await warmupLog(jobId, "tick: target selection", { mailboxId, mode: prof.mode, seeds: seeds.length, targetType });
+
+  if (targetType === "mailbox") {
+    const peers = await prisma.mailbox.findMany({
+      where: { workspaceId, isActive: true, warmupEnabled: true, id: { not: mailboxId } },
+      select: { id: true, fromEmail: true, name: true },
+      take: 200,
+    });
+    await warmupLog(jobId, "tick: peers", { peers: peers.length });
+    if (!peers.length) {
+      // fallback to seeds if available
+      if (!seeds.length) {
+        await warmupLog(jobId, "tick: no peers and no seeds (nothing to send)", { mailboxId });
+        return;
+      }
+      targetType = "seed";
+    } else {
+      const peer = peers[Math.floor(Math.random() * peers.length)];
+      await warmupLog(jobId, "tick: picked peer mailbox", { peerId: peer.id, peerEmail: peer.fromEmail });
+      const tpl = await pickWarmupTemplate(workspaceId, "initial");
+      const subject = tpl.subject.includes("[WU]") ? tpl.subject : `[WU] ${tpl.subject}`;
+      const thread = await prisma.warmupThread.create({
+        data: {
+          workspaceId,
+          fromMailboxId: mailboxId,
+          toMailboxId: peer.id,
+          subject,
+          status: "open",
+          lastActivityAt: now,
+        } as any,
+      });
+      const msg = await prisma.warmupMessage.create({
+        data: {
+          workspaceId,
+          mailboxId,
+          threadId: thread.id,
+          direction: "outbound",
+          fromEmail: mb.fromEmail,
+          toEmail: peer.fromEmail,
+          subject,
+          text: tpl.text,
+          html: tpl.html,
+          sentAt: null,
+          placement: "unknown",
+        } as any,
+      });
+
+      let sendRes: any;
+      try {
+        sendRes = await sendEmail({
+          mailboxId,
+          to: peer.fromEmail,
+          subject,
+          text: tpl.text,
+          html: tpl.html || undefined,
+          headers: {
+            "X-ColdMail-Warmup-Id": msg.id,
+            "X-ColdMail-Warmup-Thread": thread.id,
+          },
+        });
+      } catch (e: any) {
+        await warmupError(jobId, "tick: sendEmail failed (peer)", { mailboxId, to: peer.fromEmail, error: String(e?.message || e) });
+        throw e;
+      }
+
+      await warmupLog(jobId, "tick: sent warmup mail to peer", { to: peer.fromEmail, messageId: sendRes?.messageId, warmupMessageId: msg.id });
+
+      await prisma.warmupMessage.update({
+        where: { id: msg.id },
+        data: { messageId: sendRes.messageId, sentAt: new Date() },
+      });
+
+      await prisma.warmupThread.update({ where: { id: thread.id }, data: { lastActivityAt: new Date() } });
+
+      // schedule reply from peer mailbox to make threads realistic
+      const delayMin = 20 + Math.floor(Math.random() * 70);
+      const runAt = new Date(Date.now() + delayMin * 60 * 1000);
+      await prisma.job.create({
+        data: {
+          type: "warmup_reply",
+          payload: JSON.stringify({ workspaceId, threadId: thread.id, fromMailboxId: peer.id, toEmail: mb.fromEmail, inReplyTo: sendRes.messageId, references: sendRes.messageId }),
+          runAt,
+          status: "queued",
+        },
+      }).catch(() => {});
+      await warmupLog(jobId, "tick: scheduled reply", { fromMailboxId: peer.id, runAt: runAt.toISOString() });
+      return;
+    }
+  }
+
+  if (targetType === "seed") {
+    if (!seeds.length) return;
+    const seed = seeds[Math.floor(Math.random() * seeds.length)];
+    await warmupLog(jobId, "tick: picked seed inbox", { seedId: seed.id, seedEmail: seed.email });
+    const tpl = await pickWarmupTemplate(workspaceId, "initial");
+    const subject = tpl.subject.includes("[WU]") ? tpl.subject : `[WU] ${tpl.subject}`;
+    const thread = await prisma.warmupThread.create({
+      data: {
+        workspaceId,
+        fromMailboxId: mailboxId,
+        toSeedInboxId: seed.id,
+        subject,
+        status: "open",
+        lastActivityAt: now,
+      } as any,
+    });
+    const msg = await prisma.warmupMessage.create({
+      data: {
+        workspaceId,
+        mailboxId,
+        threadId: thread.id,
+        direction: "outbound",
+        fromEmail: mb.fromEmail,
+        toEmail: seed.email,
+        subject,
+        text: tpl.text,
+        html: tpl.html,
+        seedInboxId: seed.id,
+        sentAt: null,
+        placement: "unknown",
+      } as any,
+    });
+
+    let sendRes: any;
+    try {
+      sendRes = await sendEmail({
+        mailboxId,
+        to: seed.email,
+        subject,
+        text: tpl.text,
+        html: tpl.html || undefined,
+        headers: {
+          "X-ColdMail-Warmup-Id": msg.id,
+          "X-ColdMail-Warmup-Thread": thread.id,
+        },
+      });
+    } catch (e: any) {
+      await warmupError(jobId, "tick: sendEmail failed (seed)", { mailboxId, to: seed.email, error: String(e?.message || e) });
+      throw e;
+    }
+
+    await warmupLog(jobId, "tick: sent warmup mail to seed", { to: seed.email, messageId: sendRes?.messageId, warmupMessageId: msg.id });
+
+    await prisma.warmupMessage.update({ where: { id: msg.id }, data: { messageId: sendRes.messageId, sentAt: new Date() } });
+    await prisma.warmupThread.update({ where: { id: thread.id }, data: { lastActivityAt: new Date() } });
+  }
+}
+
+async function handleWarmupReply(jobId: string, payload: any) {
+  const workspaceId = String(payload?.workspaceId || "");
+  const threadId = String(payload?.threadId || "");
+  const fromMailboxId = String(payload?.fromMailboxId || "");
+  const toEmail = String(payload?.toEmail || "");
+  if (!workspaceId || !threadId || !fromMailboxId || !toEmail) {
+    await warmupError(jobId, "reply: missing required fields", { workspaceId, threadId, fromMailboxId, toEmail });
+    return;
+  }
+
+  await warmupLog(jobId, "reply: start", { threadId, fromMailboxId, toEmail });
+
+  const thread = await prisma.warmupThread.findFirst({ where: { id: threadId, workspaceId }, include: { fromMailbox: true, toMailbox: true, messages: { orderBy: { createdAt: "asc" } } } as any });
+  if (!thread) {
+    await warmupLog(jobId, "reply: thread not found", { threadId });
+    return;
+  }
+
+  // replies only for internal mailbox threads
+  if (!thread.toMailboxId) {
+    await warmupLog(jobId, "reply: thread is not internal (skipping)", { threadId });
+    return;
+  }
+
+  const mb = await prisma.mailbox.findFirst({ where: { id: fromMailboxId, workspaceId }, select: { id: true, isActive: true, fromEmail: true } });
+  if (!mb || !mb.isActive) {
+    await warmupLog(jobId, "reply: from mailbox inactive (skipping)", { fromMailboxId });
+    return;
+  }
+
+  const lastOutbound = await prisma.warmupMessage.findFirst({
+    where: { workspaceId, threadId, direction: "outbound" },
+    orderBy: { createdAt: "desc" },
+    select: { messageId: true, subject: true },
+  });
+
+  const tpl = await pickWarmupTemplate(workspaceId, "reply");
+  const subject = lastOutbound?.subject?.startsWith("Re:") ? lastOutbound.subject : `Re: ${lastOutbound?.subject || "[WU]"}`;
+
+  const msg = await prisma.warmupMessage.create({
+    data: {
+      workspaceId,
+      mailboxId: fromMailboxId,
+      threadId,
+      direction: "inbound",
+      fromEmail: mb.fromEmail,
+      toEmail,
+      subject,
+      text: tpl.text,
+      html: tpl.html,
+      inReplyTo: payload?.inReplyTo || lastOutbound?.messageId || null,
+      references: payload?.references || lastOutbound?.messageId || null,
+      sentAt: null,
+      placement: "unknown",
+    } as any,
+  });
+
+  let sendRes: any;
+  try {
+    sendRes = await sendEmail({
+      mailboxId: fromMailboxId,
+      to: toEmail,
+      subject,
+      text: tpl.text,
+      html: tpl.html || undefined,
+      inReplyTo: payload?.inReplyTo || lastOutbound?.messageId || undefined,
+      references: payload?.references || lastOutbound?.messageId || undefined,
+      headers: {
+        "X-ColdMail-Warmup-Id": msg.id,
+        "X-ColdMail-Warmup-Thread": threadId,
+      },
+    });
+  } catch (e: any) {
+    await warmupError(jobId, "reply: sendEmail failed", { fromMailboxId, to: toEmail, error: String(e?.message || e) });
+    throw e;
+  }
+
+  await warmupLog(jobId, "reply: sent", { fromMailboxId, to: toEmail, messageId: sendRes?.messageId, warmupMessageId: msg.id });
+
+  await prisma.warmupMessage.update({ where: { id: msg.id }, data: { messageId: sendRes.messageId, sentAt: new Date() } });
+  await prisma.warmupThread.update({ where: { id: threadId }, data: { lastActivityAt: new Date() } });
+}
+
+async function handleWarmupSeedReply(jobId: string, payload: any) {
+  const workspaceId = String(payload?.workspaceId || "");
+  const seedId = String(payload?.seedId || "");
+  const warmupId = String(payload?.warmupId || "");
+  if (!workspaceId || !seedId || !warmupId) {
+    await warmupError(jobId, "seed_reply: missing required fields", { workspaceId, seedId, warmupId });
+    return;
+  }
+
+  await warmupLog(jobId, "seed_reply: start", { workspaceId, seedId, warmupId });
+
+  const seed = await prisma.warmupSeedInbox.findFirst({ where: { id: seedId, workspaceId } });
+  if (!seed || !seed.isActive) {
+    await warmupLog(jobId, "seed_reply: seed not found or inactive", { seedId });
+    return;
+  }
+
+  const orig = await prisma.warmupMessage.findFirst({
+    where: { id: warmupId, workspaceId },
+    select: { id: true, threadId: true, mailboxId: true, fromEmail: true, subject: true, messageId: true },
+  });
+  if (!orig) {
+    await warmupLog(jobId, "seed_reply: warmup message not found", { warmupId });
+    return;
+  }
+
+  // Dedup: don't send more than one seed reply per thread per seed.
+  const existing = await prisma.warmupMessage.findFirst({
+    where: { workspaceId, threadId: orig.threadId, seedInboxId: seed.id, direction: "inbound", sentAt: { not: null } },
+    select: { id: true },
+  });
+  if (existing) {
+    await warmupLog(jobId, "seed_reply: already replied", { seedId, threadId: orig.threadId, existingId: existing.id });
+    return;
+  }
+
+  const tpl = await pickWarmupTemplate(workspaceId, "reply");
+  const subject = orig.subject?.startsWith("Re:") ? orig.subject : `Re: ${orig.subject || "[WU]"}`;
+  const inReplyTo = normalizeMessageId(orig.messageId);
+
+  let sendRes: any;
+  try {
+    sendRes = await sendSeedSmtpEmail({
+      seed,
+      to: orig.fromEmail,
+      subject,
+      text: tpl.text,
+      html: tpl.html,
+      inReplyTo: inReplyTo || undefined,
+      references: inReplyTo || undefined,
+      log: (msg, meta) => warmupLog(jobId, msg, meta),
+      headers: {
+        "X-ColdMail-Warmup-SeedReply": "1",
+        "X-ColdMail-Warmup-Id": warmupId,
+        "X-ColdMail-Warmup-Thread": orig.threadId,
+      },
+    });
+  } catch (e: any) {
+    await warmupError(jobId, "seed_reply: SMTP send failed", { seedId, to: orig.fromEmail, host: String(seed.smtpHost||""), port: seed.smtpPort ?? null, secure: !!seed.smtpSecure, error: String(e?.message || e) });
+    throw e;
+  }
+
+  await prisma.warmupMessage
+    .create({
+      data: {
+        workspaceId,
+        mailboxId: orig.mailboxId,
+        threadId: orig.threadId,
+        direction: "inbound",
+        fromEmail: seed.email,
+        toEmail: orig.fromEmail,
+        subject,
+        text: tpl.text,
+        html: tpl.html,
+        messageId: String(sendRes?.messageId || "") || null,
+        inReplyTo: inReplyTo,
+        references: inReplyTo,
+        sentAt: new Date(),
+        placement: "unknown",
+        seedInboxId: seed.id,
+      } as any,
+    })
+    .catch(async (e) => {
+      await warmupError(jobId, "seed_reply: failed to persist warmup message", { error: String((e as any)?.message || e) });
+    });
+
+  await prisma.warmupThread.update({ where: { id: orig.threadId }, data: { lastActivityAt: new Date() } }).catch(() => {});
+
+  await warmupLog(jobId, "seed_reply: sent", { seedId, to: orig.fromEmail, messageId: sendRes?.messageId, threadId: orig.threadId });
+}
+
+
+async function enqueueWarmupSeedRescue(args: {
+  jobId: string;
+  workspaceId: string;
+  seedId: string;
+  warmupId: string;
+  attempt: number;
+  reason?: string;
+}) {
+  const attempt = Math.max(1, Number(args.attempt || 1));
+  const maxRetries = env.WARMUP_SEED_RESCUE_MAX_RETRIES ?? 5;
+  if (attempt > maxRetries) return;
+
+  const min = env.WARMUP_SEED_RESCUE_BACKOFF_MIN ?? 10;
+  const max = env.WARMUP_SEED_RESCUE_BACKOFF_MAX_MIN ?? 60;
+
+  // Exponential backoff with jitter (minutes)
+  const exp = Math.min(max, Math.round(min * Math.pow(2, attempt - 1)));
+  const jitter = Math.floor(Math.random() * min);
+  const delayMin = Math.min(max, exp + jitter);
+  const runAt = new Date(Date.now() + delayMin * 60 * 1000);
+
+  await prisma.job.create({
+    data: {
+      type: "warmup_seed_rescue",
+      runAt,
+      payload: JSON.stringify({
+        workspaceId: args.workspaceId,
+        seedId: args.seedId,
+        warmupId: args.warmupId,
+        attempt,
+        reason: args.reason || null,
+      }),
+    },
+  });
+
+  await warmupLog(args.jobId, "seed_rescue: queued retry", {
+    seedId: args.seedId,
+    warmupId: args.warmupId,
+    attempt,
+    delayMin,
+    reason: args.reason || null,
+  });
+}
+
+async function handleWarmupSeedRescue(jobId: string, payload: any) {
+  const workspaceId = String(payload?.workspaceId || "");
+  const seedId = String(payload?.seedId || "");
+  const warmupId = String(payload?.warmupId || "");
+  const attempt = Math.max(1, Number(payload?.attempt || 1));
+
+  if (!workspaceId || !seedId || !warmupId) {
+    await warmupError(jobId, "seed_rescue: missing required fields", { workspaceId, seedId, warmupId, attempt });
+    return;
+  }
+
+  const seed = await prisma.warmupSeedInbox.findFirst({ where: { id: seedId, workspaceId } });
+  if (!seed || !seed.isActive) {
+    await warmupLog(jobId, "seed_rescue: seed not found or inactive", { seedId, warmupId });
+    return;
+  }
+
+  await warmupLog(jobId, "seed_rescue: start", { seedId, email: seed.email, warmupId, attempt });
+
+  const pass = seed.imapPassEnc ? decrypt(seed.imapPassEnc) : "";
+  if (!pass) {
+    await warmupError(jobId, "seed_rescue: missing IMAP password", { seedId, warmupId });
+    return;
+  }
+
+  const client = new ImapFlow({
+    host: seed.imapHost,
+    port: seed.imapPort,
+    secure: seed.imapSecure,
+    auth: { user: seed.imapUser, pass },
+    logger: false as any,
+  });
+
+  try {
+    await client.connect();
+    const list = await client.list();
+    const names = list.map((b: any) => b.path);
+
+    const spamCandidates = [
+      "[Gmail]/Spam",
+      "[Google Mail]/Spam",
+      "Spam",
+      "Junk",
+      "Junk Email",
+      "Junk E-mail",
+      "INBOX.Spam",
+      "INBOX.Junk",
+      "INBOX/Spam",
+      "INBOX/Junk",
+    ];
+    const spamFolders = spamCandidates.filter((c) => names.includes(c));
+
+    if (!spamFolders.length) {
+      await warmupLog(jobId, "seed_rescue: no spam folders detected", { seedId, email: seed.email, names: names.slice(0, 30) });
+      return;
+    }
+
+    // Look back 7 days; warmup headers are unique so we can match safely.
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    let moved = false;
+    for (const folder of spamFolders) {
+      try {
+        await client.mailboxOpen(folder);
+      } catch {
+        continue;
+      }
+
+      const uids = await client.search({ since });
+      const recent = uids.slice(-200);
+
+      for (const uid of recent) {
+        const msg = await client.fetchOne(uid, { source: true });
+        if (!msg?.source) continue;
+
+        const parsed = await simpleParser(msg.source);
+        const wid = String(parsed.headers.get("x-coldmail-warmup-id") || "").trim();
+        if (!wid || wid !== warmupId) continue;
+
+        // Rate limit Gmail/Outlook IMAP move operations to avoid throttling.
+        const rl = env.WARMUP_SEED_RESCUE_RATE_LIMIT_MS ?? 2500;
+        if (rl > 0) await sleep(rl);
+
+        await (client as any).messageMove(uid, "INBOX", { uid: true });
+        moved = true;
+
+        await warmupLog(jobId, "seed_rescue: moved spam->inbox", { seedId: seed.id, email: seed.email, folder, uid, warmupId });
+
+        // Update warmup message meta (best-effort)
+                await prisma.warmupMessage.updateMany({ where: { id: warmupId, workspaceId }, data: { placement: "inbox", rescuedToInboxAt: new Date() } }).catch(() => {});
+
+        break;
+      }
+      if (moved) break;
+    }
+
+    if (!moved) {
+      const reason = "NOT_FOUND_OR_NOT_MOVED";
+      if (attempt < (env.WARMUP_SEED_RESCUE_MAX_RETRIES ?? 5)) {
+        await enqueueWarmupSeedRescue({ jobId, workspaceId, seedId, warmupId, attempt: attempt + 1, reason });
+      } else {
+        await warmupLog(jobId, "seed_rescue: giving up", { seedId, warmupId, attempt, reason });
+      }
+      return;
+    }
+
+    // ✅ Sequencing: schedule seed auto-reply ONLY after the message is in INBOX (i.e., after rescue succeeded)
+    if (env.WARMUP_SEED_AUTOREPLY && Math.random() < (env.WARMUP_SEED_AUTOREPLY_RATE ?? 0.30)) {
+      const hasSmtp = !!(seed.smtpHost && seed.smtpUser && seed.smtpPassEnc);
+      if (!hasSmtp) {
+        await warmupLog(jobId, "seed_rescue: auto-reply skipped (no SMTP)", { seedId: seed.id, email: seed.email, warmupId });
+      } else {
+        const existingJob = await prisma.job.findFirst({
+          where: {
+            type: "warmup_seed_reply",
+            status: { in: ["queued", "running"] },
+            payload: { contains: `"warmupId":"${warmupId}"` },
+          },
+          select: { id: true },
+        });
+
+        if (!existingJob) {
+          const minDelay = env.WARMUP_SEED_AUTOREPLY_MIN_DELAY_MIN ?? 5;
+          const maxDelay = Math.max(minDelay, env.WARMUP_SEED_AUTOREPLY_MAX_DELAY_MIN ?? 35);
+          const delay = minDelay + Math.floor(Math.random() * (maxDelay - minDelay + 1));
+          const runAt = new Date(Date.now() + delay * 60 * 1000);
+
+          await prisma.job.create({
+            data: {
+              type: "warmup_seed_reply",
+              runAt,
+              payload: JSON.stringify({ workspaceId, seedId: seed.id, warmupId }),
+            },
+          });
+
+          await warmupLog(jobId, "seed_rescue: auto-reply scheduled", { warmupId, seedId: seed.id, delayMin: delay });
+        }
+      }
+    }
+  } catch (e: any) {
+    const err = String(e?.message || e);
+    await warmupError(jobId, "seed_rescue: failed", { seedId, email: seed.email, warmupId, attempt, error: err });
+    if (attempt < (env.WARMUP_SEED_RESCUE_MAX_RETRIES ?? 5)) {
+      await enqueueWarmupSeedRescue({ jobId, workspaceId, seedId, warmupId, attempt: attempt + 1, reason: err });
+    }
+  } finally {
+    try {
+      await client.logout();
+    } catch {}
+  }
+}
+
+
+
+async function handleWarmupSeedCheck(jobId: string, payload: any) {
+  const workspaceId = String(payload?.workspaceId || "");
+  if (!workspaceId) {
+    await warmupError(jobId, "seed_check: missing workspaceId");
+    return;
+  }
+
+  const seedId = payload?.seedId ? String(payload.seedId) : null;
+  const seeds = await prisma.warmupSeedInbox.findMany({
+    where: { workspaceId, isActive: true, ...(seedId ? { id: seedId } : {}) },
+  });
+  if (!seeds.length) {
+    await warmupLog(jobId, "seed_check: no active seeds", { workspaceId });
+    return;
+  }
+
+  const now = new Date();
+  const spamCandidates = ["[Gmail]/Spam", "[Gmail]/Junk", "Spam", "Junk", "Junk E-mail", "Junk Email", "Bulk Mail", "INBOX.Spam", "INBOX.Junk"];
+
+  await warmupLog(jobId, "seed_check: start", { workspaceId, seeds: seeds.length });
+
+  for (const seed of seeds as any[]) {
+    await warmupLog(jobId, "seed_check: connect", { seedId: seed.id, email: seed.email, host: seed.imapHost, port: seed.imapPort, secure: seed.imapSecure });
+    const pass = decrypt(seed.imapPassEnc);
+    const client = new ImapFlow({
+      host: seed.imapHost,
+      port: seed.imapPort,
+      secure: seed.imapSecure,
+      auth: { user: seed.imapUser, pass },
+      logger: false as any,
+    });
+
+    try {
+      await client.connect();
+
+      await warmupLog(jobId, "seed_check: connected", { seedId: seed.id, email: seed.email });
+
+      const list = await client.list();
+      const names = list.map((b: any) => b.path);
+      const spamFolders = spamCandidates.filter((c) => names.includes(c));
+      const folders = ["INBOX", ...spamFolders];
+
+      // Optional archive folders for engagement simulation
+      const archiveCandidates = ["[Gmail]/All Mail", "Archive", "Archives", "INBOX.Archive", "INBOX/Archive"];
+      const archiveFolder = archiveCandidates.find((c) => names.includes(c)) || null;
+
+      await warmupLog(jobId, "seed_check: folders", {
+        seedId: seed.id,
+        email: seed.email,
+        folders,
+        spamFolders,
+      });
+
+      const since = seed.lastCheckedAt ? new Date(seed.lastCheckedAt) : new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+      let updatedTotal = 0;
+      let foundTotal = 0;
+
+      for (const folder of folders) {
+        try {
+          await client.mailboxOpen(folder);
+        } catch {
+          await warmupLog(jobId, "seed_check: failed to open folder", { folder, seedId: seed.id });
+          continue;
+        }
+
+        const uids = await client.search({ since });
+        await warmupLog(jobId, "seed_check: search", { seedId: seed.id, folder, uids: uids.length, since: since.toISOString() });
+        const recentUids = uids.slice(-80); // cap
+        for (const uid of recentUids) {
+          const msg = await client.fetchOne(uid, { source: true });
+          if (!msg?.source) continue;
+          const parsed = await simpleParser(msg.source);
+          const warmupId = String(parsed.headers.get("x-coldmail-warmup-id") || "").trim() || null;
+          if (!warmupId) continue;
+
+          foundTotal++;
+
+          const placement = folder.toLowerCase().includes("spam") || folder.toLowerCase().includes("junk") ? "spam" : "inbox";
+
+          // Seed engagement simulation: mark as read/starred (and optionally archive)
+          const doEngage = !!env.WARMUP_SEED_ENGAGE;
+          const doOpen = doEngage && Math.random() < (env.WARMUP_SEED_ENGAGE_OPEN_RATE ?? 0.85);
+          const doStar = doEngage && Math.random() < (env.WARMUP_SEED_ENGAGE_STAR_RATE ?? 0.35);
+          const doArchive = doEngage && !!archiveFolder && placement === "inbox" && Math.random() < (env.WARMUP_SEED_ENGAGE_ARCHIVE_RATE ?? 0.15);
+
+          if (doOpen) {
+            try {
+              await (client as any).messageFlagsAdd(uid, ["\\Seen"], { uid: true });
+              await warmupLog(jobId, "seed_check: engaged open", { seedId: seed.id, email: seed.email, folder, uid, warmupId });
+            } catch (e: any) {
+              await warmupError(jobId, "seed_check: engage open failed", { seedId: seed.id, email: seed.email, folder, uid, warmupId, error: String(e?.message || e) });
+            }
+          }
+
+          if (doStar) {
+            try {
+              await (client as any).messageFlagsAdd(uid, ["\\Flagged"], { uid: true });
+              await warmupLog(jobId, "seed_check: engaged star", { seedId: seed.id, email: seed.email, folder, uid, warmupId });
+            } catch (e: any) {
+              await warmupError(jobId, "seed_check: engage star failed", { seedId: seed.id, email: seed.email, folder, uid, warmupId, error: String(e?.message || e) });
+            }
+          }
+
+          // Optional: if a warmup message landed in Spam/Junk, try to move it to INBOX to train the seed mailbox.
+          // This helps Gmail/Outlook learn that warmup sender is "not spam". Some providers may restrict moves.
+          let rescuedToInbox = false;
+          if (placement === "spam" && env.WARMUP_SEED_RESCUE_SPAM) {
+            try {
+              // We are operating inside the spam/junk folder currently opened, so moving by UID should work.
+              await (client as any).messageMove(uid, "INBOX", { uid: true });
+              rescuedToInbox = true;
+              await warmupLog(jobId, "seed_check: moved spam->inbox", { seedId: seed.id, email: seed.email, folder, uid, warmupId });
+            } catch (e: any) {
+              await warmupError(jobId, "seed_check: move spam->inbox failed", { seedId: seed.id, email: seed.email, folder, uid, warmupId, error: String(e?.message || e) });
+              await enqueueWarmupSeedRescue({ jobId, workspaceId, seedId: seed.id, warmupId, attempt: 1, reason: String(e?.message || e) });
+            }
+          }
+
+          // Optional: archive after engagement (only when message is in INBOX)
+          let archived = false;
+          if (doArchive) {
+            try {
+              await (client as any).messageMove(uid, archiveFolder, { uid: true });
+              archived = true;
+              await warmupLog(jobId, "seed_check: engaged archive", { seedId: seed.id, email: seed.email, fromFolder: folder, toFolder: archiveFolder, uid, warmupId });
+            } catch (e: any) {
+              await warmupError(jobId, "seed_check: engage archive failed", { seedId: seed.id, email: seed.email, folder, archiveFolder, uid, warmupId, error: String(e?.message || e) });
+            }
+          }
+          try {
+            const receivedAt = parsed.date ? new Date(parsed.date) : new Date();
+            const updateData: any = { placement, placementFolder: folder, receivedAt };
+            if (doOpen) updateData.openedAt = receivedAt;
+            if (doStar) updateData.starredAt = new Date();
+            if (rescuedToInbox) updateData.rescuedToInboxAt = new Date();
+            if (archived) updateData.archivedAt = new Date();
+            const upd = await prisma.warmupMessage.updateMany({
+              where: { id: warmupId, workspaceId },
+              data: updateData,
+            });
+            updatedTotal += upd.count;
+          } catch (e: any) {
+            await warmupError(jobId, "seed_check: failed to update warmup message", { warmupId, error: String(e?.message || e) });
+          }
+
+          // Optional: seed auto-reply (enterprise)
+          // Only reply when the message is in INBOX (or successfully rescued into INBOX), to avoid "replying from spam".
+          if (
+            env.WARMUP_SEED_AUTOREPLY &&
+            (placement === "inbox" || rescuedToInbox) &&
+            Math.random() < (env.WARMUP_SEED_AUTOREPLY_RATE ?? 0.30)
+          ) {
+            try {
+              // Must have SMTP configured on seed
+              const hasSmtp = !!(seed.smtpHost && seed.smtpUser && seed.smtpPassEnc);
+              if (!hasSmtp) {
+                await warmupLog(jobId, "seed_check: auto-reply skipped (no SMTP)", { seedId: seed.id, email: seed.email, warmupId });
+              } else {
+                const orig = await prisma.warmupMessage.findFirst({
+                  where: { id: warmupId, workspaceId },
+                  select: { threadId: true },
+                });
+                if (orig?.threadId) {
+                  // Dedup: one reply per thread per seed
+                  const already = await prisma.warmupMessage.findFirst({
+                    where: { workspaceId, threadId: orig.threadId, seedInboxId: seed.id, direction: "inbound", sentAt: { not: null } },
+                    select: { id: true },
+                  });
+
+                  if (already) {
+                    await warmupLog(jobId, "seed_check: auto-reply skipped (already replied)", { warmupId, seedId: seed.id, threadId: orig.threadId });
+                  } else {
+                    const existingJob = await prisma.job.findFirst({
+                      where: { type: "warmup_seed_reply", status: { in: ["queued", "running"] }, payload: { contains: `"warmupId":"${warmupId}"` } },
+                      select: { id: true },
+                    });
+                    if (!existingJob) {
+                      const minDelay = env.WARMUP_SEED_AUTOREPLY_MIN_DELAY_MIN ?? 5;
+                      const maxDelay = Math.max(minDelay, env.WARMUP_SEED_AUTOREPLY_MAX_DELAY_MIN ?? 35);
+                      const delay = minDelay + Math.floor(Math.random() * (maxDelay - minDelay + 1));
+                      const runAt = new Date(Date.now() + delay * 60 * 1000);
+
+                      await prisma.job.create({
+                        data: {
+                          type: "warmup_seed_reply",
+                          payload: JSON.stringify({ workspaceId, seedId: seed.id, warmupId, source: "seed_check" }),
+                          runAt,
+                          status: "queued",
+                        },
+                      });
+
+                      await warmupLog(jobId, "seed_check: auto-reply enqueued", { warmupId, seedId: seed.id, threadId: orig.threadId, delayMin: delay });
+                    }
+                  }
+                }
+              }
+            } catch (e: any) {
+              await warmupError(jobId, "seed_check: auto-reply scheduling failed", { warmupId, seedId: seed.id, error: String(e?.message || e) });
+            }
+          }
+        }
+      }
+
+      await warmupLog(jobId, "seed_check: summary", { seedId: seed.id, email: seed.email, foundTotal, updatedTotal, since: since.toISOString() });
+
+      await prisma.warmupSeedInbox.update({ where: { id: seed.id }, data: { lastCheckedAt: now } }).catch(() => {});
+    } catch (e: any) {
+      // ignore per-seed errors
+      await warmupError(jobId, "seed_check: seed error", { seedId: seed.id, email: seed.email, error: String(e?.message || e) });
+      await prisma.warmupSeedInbox.update({ where: { id: seed.id }, data: { lastCheckedAt: now } }).catch(() => {});
+    } finally {
+      try { await client.logout(); } catch {}
+    }
+  }
+}
+
+async function enqueueWarmupTickSweep() {
+  if (!env.AUTO_WARMUP_ENABLED) return;
+
+  const mailboxes = await prisma.mailbox.findMany({
+    where: { isActive: true, warmupEnabled: true },
+    select: { id: true, workspaceId: true },
+    take: 5000,
+  });
+  if (!mailboxes.length) return;
+
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const mb of mailboxes as any[]) {
+    const existing = await prisma.job.findFirst({
+      where: { type: "warmup_tick", status: { in: ["queued", "running"] }, payload: { contains: `"mailboxId":"${mb.id}"` } },
+      select: { id: true },
+    });
+    if (existing) { skipped++; continue; }
+    await prisma.job.create({
+      data: { type: "warmup_tick", payload: JSON.stringify({ workspaceId: mb.workspaceId, mailboxId: mb.id, source: "auto" }), runAt: new Date(), status: "queued" },
+    }).catch(() => {});
+    enqueued++;
+  }
+
+  if (enqueued || skipped) console.log("[warmup] tick sweep", { total: mailboxes.length, enqueued, skipped });
+}
+
+async function enqueueWarmupSeedCheckSweep() {
+  if (!env.AUTO_WARMUP_ENABLED) return;
+
+  const workspaces = await prisma.workspace.findMany({ select: { id: true }, take: 2000 });
+  if (!workspaces.length) return;
+
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const ws of workspaces as any[]) {
+    const existing = await prisma.job.findFirst({
+      where: { type: "warmup_seed_check", status: { in: ["queued", "running"] }, payload: { contains: `"workspaceId":"${ws.id}"` } },
+      select: { id: true },
+    });
+    if (existing) { skipped++; continue; }
+
+    await prisma.job.create({
+      data: { type: "warmup_seed_check", payload: JSON.stringify({ workspaceId: ws.id, source: "auto" }), runAt: new Date(), status: "queued" },
+    }).catch(() => {});
+    enqueued++;
+  }
+
+  if (enqueued || skipped) console.log("[warmup] seed sweep", { total: workspaces.length, enqueued, skipped });
+}
+
+
+main().catch((e) => {
+  console.error("[worker] fatal", e);
+  process.exit(1);
+});

@@ -1,0 +1,54 @@
+import Link from "next/link";
+import { Container, Card } from "@/components/ui";
+import { requireSession } from "@/lib/auth";
+import WarmupClient from "./WarmupClient";
+
+function SubTabs({ active }: { active: "mailboxes" | "pools" | "warmup" }) {
+  const base = "px-3 py-1.5 rounded-xl text-sm border transition";
+  const on = "bg-slate-900 text-white border-slate-900/20";
+  const off = "bg-white text-slate-700 border-slate-200 hover:bg-slate-50";
+  return (
+    <div className="inline-flex items-center gap-2">
+      <Link className={`${base} ${active === "mailboxes" ? on : off}`} href="/app/mailboxes">
+        📮 Mailboxes
+      </Link>
+      <Link className={`${base} ${active === "pools" ? on : off}`} href="/app/mailboxes/pools">
+        🧺 Pools
+      </Link>
+      <Link className={`${base} ${active === "warmup" ? on : off}`} href="/app/mailboxes/warmup">
+        🔥 Warmup
+      </Link>
+    </div>
+  );
+}
+
+export default async function WarmupPage() {
+  let s: any;
+  try {
+    s = await requireSession();
+  } catch {
+    return (
+      <Container>
+        <Card title="Warmup" subtitle="Enterprise warmup suite">
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm">
+            You are not logged in.
+          </div>
+        </Card>
+      </Container>
+    );
+  }
+
+  return (
+    <Container wide>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div>
+          <div className="text-2xl font-semibold">🔥 Warmup</div>
+          <div className="text-sm text-slate-500">Profiles, seed inboxes, templates, and placement monitoring.</div>
+        </div>
+        <SubTabs active="warmup" />
+      </div>
+
+      <WarmupClient />
+    </Container>
+  );
+}
