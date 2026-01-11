@@ -17,8 +17,9 @@ function reqMeta(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const s = await requireSession();
 
+  // Revoke across ALL workspaces for this user (true "sign out everywhere")
   const res = await prisma.userSession.updateMany({
-    where: { userId: s.uid, workspaceId: s.wid, revokedAt: null },
+    where: { userId: s.uid, revokedAt: null },
     data: { revokedAt: new Date(), revokedReason: "signout_all" },
   });
 

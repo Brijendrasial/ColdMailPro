@@ -3,14 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import React from "react";
+import WorkspaceSwitcher from "@/components/workspace-switcher";
 
 export default function Sidebar(props: {
   items: { href: string; label: string; icon?: string }[];
+  workspaceId: string;
   workspaceName: string;
   userName: string | null;
   userEmail: string;
 }) {
-  const { items, workspaceName, userName, userEmail } = props;
+  const { items, workspaceId, workspaceName, userName, userEmail } = props;
   const pathname = usePathname();
 
   return (
@@ -23,12 +25,20 @@ export default function Sidebar(props: {
               <div className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-white/90 border border-slate-200" />
             </div>
             <div className="min-w-0">
-              <div className="text-sm font-semibold leading-tight truncate text-slate-900">{workspaceName}</div>
+              <div className="text-sm font-semibold leading-tight truncate text-slate-900 flex items-center gap-2">
+                {workspaceName}
+                <span className="opacity-60">▾</span>
+              </div>
               <div className="text-xs text-slate-600 truncate">
                 {userName ? `${userName} · ` : ""}
                 {userEmail}
               </div>
             </div>
+          </div>
+
+          {/* Workspace switcher (opens modal) */}
+          <div className="mt-3">
+            <WorkspaceSwitcher currentWorkspaceId={workspaceId} currentWorkspaceName={workspaceName} />
           </div>
         </div>
 

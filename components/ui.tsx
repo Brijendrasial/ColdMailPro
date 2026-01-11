@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 
 export function Container({
@@ -252,11 +253,20 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
-  return (
-    <div className="fixed inset-0 z-50">
+  const node = (
+    <div className="fixed inset-0 z-[100]">
       <div className="absolute inset-0 bg-black/35" onClick={onClose} />
       <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className={`w-full ${wide ? "max-w-5xl" : "max-w-xl"} glass shadow-2xl`}>
+        {/*
+          IMPORTANT: This modal is rendered via a portal (when document is available).
+          This prevents "fixed inside transformed sidebar" bugs where the modal gets constrained
+          to the sidebar width/height and ends up bottom-left / clipped.
+        */}
+        <div
+          role="dialog"
+          aria-modal="true"
+          className={`w-full ${wide ? "max-w-5xl" : "max-w-xl"} glass shadow-2xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden`}
+        >
           <div className="px-5 py-4 border-b border-slate-200/70 flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-lg font-semibold text-slate-900 truncate">{title}</div>
@@ -270,12 +280,16 @@ export function Modal({
               ✕
             </button>
           </div>
-          <div className="p-5">{children}</div>
-          {footer ? <div className="px-5 py-4 border-t border-slate-200/70">{footer}</div> : null}
+          <div className="p-5 overflow-y-auto">{children}</div>
+          {footer ? <div className="px-5 py-4 border-t border-slate-200/70 shrink-0">{footer}</div> : null}
         </div>
       </div>
     </div>
   );
+
+  // Portal to <body> so it's truly viewport-fixed even if opened from inside a transformed container.
+  // In server-render / tests where document isn't available, fall back to inline render.
+  return typeof document !== "undefined" ? createPortal(node, document.body) : node;
 }
 
 export function Segmented({

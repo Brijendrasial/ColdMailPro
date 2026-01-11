@@ -48,6 +48,10 @@ You can access the live demo here:
 - Worker: Node background process (`worker/worker.ts`) for sending and scheduled jobs
 
 ## Requirements
+### Production server
+- **AlmaLinux 9** (required)
+
+### Local development
 - Node.js 20+
 - MariaDB 10.6+ (or 10.11 LTS)
 
@@ -77,7 +81,7 @@ npm run seed
 5) Run web + worker
 ```bash
 npm run dev
-# in another terminal
+*(in another terminal)*
 npm run worker:dev
 ```
 
@@ -88,6 +92,19 @@ Default seed user:
 - password: `Admin@12345`
 
 ## Production deployment
+0) Install mail server (Mailstack) on the server **first**
+
+```bash
+/root/coldmail-pro/scripts/mailstack.sh install \
+  --hostname <YOUR_HOSTNAME> \
+  --email <YOUR_EMAIL> \
+  --mailbox <MAILBOX_EMAIL> \
+  --mailpass '<MAILBOX_PASSWORD>'
+```
+
+- `<YOUR_HOSTNAME>` is your server hostname (example: `srv1.us1.mainip.vh.hadimba.com`) — replace it with yours.
+- Replace `<YOUR_EMAIL>`, `<MAILBOX_EMAIL>`, `<MAILBOX_PASSWORD>` with your own values.
+
 1) Build
 ```bash
 npm install
@@ -118,6 +135,18 @@ Env defaults:
 - `MAILSTACK_ADDON_SCRIPT=./scripts/mailstack-addon.sh`
 
 Recommended: run the worker as a non-root user and allow only these scripts via sudo.
+
+
+### Installing Mailstack (server prerequisite)
+Run this on the server before using the Mailstack UI:
+
+```bash
+/root/coldmail-pro/scripts/mailstack.sh install \
+  --hostname <YOUR_HOSTNAME> \
+  --email <YOUR_EMAIL> \
+  --mailbox <MAILBOX_EMAIL> \
+  --mailpass '<MAILBOX_PASSWORD>'
+```
 
 ## Security notes
 - Never commit `.env` or any private keys/certs.

@@ -10,6 +10,7 @@ import DeliverabilityCard from "./DeliverabilityCard";
 import WebhooksCard from "./WebhooksCard";
 import TeamCard from "./TeamCard";
 import AuditLogCard from "./AuditLogCard";
+import WorkspacesCard from "./WorkspacesCard";
 import { countRecoveryCodes } from "@/lib/twofa";
 
 function TabLink({ href, active, label, icon }: { href: string; active: boolean; label: string; icon: string }) {
@@ -75,6 +76,7 @@ export default async function Settings({
     { key: "sessions", label: "Sessions", icon: "🖥️" },
     { key: "notifications", label: "Notifications", icon: "🔔" },
     { key: "deliverability", label: "Deliverability", icon: "📬" },
+    { key: "workspaces", label: "Workspaces", icon: "🏢" },
     { key: "team", label: "Team", icon: "👥" },
     { key: "audit", label: "Audit log", icon: "🧾" },
     { key: "integrations", label: "Integrations", icon: "🔗" },
@@ -213,6 +215,8 @@ export default async function Settings({
           {tab === "notifications" ? <NotificationsCard initial={me?.settingsJson as any} /> : null}
 
           {tab === "deliverability" ? <DeliverabilityCard initial={ws?.settingsJson as any} /> : null}
+
+          {tab === "workspaces" ? <WorkspacesCard currentWorkspaceId={s.wid} /> : null}
 
           {tab === "team" ? <TeamCard currentUserId={s.uid} /> : null}
 

@@ -32,6 +32,7 @@ export default async function AppShell({ children }: { children: React.ReactNode
       <div className="flex min-h-screen">
         <Sidebar
           items={items}
+          workspaceId={s.wid}
           workspaceName={ws?.name || "Workspace"}
           userName={me?.name || null}
           userEmail={me?.email || ""}
