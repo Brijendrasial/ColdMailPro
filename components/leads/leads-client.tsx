@@ -8,6 +8,8 @@ import { formatDateTimeUTC } from "@/lib/date";
 type CampaignMini = { id: string; name: string; status: string };
 type LeadViewRow = { id: string; name: string; payload: any; updatedAt?: string };
 
+type MailboxMini = { id: string; name: string; fromEmail: string; isActive: boolean };
+
 export type LeadRow = {
   id: string;
   email: string;
@@ -86,10 +88,25 @@ export function LeadsClient() {
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
 
   // Modals
+  const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSuppressions, setShowSuppressions] = useState(false);
   const [showDuplicates, setShowDuplicates] = useState(false);
   const [showEnroll, setShowEnroll] = useState(false);
+
+  // Add lead modal data
+  const [mailboxes, setMailboxes] = useState<MailboxMini[]>([]);
+  const [fEmail, setFEmail] = useState("");
+  const [fFirstName, setFFirstName] = useState("");
+  const [fLastName, setFLastName] = useState("");
+  const [fCompany, setFCompany] = useState("");
+  const [fWebsite, setFWebsite] = useState("");
+  const [fTags, setFTags] = useState("");
+  const [fStatus, setFStatus] = useState("active");
+  const [fVerify, setFVerify] = useState(true);
+  const [fVerifyMode, setFVerifyMode] = useState<"smtp" | "no_smtp">("smtp");
+  const [fRequireMailbox, setFRequireMailbox] = useState(true);
+  const [fSenderMailboxId, setFSenderMailboxId] = useState<string>("");
 
   // Enroll modal data
   const [campaigns, setCampaigns] = useState<CampaignMini[]>([]);
@@ -205,6 +222,90 @@ export function LeadsClient() {
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
+  async function loadMailboxes() {
+    try {
+      const r = await fetch("/api/mailboxes/list", { cache: "no-store" });
+      if (!r.ok) return;
+      const d = await r.json();
+      const mbs: MailboxMini[] = Array.isArray(d?.mailboxes)
+        ? d.mailboxes.map((m: any) => ({
+            id: String(m.id),
+            name: String(m.name || m.fromEmail || "Mailbox"),
+            fromEmail: String(m.fromEmail || ""),
+            isActive: !!m.isActive,
+          }))
+        : [];
+      setMailboxes(mbs);
+    } catch {
+      // ignore
+      setMailboxes([]);
+    }
+  }
+
+  function openAddModal() {
+    setShowAdd(true);
+    // load sender options (optional)
+    loadMailboxes();
+  }
+
+  async function submitAddLead() {
+    const payload = {
+      email: fEmail.trim(),
+      firstName: fFirstName.trim() || null,
+      lastName: fLastName.trim() || null,
+      company: fCompany.trim() || null,
+      website: fWebsite.trim() || null,
+      tags: fTags.trim() || null, // comma-separated
+      status: fStatus || "active",
+      verify: !!fVerify,
+      verifyMode: fVerifyMode,
+      requireMailbox: !!fRequireMailbox,
+      senderMailboxId: fSenderMailboxId || null,
+    };
+
+    if (!payload.email) {
+      notify("❌ Email is required");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const r = await fetch("/api/leads/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const d = await r.json().catch(() => ({} as any));
+      if (!r.ok || !d?.ok) {
+        const msg = d?.message || d?.error || "Failed to add lead";
+        notify(`❌ ${msg}`);
+        return;
+      }
+
+      notify("✅ Lead added");
+      setShowAdd(false);
+      setFEmail("");
+      setFFirstName("");
+      setFLastName("");
+      setFCompany("");
+      setFWebsite("");
+      setFTags("");
+      setFStatus("active");
+      setFVerify(true);
+      setFVerifyMode("smtp");
+      setFRequireMailbox(true);
+      setFSenderMailboxId("");
+      setSelected({});
+      setDrawerId(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      notify(`❌ Failed to add lead: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function bulk(
     action: "tag_add" | "tag_remove" | "set_status" | "dnc" | "unsuppress" | "enroll_campaign" | "stop_campaigns" | "delete",
     payload: any = {}
@@ -302,6 +403,9 @@ export function LeadsClient() {
         <div className="text-xl font-semibold">Leads</div>
         <div className="flex items-center gap-2 flex-wrap">
           <Badge>{loading ? "Loading…" : `${total} leads`}</Badge>
+          <Button variant="primary" onClick={openAddModal}>
+            Add lead
+          </Button>
           <Button variant="ghost" onClick={() => setShowImport(true)}>
             Import wizard
           </Button>
@@ -658,6 +762,136 @@ export function LeadsClient() {
 
       {drawerId ? <LeadDrawer id={drawerId} onClose={() => setDrawerId(null)} onToast={notify} /> : null}
 
+      
+      {showAdd ? (
+        <Modal title="Add lead (manual)" onClose={() => setShowAdd(false)}>
+          <div className="space-y-3">
+            <div className="text-xs opacity-70">
+              Add a lead manually. If verification is enabled, the lead will only be saved when the email validates.
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs opacity-70 mb-1">Email *</div>
+                <Input value={fEmail} onChange={(e) => setFEmail(e.target.value)} placeholder="lead@company.com" />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">Status</div>
+                <Select
+                  value={fStatus}
+                  onChange={(e) => setFStatus(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+                >
+                  <option value="active">Active</option>
+                  <option value="replied">Replied</option>
+                  <option value="unsubscribed">Unsubscribed</option>
+                  <option value="bounced">Bounced</option>
+                  <option value="suppressed">Suppressed</option>
+                </Select>
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">First name</div>
+                <Input value={fFirstName} onChange={(e) => setFFirstName(e.target.value)} placeholder="First name" />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">Last name</div>
+                <Input value={fLastName} onChange={(e) => setFLastName(e.target.value)} placeholder="Last name" />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">Company</div>
+                <Input value={fCompany} onChange={(e) => setFCompany(e.target.value)} placeholder="Company" />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">Website</div>
+                <Input value={fWebsite} onChange={(e) => setFWebsite(e.target.value)} placeholder="https://company.com" />
+              </div>
+
+              <div className="md:col-span-2">
+                <div className="text-xs opacity-70 mb-1">Tags (comma separated)</div>
+                <Input value={fTags} onChange={(e) => setFTags(e.target.value)} placeholder="saas, founder, us" />
+              </div>
+            </div>
+
+            <div className="glass p-3 space-y-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={fVerify} onChange={(e) => setFVerify(e.target.checked)} />
+                Verify email before saving
+              </label>
+
+              {fVerify ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">Verification mode</div>
+                    <Select
+                      value={fVerifyMode}
+                      onChange={(e) => {
+                        const v = e.target.value as any;
+                        setFVerifyMode(v);
+                        if (v === "no_smtp") setFRequireMailbox(false);
+                      }}
+                      className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+                    >
+                      <option value="smtp">Full (MX + SMTP)</option>
+                      <option value="no_smtp">Safe (syntax + domain + MX only)</option>
+                    </Select>
+                    <div className="text-xs opacity-60 mt-1">
+                      Full mode may fail if your VPS blocks outbound SMTP (port 25). Safe mode avoids SMTP.
+                    </div>
+
+                    <label className="mt-2 flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={fRequireMailbox}
+                        disabled={fVerifyMode !== "smtp"}
+                        onChange={(e) => setFRequireMailbox(e.target.checked)}
+                      />
+                      Require mailbox confirmation (SMTP)
+                    </label>
+                    <div className="text-xs opacity-60">
+                      This will only save the lead when the SMTP check explicitly confirms the mailbox.
+                      Some providers may still return "unknown" for privacy reasons.
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">Sender mailbox (optional)</div>
+                    <Select
+                      value={fSenderMailboxId}
+                      onChange={(e) => setFSenderMailboxId(e.target.value)}
+                      className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+                    >
+                      <option value="">Use server default (PING_EMAIL_SENDER)</option>
+                      {mailboxes.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} • {m.fromEmail}
+                        </option>
+                      ))}
+                    </Select>
+                    <div className="text-xs opacity-60 mt-1">
+                      If selected, we will use that mailbox&apos;s From email for the verification handshake.
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex gap-2">
+              <Button onClick={submitAddLead} disabled={loading}>
+                Add lead
+              </Button>
+              <Button variant="ghost" onClick={() => setShowAdd(false)} disabled={loading}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
       {showImport ? (
         <ImportWizard
           onClose={() => setShowImport(false)}
@@ -733,8 +967,43 @@ function ImportWizard({ onClose, onToast, onDone }: { onClose: () => void; onToa
   const [file, setFile] = useState<File | null>(null);
   const [upsert, setUpsert] = useState(true);
   const [batchTag, setBatchTag] = useState("");
+  const [verify, setVerify] = useState(false);
+  const [verifyMode, setVerifyMode] = useState<"smtp" | "no_smtp">("smtp");
+  const [requireMailbox, setRequireMailbox] = useState(true);
+  const [onInvalid, setOnInvalid] = useState<"skip" | "fail">("skip");
+  const [mailboxes, setMailboxes] = useState<Array<{ id: string; name: string; fromEmail: string; isActive: boolean }>>([]);
+  const [senderMailboxId, setSenderMailboxId] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
+
+  useEffect(() => {
+    // Load sender mailbox options (optional)
+    let cancelled = false;
+    fetch("/api/mailboxes/list", { cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) return null;
+        return await r.json();
+      })
+      .then((d) => {
+        if (cancelled) return;
+        const mbs = Array.isArray(d?.mailboxes)
+          ? d.mailboxes.map((m: any) => ({
+              id: String(m.id),
+              name: String(m.name || m.fromEmail || "Mailbox"),
+              fromEmail: String(m.fromEmail || ""),
+              isActive: !!m.isActive,
+            }))
+          : [];
+        setMailboxes(mbs);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMailboxes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <Modal title="Import CSV wizard" onClose={onClose}>
@@ -751,6 +1020,82 @@ function ImportWizard({ onClose, onToast, onDone }: { onClose: () => void; onToa
           <div className="text-xs opacity-70 mb-1">Batch tag (optional)</div>
           <Input value={batchTag} onChange={(e) => setBatchTag(e.target.value)} placeholder="e.g. jan-import" />
         </div>
+
+        <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3 space-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} />
+            Verify email IDs during import (slower)
+          </label>
+
+          {verify ? (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Verification mode</div>
+                  <Select
+                    value={verifyMode}
+                    onChange={(e) => {
+                      const v = (e.target.value === "no_smtp" ? "no_smtp" : "smtp") as any;
+                      setVerifyMode(v);
+                      if (v === "no_smtp") setRequireMailbox(false);
+                    }}
+                    className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+                  >
+                    <option value="smtp">Full (MX + SMTP mailbox check)</option>
+                    <option value="no_smtp">Safe (syntax + domain + MX only)</option>
+                  </Select>
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">If an email is invalid</div>
+                  <Select
+                    value={onInvalid}
+                    onChange={(e) => setOnInvalid(e.target.value === "fail" ? "fail" : "skip")}
+                    className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+                  >
+                    <option value="skip">Skip invalid rows and import the rest</option>
+                    <option value="fail">Stop import and show errors</option>
+                  </Select>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={requireMailbox}
+                  onChange={(e) => setRequireMailbox(e.target.checked)}
+                  disabled={verifyMode === "no_smtp"}
+                />
+                Require mailbox confirmation (SMTP)
+              </label>
+              {verifyMode === "no_smtp" ? (
+                <div className="text-xs opacity-70">
+                  Safe mode does not perform SMTP mailbox verification (use Full mode to verify mailbox).
+                </div>
+              ) : null}
+
+              {mailboxes.length ? (
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Sender mailbox (optional)</div>
+                  <Select
+                    value={senderMailboxId}
+                    onChange={(e) => setSenderMailboxId(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+                  >
+                    <option value="">Use PING_EMAIL_SENDER</option>
+                    {mailboxes.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} {m.fromEmail ? `(${m.fromEmail})` : ""} {m.isActive ? "" : "(inactive)"}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ) : (
+                <div className="text-xs opacity-70">(Optional) Set PING_EMAIL_SENDER in .env to choose the SMTP sender.</div>
+              )}
+            </>
+          ) : null}
+        </div>
         <div className="flex gap-2">
           <Button
             onClick={async () => {
@@ -765,9 +1110,28 @@ function ImportWizard({ onClose, onToast, onDone }: { onClose: () => void; onToa
                 fd.set("file", file);
                 if (upsert) fd.set("upsert", "1");
                 if (batchTag.trim()) fd.set("batchTag", batchTag.trim());
+                if (verify) {
+                  fd.set("verify", "1");
+                  fd.set("verifyMode", verifyMode);
+                  if (requireMailbox) fd.set("requireMailbox", "1");
+                  fd.set("onInvalid", onInvalid);
+                  if (senderMailboxId) fd.set("senderMailboxId", senderMailboxId);
+                }
                 const r = await fetch("/api/leads/import-wizard", { method: "POST", body: fd });
-                if (!r.ok) throw new Error(await r.text());
-                const d = await r.json();
+                const txt = await r.text();
+                let d: any = null;
+                try {
+                  d = txt ? JSON.parse(txt) : null;
+                } catch {
+                  d = null;
+                }
+
+                if (!r.ok || !d?.ok) {
+                  setResult(d || { ok: false, error: "Import failed" });
+                  onToast(`❌ Import failed: ${clip(String(d?.error || d?.message || txt || "Unknown error"), 140)}`);
+                  return;
+                }
+
                 setResult(d);
                 onToast("✅ Import finished");
                 onDone();
@@ -792,6 +1156,40 @@ function ImportWizard({ onClose, onToast, onDone }: { onClose: () => void; onToa
             <div>Updated: <span className="font-medium">{result.updated}</span></div>
             <div>Skipped: <span className="font-medium">{result.skipped}</span></div>
             <div>Invalid: <span className="font-medium">{result.invalid}</span></div>
+            {typeof result.verified === "number" ? (
+              <div>Verified: <span className="font-medium">{result.verified}</span></div>
+            ) : null}
+
+            {Array.isArray(result.invalidRows) && result.invalidRows.length ? (
+              <div className="mt-2">
+                <div className="text-xs opacity-70 mb-1">Invalid rows (showing up to {result.invalidRows.length})</div>
+                <div className="max-h-40 overflow-auto rounded-xl border border-black/10 dark:border-white/10">
+                  {result.invalidRows.map((x: any, idx: number) => (
+                    <div key={idx} className="px-2 py-1 text-xs border-b border-black/5 dark:border-white/5 last:border-0">
+                      <span className="font-mono opacity-80">#{x.row}</span> {x.email ? <span className="font-mono">{x.email}</span> : <span className="opacity-70">(no email)</span>} — {x.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {result?.ok === false ? (
+          <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3 text-sm">
+            <div className="font-medium">❌ {result.error || "Import failed"}</div>
+            {Array.isArray(result.invalidRows) && result.invalidRows.length ? (
+              <div className="mt-2">
+                <div className="text-xs opacity-70 mb-1">Invalid rows</div>
+                <div className="max-h-40 overflow-auto rounded-xl border border-black/10 dark:border-white/10">
+                  {result.invalidRows.map((x: any, idx: number) => (
+                    <div key={idx} className="px-2 py-1 text-xs border-b border-black/5 dark:border-white/5 last:border-0">
+                      <span className="font-mono opacity-80">#{x.row}</span> {x.email ? <span className="font-mono">{x.email}</span> : <span className="opacity-70">(no email)</span>} — {x.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

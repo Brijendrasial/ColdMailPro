@@ -20,6 +20,17 @@ const schema = z.object({
   // TEMP: allow skipping TLS cert verification for SMTP (hostname mismatch etc.)
   SMTP_TLS_SKIP_VERIFY: z.coerce.boolean().default(false),
 
+  // --- Lead email verification (ping-email) ---
+  PING_EMAIL_ENABLED: z.coerce.boolean().default(false),
+  PING_EMAIL_FQDN: z.string().optional(),
+  PING_EMAIL_SENDER: z.string().email().optional(),
+  PING_EMAIL_PORT: z.coerce.number().int().positive().default(25),
+  PING_EMAIL_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  PING_EMAIL_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  PING_EMAIL_IGNORE_SMTP_VERIFY: z.coerce.boolean().default(false),
+  PING_EMAIL_DEBUG: z.coerce.boolean().default(false),
+
+
   // --- Mailbox monitoring (Upgrade C) ---
   AUTO_HEALTHCHECK_ENABLED: z.coerce.boolean().default(true),
   HEALTHCHECK_POLL_MINUTES: z.coerce.number().int().positive().default(60),
@@ -90,6 +101,16 @@ export const env = schema.parse({
   SEND_GAP_MIN_SECONDS: process.env.SEND_GAP_MIN_SECONDS,
   SEND_GAP_MAX_SECONDS: process.env.SEND_GAP_MAX_SECONDS,
   SMTP_TLS_SKIP_VERIFY: process.env.SMTP_TLS_SKIP_VERIFY,
+
+  PING_EMAIL_ENABLED: process.env.PING_EMAIL_ENABLED,
+  PING_EMAIL_FQDN: process.env.PING_EMAIL_FQDN,
+  PING_EMAIL_SENDER: process.env.PING_EMAIL_SENDER,
+  PING_EMAIL_PORT: process.env.PING_EMAIL_PORT,
+  PING_EMAIL_TIMEOUT_MS: process.env.PING_EMAIL_TIMEOUT_MS,
+  PING_EMAIL_ATTEMPTS: process.env.PING_EMAIL_ATTEMPTS,
+  PING_EMAIL_IGNORE_SMTP_VERIFY: process.env.PING_EMAIL_IGNORE_SMTP_VERIFY,
+  PING_EMAIL_DEBUG: process.env.PING_EMAIL_DEBUG,
+
 
   AUTO_HEALTHCHECK_ENABLED: process.env.AUTO_HEALTHCHECK_ENABLED,
   HEALTHCHECK_POLL_MINUTES: process.env.HEALTHCHECK_POLL_MINUTES,

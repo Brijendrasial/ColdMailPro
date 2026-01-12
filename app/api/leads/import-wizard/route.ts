@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { parse } from "csv-parse/sync";
+import { env } from "@/lib/env";
+import { PingEmail } from "ping-email";
+
+export const runtime = "nodejs";
 
 function norm(s: any) {
   const v = String(s ?? "").trim();
@@ -34,6 +38,11 @@ function mergeTags(existing: string | null | undefined, add: string | null) {
 // - file: CSV (required)
 // - upsert: "1" to update existing leads
 // - batchTag: optional tag applied to every imported row
+// - verify: "1" to verify emails before importing
+// - verifyMode: "smtp" (default) | "no_smtp" (safe mode)
+// - requireMailbox: "1" to require explicit mailbox confirmation (SMTP only)
+// - onInvalid: "skip" (default) | "fail"
+// - senderMailboxId: optional workspace mailbox id to use as SMTP sender
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const form = await req.formData();
@@ -43,19 +52,117 @@ export async function POST(req: NextRequest) {
   const upsert = String(form.get("upsert") || "") === "1";
   const batchTag = String(form.get("batchTag") || "").trim();
 
+  const verify = String(form.get("verify") || "") === "1";
+  const verifyModeRaw = String(form.get("verifyMode") || "smtp").trim();
+  const verifyMode: "smtp" | "no_smtp" = verifyModeRaw === "no_smtp" ? "no_smtp" : "smtp";
+  const requireMailbox = String(form.get("requireMailbox") || "") === "1";
+  const onInvalid = String(form.get("onInvalid") || "skip").trim() === "fail" ? "fail" : "skip";
+  const senderMailboxId = String(form.get("senderMailboxId") || "").trim() || null;
+
   const text = await file.text();
   const records: any[] = parse(text, { columns: true, skip_empty_lines: true, trim: true });
+
+  // Email verification setup (optional)
+  let pingEmail: any = null;
+  if (verify) {
+    if (!env.PING_EMAIL_ENABLED) {
+      return NextResponse.json(
+        { ok: false, error: "Email verification is not enabled on the server (PING_EMAIL_ENABLED=1)." },
+        { status: 400 }
+      );
+    }
+    if (!env.PING_EMAIL_FQDN) {
+      return NextResponse.json({ ok: false, error: "PING_EMAIL_FQDN is required for verification." }, { status: 400 });
+    }
+    if (requireMailbox && verifyMode === "no_smtp") {
+      return NextResponse.json(
+        { ok: false, error: "Mailbox verification requires SMTP mode", message: "Switch verification mode to Full (MX + SMTP)." },
+        { status: 400 }
+      );
+    }
+
+    // sender selection
+    let sender = env.PING_EMAIL_SENDER || undefined;
+    if (senderMailboxId) {
+      const mb = await prisma.mailbox.findFirst({ where: { id: senderMailboxId, workspaceId: s.wid }, select: { fromEmail: true } });
+      if (mb?.fromEmail) sender = mb.fromEmail;
+    }
+    if (!sender) {
+      return NextResponse.json(
+        { ok: false, error: "PING_EMAIL_SENDER (or a senderMailboxId) is required for verification." },
+        { status: 400 }
+      );
+    }
+
+    const ignoreSMTPVerify = verifyMode === "no_smtp";
+    pingEmail = new PingEmail({
+      port: env.PING_EMAIL_PORT,
+      fqdn: env.PING_EMAIL_FQDN,
+      sender,
+      timeout: env.PING_EMAIL_TIMEOUT_MS,
+      attempts: env.PING_EMAIL_ATTEMPTS,
+      ignoreSMTPVerify,
+      debug: env.PING_EMAIL_DEBUG,
+    } as any);
+  }
 
   let inserted = 0;
   let updated = 0;
   let skipped = 0;
   let invalid = 0;
 
-  for (const r of records) {
+  let verified = 0;
+  const invalidRows: Array<{ row: number; email: string; message: string }> = [];
+
+  for (let i = 0; i < records.length; i++) {
+    const r: any = records[i];
+    const rowNo = i + 2; // header is row 1
     const email = normEmail(r.email || r.Email);
     if (!email) {
       invalid++;
+      invalidRows.push({ row: rowNo, email: "", message: "Missing email" });
+      if (onInvalid === "fail") {
+        return NextResponse.json({ ok: false, error: "Invalid rows in CSV", inserted, updated, skipped, invalid, verified, invalidRows }, { status: 422 });
+      }
       continue;
+    }
+
+    // Optional ping-email verification
+    if (pingEmail) {
+      try {
+        const res = await pingEmail.ping(email);
+        const valid = !!res?.valid;
+        const msg = String(res?.message || "").trim() || (valid ? "OK" : "Invalid email");
+
+        if (!valid) {
+          invalid++;
+          invalidRows.push({ row: rowNo, email, message: msg });
+          if (onInvalid === "fail") {
+            return NextResponse.json({ ok: false, error: "Email verification failed", inserted, updated, skipped, invalid, verified, invalidRows }, { status: 422 });
+          }
+          continue;
+        }
+
+        // Require explicit mailbox confirmation if requested
+        const mailboxConfirmed = msg === "Valid email";
+        if (requireMailbox && !mailboxConfirmed) {
+          invalid++;
+          invalidRows.push({ row: rowNo, email, message: msg || "Mailbox could not be confirmed" });
+          if (onInvalid === "fail") {
+            return NextResponse.json({ ok: false, error: "Mailbox not confirmed", inserted, updated, skipped, invalid, verified, invalidRows }, { status: 422 });
+          }
+          continue;
+        }
+
+        verified++;
+      } catch (e: any) {
+        invalid++;
+        invalidRows.push({ row: rowNo, email, message: String(e?.message || e || "Verification error") });
+        if (onInvalid === "fail") {
+          return NextResponse.json({ ok: false, error: "Verification error", inserted, updated, skipped, invalid, verified, invalidRows }, { status: 502 });
+        }
+        continue;
+      }
     }
 
     const firstName = norm(r.firstName || r.FirstName || r.firstname);
@@ -117,5 +224,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, inserted, updated, skipped, invalid });
+  return NextResponse.json({ ok: true, inserted, updated, skipped, invalid, verified, invalidRows: invalidRows.slice(0, 200) });
 }

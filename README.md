@@ -32,6 +32,8 @@ You can access the live demo here:
 ## Features
 - Campaigns + multi-step sequences
 - Lead import + dedupe
+- Manual lead add (single lead) + optional email verification (ping-email)
+- Import wizard: optional email verification (MX/SMTP) with invalid-row handling
 - SMTP mailbox pools + rotation
 - Worker-based sending + scheduling + daily limits + pacing
 - Open/click tracking (pixel + redirect)
@@ -147,6 +149,45 @@ Run this on the server before using the Mailstack UI:
   --mailbox <MAILBOX_EMAIL> \
   --mailpass '<MAILBOX_PASSWORD>'
 ```
+
+
+## Email verification (optional: ping-email)
+
+ColdMail Pro can verify lead emails **before saving** using `ping-email` (syntax/domain/MX and optional SMTP mailbox verification).
+
+Where it's available:
+- **Leads → Add lead** (manual add): verify before saving, choose verification mode.
+- **Leads → Import CSV wizard**: optionally verify each row during import, and either *skip invalid rows* or *stop on first error*.
+
+Verification modes:
+- **Full (MX + SMTP mailbox check)**: attempts SMTP verification to confirm mailbox (best-effort).
+- **Safe (syntax + domain + MX only)**: does **not** confirm mailbox existence (useful when outbound SMTP is blocked).
+
+### Environment variables
+
+Add these to your `.env` (see `.env.example`):
+
+```env
+# Enable/disable ping-email verification
+PING_EMAIL_ENABLED=1
+
+# Required for SMTP HELO/EHLO identity (use your server hostname)
+PING_EMAIL_FQDN=your.server.hostname
+
+# Sender used during verification (must be a real address on your domain)
+PING_EMAIL_SENDER=verify@yourdomain.com
+
+# SMTP port (25 is typical for MX). If your VPS blocks outbound 25, use Safe mode.
+PING_EMAIL_PORT=25
+
+# Optional tuning
+PING_EMAIL_TIMEOUT_MS=8000
+PING_EMAIL_ATTEMPTS=1
+```
+
+### Notes
+- Many providers (including Gmail) may **not reliably disclose mailbox existence** via SMTP (anti-enumeration), so Full mode is still best-effort.
+- If your VPS blocks outbound port 25, Full mode will fail—use Safe mode or unblock/relay SMTP.
 
 ## Security notes
 - Never commit `.env` or any private keys/certs.
