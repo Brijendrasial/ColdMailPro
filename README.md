@@ -194,4 +194,7 @@ PING_EMAIL_ATTEMPTS=1
 - Keep `.env.example` safe (placeholders only).
 
 ## License
-Add a license that matches how you plan to distribute this project.
+
+**Proprietary (MTA). Not for redistribution or sale.**
+
+This project is governed by the **ColdMailPro Proprietary License (MTA)** (see `LICENSE`). You may not redistribute, publish, or sell this software, except as explicitly permitted under an executed Master Terms Agreement (“MTA”).
