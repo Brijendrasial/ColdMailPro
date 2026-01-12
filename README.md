@@ -75,9 +75,19 @@ npm install
 
 4) Prisma + seed
 ```bash
-npm run prisma:generate
-npm run prisma:migrate
+# IMPORTANT: Fresh installs must use migrations (do NOT run `prisma db push`)
+# Verify prisma/migrations contains ONLY the init migration
+bash scripts/verify-migrations.sh
+
+# Apply migrations (fresh install)
+npx prisma migrate deploy
+npx prisma generate
 npm run seed
+```
+
+Optional helper (same steps):
+```bash
+bash scripts/db-fresh-install.sh
 ```
 
 5) Run web + worker
@@ -94,6 +104,20 @@ Default seed user:
 - password: `Admin@12345`
 
 ## Production deployment
+### Upgrading from older installs (baseline)
+If you’re upgrading a server that already has an existing database created by older “ALTER-only” migrations, **baseline** the new init migration once:
+
+```bash
+# Mark the init migration as already applied (no schema changes)
+npx prisma migrate resolve --applied 20260112000000_init
+```
+
+If Prisma complains about missing migrations that no longer exist locally, remove their rows from `_prisma_migrations` (the old folder names), then re-run:
+
+```bash
+npx prisma migrate status
+npx prisma migrate deploy
+```
 0) Install mail server (Mailstack) on the server **first**
 
 ```bash
@@ -114,8 +138,18 @@ npm run prisma:generate
 npm run build
 ```
 
-2) Migrate (production)
+2) Database + migrations (production)
 ```bash
+# Create the database if it doesn't exist
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS coldmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# Apply migrations
+npx prisma migrate deploy
+```
+
+> Fresh re-install? Drop + recreate the DB first:
+```bash
+mysql -u root -p -e "DROP DATABASE IF EXISTS coldmail; CREATE DATABASE coldmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 npx prisma migrate deploy
 ```
 
