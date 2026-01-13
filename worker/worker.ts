@@ -553,11 +553,20 @@ async function logJob(jobId: string, line: string) {
   }
 }
 
-async function runCmd(jobId: string, cmd: string, args: string[], opts?: { cwd?: string; logArgs?: string[] }) {
+async function runCmd(
+  jobId: string,
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string; logArgs?: string[]; env?: Record<string, string | undefined> }
+) {
   const la = Array.isArray(opts?.logArgs) ? (opts as any).logArgs : args;
   await logJob(jobId, `$ ${cmd} ${la.join(" ")}`);
   return await new Promise<void>((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], cwd: opts?.cwd });
+    const child = spawn(cmd, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: opts?.cwd,
+      env: { ...process.env, ...(opts?.env || {}) } as any,
+    });
     child.stdout.on("data", (d) => logJob(jobId, String(d).trimEnd()));
     child.stderr.on("data", (d) => logJob(jobId, String(d).trimEnd()));
     child.on("error", (e) => reject(e));
@@ -572,7 +581,9 @@ function sudoWrap(cmd: string): string[] {
   // If worker runs as root, you can set PROVISION_USE_SUDO=0.
   const useSudo = String(process.env.PROVISION_USE_SUDO || "1") === "1";
   if (!useSudo) return [cmd];
-  return ["sudo", "-n", cmd];
+  // Preserve only the env vars we explicitly inject for provisioning (Cloudflare per-workspace support).
+  // This avoids depending on sudoers env_keep configuration.
+  return ["sudo", "-n", "--preserve-env=CF_API_TOKEN,CF_ENV_PATH,MAILSTACK_ACME_EMAIL", cmd];
 }
 
 function shQuote(s: string): string {
@@ -687,6 +698,25 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
   const mailstack = resolveMaybeRelative(env.MAILSTACK_SCRIPT || process.env.MAILSTACK_SCRIPT || (fs.existsSync(projectMailstack) ? projectMailstack : "/root/mailstack.sh"));
   const addon = resolveMaybeRelative(env.MAILSTACK_ADDON_SCRIPT || process.env.MAILSTACK_ADDON_SCRIPT || (fs.existsSync(projectAddon) ? projectAddon : "/root/mailstack-addon.sh"));
 
+  // Per-workspace Cloudflare token support
+  const cfEnvPathForWorkspace = (workspaceId: string) => path.join("/etc/mailstack/workspaces", String(workspaceId || "default"), "cloudflare.env");
+  async function getWorkspaceMailstackEnv(workspaceId: string): Promise<Record<string, string>> {
+    const wid = String(workspaceId || "");
+    const out: Record<string, string> = { CF_ENV_PATH: cfEnvPathForWorkspace(wid) };
+    try {
+      const cfg = await prisma.mailstackConfig.findUnique({ where: { workspaceId: wid } });
+      if (cfg?.cloudflareTokenEnc) {
+        const token = decrypt(cfg.cloudflareTokenEnc).trim();
+        if (token) out.CF_API_TOKEN = token;
+      }
+    } catch {
+      // ignore
+    }
+    const acmeEmail = (env as any).MAILSTACK_ACME_EMAIL || process.env.MAILSTACK_ACME_EMAIL || "sales@bullten.com";
+    out.MAILSTACK_ACME_EMAIL = String(acmeEmail);
+    return out;
+  }
+
   if (type === "mailstack:init-cloudflare") {
     const workspaceId = String(payload.workspaceId || "");
     const cfg = await prisma.mailstackConfig.findUnique({ where: { workspaceId } });
@@ -697,10 +727,14 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     // Used by acme.sh when registering an ACME account (must be a real email with a dot-domain)
     const acmeEmail = (env as any).MAILSTACK_ACME_EMAIL || process.env.MAILSTACK_ACME_EMAIL || "sales@bullten.com";
 
+    const wsEnv = await getWorkspaceMailstackEnv(workspaceId);
+    // Ensure the token is always passed for this run (even if helper decrypt fails for any reason)
+    wsEnv.CF_API_TOKEN = token;
+
     const [runner, ...prefixArgs] = sudoWrap(addon);
     const args = [...prefixArgs, "init-cloudflare", token, String(acmeEmail)];
     const logArgs = [...prefixArgs, "init-cloudflare", "<redacted>", String(acmeEmail)];
-    await runCmd(jobId, runner, args, { cwd: "/root", logArgs });
+    await runCmd(jobId, runner, args, { cwd: "/root", logArgs, env: wsEnv });
     await logJob(jobId, "✅ Cloudflare initialized");
     return;
   }
@@ -711,6 +745,9 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     include: { domains: true, ips: true, users: true, mailboxes: true, workspace: true },
   });
   if (!t) throw new Error("Tenant not found");
+
+  // Load per-workspace Cloudflare token/env for all provisioning commands.
+  const wsEnv = await getWorkspaceMailstackEnv(t.workspaceId);
 
   const domains = t.domains.map((d) => d.domainName);
   const ips = t.ips.map((i) => i.ip);
@@ -724,7 +761,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     if (!domainName) throw new Error("domainName missing");
 
     const [runner, ...prefixArgs] = sudoWrap(addon);
-    await runCmd(jobId, runner, [...prefixArgs, "dkim-rotate", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, "dkim-rotate", "--tenant", t.name, "--domain", domainName], { cwd: "/root", env: wsEnv });
 
     // Sync the new DKIM public key (p=...) into Domain table so UI shows the exact server key.
     try {
@@ -780,7 +817,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     if (!domainName) throw new Error("domainName missing");
 
     const [runner, ...prefixArgs] = sudoWrap(addon);
-    await runCmd(jobId, runner, [...prefixArgs, "dkim-stage", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, "dkim-stage", "--tenant", t.name, "--domain", domainName], { cwd: "/root", env: wsEnv });
 
     try {
       const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
@@ -829,7 +866,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     if (!domainName) throw new Error("domainName missing");
 
     const [runner, ...prefixArgs] = sudoWrap(addon);
-    await runCmd(jobId, runner, [...prefixArgs, "dkim-activate", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, "dkim-activate", "--tenant", t.name, "--domain", domainName], { cwd: "/root", env: wsEnv });
 
     try {
       const dnsFile = path.join("/etc/mailstack/tenants", t.name, "dns-records.txt");
@@ -886,7 +923,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     const [runner, ...prefixArgs] = sudoWrap(addon);
     const args: string[] = ["dns-sync", "--tenant", t.name];
     if ((t as any)?.createZones) args.push("--create-zones");
-    await runCmd(jobId, runner, [...prefixArgs, ...args], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, ...args], { cwd: "/root", env: wsEnv });
 
     // After syncing, refresh DKIM fields in the app DB from server-generated dns-records.txt.
     try {
@@ -969,7 +1006,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     if (t.createZones) args2.push("--create-zones");
 
     const [runner, ...prefixArgs] = sudoWrap(addon);
-    await runCmd(jobId, runner, [...prefixArgs, ...args2], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, ...args2], { cwd: "/root", env: wsEnv });
 
     // Sync DKIM public key from the server-generated dns-records.txt into the app's Domain table.
     // This avoids mismatches (or invalid key formats) if the domain was created in-app earlier.
@@ -1103,7 +1140,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     ];
 
     const [runner, ...prefixArgs] = sudoWrap(addon);
-    await runCmd(jobId, runner, [...prefixArgs, ...args2], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, ...args2], { cwd: "/root", env: wsEnv });
 
     // Sync DKIM public key from the server-generated dns-records.txt into the app's Domain table.
     // This ensures the DKIM TXT value shown in the UI is the REAL server key.
@@ -1152,7 +1189,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     // 2) Suspend tenant (best-effort), then remove tenant folder and rebuild maps
     try {
       const [runner, ...prefixArgs] = sudoWrap(addon);
-      await runCmd(jobId, runner, [...prefixArgs, "tenant-suspend", "--tenant", t.name], { cwd: "/root" });
+      await runCmd(jobId, runner, [...prefixArgs, "tenant-suspend", "--tenant", t.name], { cwd: "/root", env: wsEnv });
     } catch {
       await logJob(jobId, "⚠️  tenant-suspend failed (continuing)");
     }
@@ -1169,7 +1206,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
 
     try {
       const [runner, ...prefixArgs] = sudoWrap(addon);
-      await runCmd(jobId, runner, [...prefixArgs, "exim-rebuild"], { cwd: "/root" });
+      await runCmd(jobId, runner, [...prefixArgs, "exim-rebuild"], { cwd: "/root", env: wsEnv });
     } catch {
       await logJob(jobId, "⚠️  exim-rebuild failed (continuing)");
     }
@@ -1204,7 +1241,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
 
     // Execute server-side deletion: remove domain from tenant + delete mail users/maildirs + rebuild maps
     const [runner, ...prefixArgs] = sudoWrap(addon);
-    await runCmd(jobId, runner, [...prefixArgs, "tenant-remove-domain", "--tenant", t.name, "--domain", domainName], { cwd: "/root" });
+    await runCmd(jobId, runner, [...prefixArgs, "tenant-remove-domain", "--tenant", t.name, "--domain", domainName], { cwd: "/root", env: wsEnv });
 
     // DB cleanup (best-effort) in case API deleted partially
     try {
@@ -1234,7 +1271,7 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
   if (!cmdArgs) throw new Error(`Unknown mailstack job type: ${type}`);
 
   const [runner, ...prefixArgs] = sudoWrap(addon);
-  await runCmd(jobId, runner, [...prefixArgs, ...cmdArgs], { cwd: "/root" });
+  await runCmd(jobId, runner, [...prefixArgs, ...cmdArgs], { cwd: "/root", env: wsEnv });
 
   if (type === "mailstack:tenant-tls-issue") {
     // After issuing TLS, mark matching app mailboxes as strict TLS (turn off skip-verify)
@@ -2319,6 +2356,140 @@ function anyKeywordIn(blob: string, keys: string[]): boolean {
   return false;
 }
 
+
+function getHeader(parsed: any, key: string): string | null {
+  try {
+    const h = (parsed as any)?.headers;
+    if (h && typeof h.get === "function") {
+      const v = h.get(String(key).toLowerCase());
+      if (v == null) return null;
+      return String(v);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function detectBounceEmail(parsed: any, bodyText: string, bodyHtml: string) {
+  const fromAddr = (parsed as any)?.from?.value?.[0]?.address ? String((parsed as any).from.value[0].address).toLowerCase() : "";
+  const fromText = (parsed as any)?.from?.text ? String((parsed as any).from.text).toLowerCase() : "";
+  const subject = (parsed as any)?.subject ? String((parsed as any).subject).toLowerCase() : "";
+
+  const ct = (getHeader(parsed, "content-type") || "").toLowerCase();
+  const autoSubmitted = (getHeader(parsed, "auto-submitted") || "").toLowerCase();
+  const returnPath = (getHeader(parsed, "return-path") || "").toLowerCase();
+  const xFailed = (getHeader(parsed, "x-failed-recipients") || "").toLowerCase();
+  const precedence = (getHeader(parsed, "precedence") || "").toLowerCase();
+
+  // NOTE: Many DSNs keep the important fields (Final-Recipient / Diagnostic-Code / Status) inside
+  // a delivery-status part which some parsers won't include in parsed.text.
+  // So we:
+  // 1) Trust Content-Type multipart/report delivery-status
+  // 2) Trust obvious MAILER-DAEMON / postmaster senders + strong subject
+  // 3) Scan whatever body text we do have for DSN markers
+  const bodyStripped = bodyHtml ? stripHtml(String(bodyHtml)) : "";
+  const text = `${subject}\n${bodyText || ""}\n${bodyStripped}`.toLowerCase();
+
+  const hasReport = ct.includes("multipart/report") && (ct.includes("delivery-status") || ct.includes("report-type=delivery-status"));
+
+  const hasDeliveryStatusPart = Array.isArray((parsed as any)?.attachments)
+    ? (parsed as any).attachments.some((a: any) => {
+        const t = String(a?.contentType || "").toLowerCase();
+        return t.includes("message/delivery-status") || t.includes("delivery-status");
+      })
+    : false;
+
+  const isMailerDaemon =
+    fromAddr.includes("mailer-daemon") ||
+    fromText.includes("mailer-daemon") ||
+    fromText.includes("mail delivery subsystem") ||
+    fromAddr.includes("postmaster") ||
+    fromText.includes("postmaster") ||
+    fromText.includes("mail delivery system");
+
+  const subjBounce =
+    subject.includes("undelivered") ||
+    subject.includes("delivery status notification") ||
+    subject.includes("returned mail") ||
+    subject.includes("failure notice") ||
+    subject.includes("delivery failure") ||
+    subject.includes("mail delivery failed") ||
+    subject.includes("returned message to sender") ||
+    subject.includes("message delayed") ||
+    subject.startsWith("warning:");
+
+  // DSN markers often present in either the human-readable part or the delivery-status part.
+  const bodyBounce =
+    text.includes("diagnostic-code") ||
+    text.includes("final-recipient") ||
+    text.includes("original-recipient") ||
+    text.includes("action: failed") ||
+    text.includes("action: delayed") ||
+    text.includes("status:") ||
+    text.includes("reporting-mta") ||
+    text.includes("remote-mta") ||
+    text.includes("smtp error from remote mail server") ||
+    text.includes("this is a permanent error") ||
+    text.includes("returning message to sender") ||
+    text.includes("the email account that you tried to reach does not exist");
+
+  const autoGen =
+    autoSubmitted.includes("auto-replied") ||
+    autoSubmitted.includes("auto-generated") ||
+    precedence.includes("bulk") ||
+    precedence.includes("junk") ||
+    precedence.includes("auto_reply");
+
+  // DSN status parsing (best-effort)
+  let dsnStatus: string | null = null;
+  const m = text.match(/\bstatus\s*:\s*([245]\.\d+\.\d+)\b/i);
+  if (m && m[1]) dsnStatus = String(m[1]);
+
+  // Soft vs hard (best-effort)
+  let bounceClass: "hard" | "soft" = "hard";
+  if (dsnStatus && dsnStatus.startsWith("4")) bounceClass = "soft";
+  if (!dsnStatus) {
+    if (subject.includes("delayed") || text.includes("temporary") || text.includes("try again") || text.includes("temporarily") || text.includes("4.")) {
+      bounceClass = "soft";
+    }
+  }
+
+  // Strong rules (catch plain-text Exim bounces like your example):
+  // - MAILER-DAEMON + bounce-like subject is enough even if parser didn't include DSN body.
+  const strongMailerSubject = isMailerDaemon && subjBounce;
+
+  const isBounce = Boolean(
+    hasReport ||
+      hasDeliveryStatusPart ||
+      xFailed ||
+      strongMailerSubject ||
+      ((isMailerDaemon || subjBounce) && bodyBounce) ||
+      (isMailerDaemon && autoGen) ||
+      // extra safety: empty return-path is common for DSNs
+      ((returnPath.includes("<>") || returnPath.trim() === "") && subjBounce)
+  );
+
+  return {
+    isBounce,
+    bounceClass,
+    dsnStatus,
+    reason: hasReport
+      ? "dsn_report"
+      : hasDeliveryStatusPart
+      ? "delivery_status_part"
+      : xFailed
+      ? "x_failed_recipients"
+      : strongMailerSubject
+      ? "mailer_daemon_subject"
+      : isMailerDaemon
+      ? "mailer_daemon"
+      : subjBounce
+      ? "subject"
+      : "heuristic",
+  };
+}
+
 async function handleSyncImap(payload: any) {
   const { mailboxId } = payload;
   const mb = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
@@ -2472,6 +2643,132 @@ async function handleSyncImap(payload: any) {
 
           const blob = `${(parsed.subject || "").toString()}\n${(bodyText || "").toString()}`.toLowerCase();
 
+          const bounce = detectBounceEmail(parsed, bodyText || "", bodyHtmlRaw || "");
+          if (bounce.isBounce) {
+            const bounceMessageId = cleanMsgId((parsed as any)?.messageId) || null;
+            const evType = bounce.bounceClass === "soft" ? "bounce_soft" : "bounce_hard";
+
+            const existingBounce = bounceMessageId
+              ? await prisma.event.findFirst({
+                  where: {
+                    messageId: out.id,
+                    type: { in: ["bounce_hard", "bounce_soft", "bounce"] },
+                    meta: { contains: `"bounceMessageId":"${bounceMessageId}"` },
+                  },
+                })
+              : await prisma.event.findFirst({
+                  where: {
+                    messageId: out.id,
+                    type: { in: ["bounce_hard", "bounce_soft", "bounce"] },
+                    AND: [{ meta: { contains: `"mailboxId":"${mb.id}"` } }, { meta: { contains: `"uid":${uid}` } }],
+                  },
+                });
+
+            if (!existingBounce) {
+              await prisma.event
+                .create({
+                  data: {
+                    messageId: out.id,
+                    type: evType,
+                    meta: JSON.stringify({
+                      mailboxId: mb.id,
+                      from: parsed.from?.text || null,
+                      fromAddress,
+                      subject: parsed.subject || null,
+                      date: parsed.date ? parsed.date.toISOString() : null,
+                      bounceMessageId,
+                      dsnStatus: bounce.dsnStatus || null,
+                      reason: bounce.reason || null,
+                      snippet,
+                      uid,
+                    }),
+                  },
+                })
+                .catch(() => {});
+            }
+
+
+            // If this DSN was previously mis-classified as a reply, remove that reply event (best-effort).
+            try {
+              if (bounceMessageId) {
+                await prisma.event.deleteMany({
+                  where: { messageId: out.id, type: "reply", meta: { contains: `"replyMessageId":"${bounceMessageId}"` } },
+                });
+              } else {
+                await prisma.event.deleteMany({
+                  where: {
+                    messageId: out.id,
+                    type: "reply",
+                    AND: [{ meta: { contains: `"mailboxId":"${mb.id}"` } }, { meta: { contains: `"uid":${uid}` } }],
+                  },
+                });
+              }
+            } catch {
+              // ignore
+            }
+
+            const err = `DSN bounce (${bounce.reason}${bounce.dsnStatus ? `, ${bounce.dsnStatus}` : ""})${snippet ? `: ${snippet}` : ""}`;
+
+            await prisma.message
+              .update({
+                where: { id: out.id },
+                data: {
+                  status: bounce.bounceClass === "soft" ? "failed" : "bounced",
+                  error: err.slice(0, 2000),
+                  smtpCode: null,
+                  bounceType: "dsn",
+                },
+              })
+              .catch(() => {});
+
+            // deliverability guardrails - best effort
+            if (out.campaignId) {
+              await maybeAutoPauseCampaign(String(out.campaignId)).catch(() => {});
+              const campAny: any = out.campaign as any;
+              if (campAny) {
+                await maybeThrottleMailboxOnSpike(campAny, mb.id).catch(() => {});
+              }
+            }
+
+            // Hard bounce: suppress + optionally stop
+            if (bounce.bounceClass !== "soft") {
+              if (out.leadId) {
+                await prisma.lead
+                  .updateMany({
+                    where: { id: out.leadId, status: { notIn: ["unsubscribed"] } },
+                    data: { status: "bounced" },
+                  })
+                  .catch(() => {});
+
+                await prisma.suppression
+                  .upsert({
+                    where: { workspaceId_email: { workspaceId: mb.workspaceId, email: out.lead?.email || "" } },
+                    update: { reason: "bounce" },
+                    create: { workspaceId: mb.workspaceId, email: out.lead?.email || "", reason: "bounce" },
+                  })
+                  .catch(() => {});
+              }
+
+              const camp2: any = out.campaign as any;
+              if (out.campaignId && out.leadId && camp2?.stopOnBounce) {
+                await prisma.enrollment
+                  .updateMany({
+                    where: { campaignId: out.campaignId, leadId: out.leadId, status: { in: ["queued", "active"] } },
+                    data: { status: "stopped", stopReason: "bounce" },
+                  })
+                  .catch(() => {});
+              }
+
+              await dispatchWebhooks(mb.workspaceId, "bounce", {
+                mailboxId: mb.id,
+                messageId: out.id,
+                leadEmail: out.lead?.email || null,
+                error: err.slice(0, 2000),
+                campaignId: out.campaignId || null,
+              }).catch(()=>{});
+            }
+          } else {
+
           if (already) {
             // Backfill body/meta for older rows that were created before we stored reply body.
             // This will only run if you re-scan the message (eg. by lowering imapLastUid for that mailbox).
@@ -2598,6 +2895,7 @@ async function handleSyncImap(payload: any) {
               from: parsed.from?.text || null,
               subject: parsed.subject || null,
             }).catch(()=>{});
+          }
           }
         }
 

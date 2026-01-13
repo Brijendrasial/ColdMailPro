@@ -17,10 +17,10 @@ export default async function MailstackPage() {
   // Defensive: some installs end up with a session wid that has no Workspace row
   // (eg after partial DB resets / schema pushes). MailstackConfig has an FK to Workspace,
   // so ensure the Workspace (and Membership) exist before creating config.
-  const existingWs = await prisma.workspace.findUnique({ where: { id: s.wid } });
-  if (!existingWs) {
+  let ws = await prisma.workspace.findUnique({ where: { id: s.wid } });
+  if (!ws) {
     const wsName = user?.name ? `${user.name}'s Workspace` : "Default Workspace";
-    await prisma.workspace.create({ data: { id: s.wid, name: wsName } });
+    ws = await prisma.workspace.create({ data: { id: s.wid, name: wsName } });
   }
 
   const existingMembership = await prisma.membership.findUnique({
@@ -73,6 +73,16 @@ Then restart:
 
   return (
     <Container>
+      <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
+        <div className="min-w-0">
+          <div className="text-2xl font-semibold">🛠️ Mailstack</div>
+          <div className="text-sm opacity-70 mt-1 truncate">
+            Workspace: <span className="font-medium">{ws.name}</span>{" "}
+            <span className="font-mono text-xs opacity-80">({s.wid.slice(0, 8)})</span>
+          </div>
+        </div>
+        <div className="text-xs opacity-60">Tip: switch workspace from the sidebar → “Switch workspace”.</div>
+      </div>
       <div className="grid gap-6">
         <Card title="Mailstack integration">
           <p className="opacity-80 text-sm">
@@ -87,7 +97,7 @@ Then restart:
                 <Input name="serverIp" defaultValue={cfg.serverIp || ""} placeholder="51.38.38.222" />
               </div>
               <div>
-                <div className="text-xs opacity-70 mb-1">Cloudflare API token (stored encrypted)</div>
+                <div className="text-xs opacity-70 mb-1">Cloudflare API token (stored per-workspace, encrypted)</div>
                 <Input name="cloudflareToken" type="password" placeholder={cfg.cloudflareTokenEnc ? "•••••••• (set)" : "paste token"} />
               </div>
             </div>
@@ -99,7 +109,7 @@ Then restart:
           </form>
 
           <form className="mt-3" action="/api/mailstack/config/init" method="post">
-            <Button variant="ghost" type="submit">Init Cloudflare (writes /etc/mailstack/cloudflare.env)</Button>
+            <Button variant="ghost" type="submit">Init Cloudflare (writes /etc/mailstack/workspaces/&lt;workspace&gt;/cloudflare.env)</Button>
           </form>
 
           <div className="mt-4 flex gap-3">

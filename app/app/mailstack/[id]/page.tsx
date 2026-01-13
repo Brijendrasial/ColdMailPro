@@ -7,6 +7,7 @@ import { ResetTenantForm } from "@/components/mailstack/reset-tenant-form";
 
 export default async function TenantPage({ params }: { params: { id: string } }) {
   const s = await requireSession();
+  const ws = await prisma.workspace.findUnique({ where: { id: s.wid }, select: { name: true } });
   const t = await prisma.mailstackTenant.findFirst({
     where: { id: params.id, workspaceId: s.wid },
     include: { domains: true, ips: true, users: true, mailboxes: true },
@@ -15,6 +16,16 @@ export default async function TenantPage({ params }: { params: { id: string } })
 
   return (
     <Container>
+      <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
+        <div className="min-w-0">
+          <div className="text-2xl font-semibold">🛠️ Mailstack</div>
+          <div className="text-sm opacity-70 mt-1 truncate">
+            Workspace: <span className="font-medium">{ws?.name || "Workspace"}</span>{" "}
+            <span className="font-mono text-xs opacity-80">({s.wid.slice(0, 8)})</span>
+          </div>
+        </div>
+        <Link href="/app/mailstack" className="text-xs underline opacity-80">Back to Mailstack</Link>
+      </div>
       <div className="grid gap-6">
         <Card title={`Tenant: ${t.name}`}>
           <div className="flex flex-wrap gap-2 items-center">

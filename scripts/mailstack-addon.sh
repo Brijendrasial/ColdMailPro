@@ -7,7 +7,9 @@ set -Eeuo pipefail
 # =========================
 
 STATE_DIR="/etc/mailstack"
-CF_ENV="${STATE_DIR}/cloudflare.env"
+# Cloudflare token storage path.
+# If you run multiple workspaces/tenants on one server, you can set CF_ENV_PATH to use a workspace-specific file.
+CF_ENV="${CF_ENV_PATH:-${STATE_DIR}/cloudflare.env}"
 SECRETS="${STATE_DIR}/secrets.txt"
 TENANTS_DIR="${STATE_DIR}/tenants"
 
@@ -112,7 +114,11 @@ load_mailstack_db_vars(){
 # Cloudflare API
 # -------------------------
 cf_load(){
-  [[ -f "$CF_ENV" ]] || die "Cloudflare not initialized. Run: $0 init-cloudflare <TOKEN>"
+  # Prefer env var if provided by caller (recommended for per-workspace runs)
+  if [[ -n "${CF_API_TOKEN:-}" ]]; then
+    return 0
+  fi
+  [[ -f "$CF_ENV" ]] || die "Cloudflare not initialized. Run: $0 init-cloudflare <TOKEN> (writes ${CF_ENV})"
   # shellcheck disable=SC1090
   source "$CF_ENV"
   [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN missing in ${CF_ENV}"
@@ -120,6 +126,10 @@ cf_load(){
 
 # Non-fatal check: returns 0 if Cloudflare token is available, else 1.
 cf_ready(){
+  # Env var wins
+  if [[ -n "${CF_API_TOKEN:-}" ]]; then
+    return 0
+  fi
   if [[ -f "$CF_ENV" ]]; then
     # shellcheck disable=SC1090
     source "$CF_ENV"
@@ -131,7 +141,7 @@ cf_ready(){
 cf_save_token(){
   local token="$1"
   local acme_email="${2:-}"
-  mkdir -p "$STATE_DIR"
+  mkdir -p "$(dirname "$CF_ENV")"
   cat > "$CF_ENV" <<EOF
 # Cloudflare API token (Zone:Read, DNS:Edit, Zone:Edit/Create if using --create-zones)
 CF_API_TOKEN="${token}"

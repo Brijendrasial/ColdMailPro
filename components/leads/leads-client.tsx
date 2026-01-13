@@ -108,6 +108,21 @@ export function LeadsClient() {
   const [fRequireMailbox, setFRequireMailbox] = useState(true);
   const [fSenderMailboxId, setFSenderMailboxId] = useState<string>("");
 
+  // Allow deep-linking into a pre-filled search (e.g. from global search)
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const prefill = (sp.get("prefill") || "").trim();
+      if (prefill) {
+        setQ(prefill);
+      }
+    } catch {
+      // ignore
+    }
+    // run once
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Enroll modal data
   const [campaigns, setCampaigns] = useState<CampaignMini[]>([]);
   const [enrollCampaignId, setEnrollCampaignId] = useState<string>("");

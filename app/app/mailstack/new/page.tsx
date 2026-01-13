@@ -5,10 +5,22 @@ import { prisma } from "@/lib/prisma";
 
 export default async function NewTenant() {
   const s = await requireSession();
+  const ws = await prisma.workspace.findUnique({ where: { id: s.wid }, select: { name: true } });
   const cfg = await prisma.mailstackConfig.findUnique({ where: { workspaceId: s.wid } });
 
   return (
     <Container>
+      <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
+        <div className="min-w-0">
+          <div className="text-2xl font-semibold">🛠️ Mailstack</div>
+          <div className="text-sm opacity-70 mt-1 truncate">
+            Workspace: <span className="font-medium">{ws?.name || "Workspace"}</span>{" "}
+            <span className="font-mono text-xs opacity-80">({s.wid.slice(0, 8)})</span>
+          </div>
+        </div>
+        <Link href="/app/mailstack" className="text-xs underline opacity-80">Back to Mailstack</Link>
+      </div>
+
       <div className="grid gap-6">
         <Card title="Create mail tenant">
           <p className="opacity-80 text-sm">

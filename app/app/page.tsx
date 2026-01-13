@@ -189,7 +189,7 @@ export default async function Dashboard({
       .then((rows) => rows.length),
     prisma.event
       .findMany({
-        where: { type: "bounce", createdAt: { gte: rangeStart, lte: rangeEnd }, message: { workspaceId: s.wid } },
+        where: { type: { in: ["bounce","bounce_hard","bounce_soft"] }, createdAt: { gte: rangeStart, lte: rangeEnd }, message: { workspaceId: s.wid } },
         distinct: ["messageId"],
         select: { messageId: true },
       })

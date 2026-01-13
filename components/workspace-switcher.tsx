@@ -82,8 +82,9 @@ export default function WorkspaceSwitcher({
       });
       const j = await r.json();
       if (!j?.ok) throw new Error("Failed");
-      // Hard reload so server components re-render under the new wid cookie
-      window.location.href = "/app";
+      // Hard reload the CURRENT page so server components re-render under the new wid cookie.
+      // This keeps the user on the same screen (eg Mailstack) after switching.
+      window.location.href = window.location.href;
     } catch {
       setErr("Failed to switch workspace");
       setBusy(null);
@@ -107,7 +108,7 @@ export default function WorkspaceSwitcher({
       const j = await r.json();
       if (!j?.ok) throw new Error("Failed");
       // create route switches into the new workspace
-      window.location.href = "/app";
+      window.location.href = window.location.href;
     } catch {
       setErr("Failed to create workspace");
       setBusy(null);

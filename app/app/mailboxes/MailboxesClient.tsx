@@ -183,6 +183,19 @@ export default function MailboxesClient() {
   const [testText, setTestText] = useState("This is a test email from ColdMailPro.");
   const [testBusy, setTestBusy] = useState(false);
 
+  // Allow deep-linking into a pre-filled search (e.g. from global search)
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const prefill = (sp.get("prefill") || "").trim();
+      if (prefill) setQ(prefill);
+    } catch {
+      // ignore
+    }
+    // run once
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function refresh() {
     setLoading(true);
     setError(null);

@@ -121,7 +121,7 @@ export async function GET(req: Request) {
     prisma.event.count({ where: { type: "open", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
     prisma.event.count({ where: { type: "click", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
     prisma.event.count({ where: { type: "reply", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
-    prisma.event.count({ where: { type: "bounce", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
+    prisma.event.count({ where: { type: { in: ["bounce","bounce_hard","bounce_soft"] }, createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
     prisma.event.count({ where: { type: "unsubscribe", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
 
     prisma.lead.count({ where: { workspaceId: s.wid, createdAt: { gte: from.toDate(), lt: toExcl.toDate() } } }),
@@ -182,7 +182,7 @@ export async function GET(req: Request) {
       SELECT m.mailboxId as id, COUNT(*) as c
       FROM \`Event\` e
       JOIN \`Message\` m ON m.id = e.messageId
-      ${whereEM} AND e.type = 'bounce' AND m.mailboxId IS NOT NULL
+      ${whereEM} AND e.type IN ('bounce','bounce_hard','bounce_soft') AND m.mailboxId IS NOT NULL
       GROUP BY m.mailboxId
     `),
 
@@ -208,7 +208,7 @@ export async function GET(req: Request) {
          ${whereEM2} AND e2.type = 'reply' AND m2.leadId IS NOT NULL) as replied,
         (SELECT COUNT(DISTINCT m3.leadId)
          FROM \`Event\` e3 JOIN \`Message\` m3 ON m3.id = e3.messageId
-         ${whereEM3} AND e3.type = 'bounce' AND m3.leadId IS NOT NULL) as bounced,
+         ${whereEM3} AND e3.type IN ('bounce','bounce_hard','bounce_soft') AND m3.leadId IS NOT NULL) as bounced,
         (SELECT COUNT(DISTINCT m4.leadId)
          FROM \`Event\` e4 JOIN \`Message\` m4 ON m4.id = e4.messageId
          ${whereEM4} AND e4.type = 'unsubscribe' AND m4.leadId IS NOT NULL) as unsub,
@@ -219,7 +219,7 @@ export async function GET(req: Request) {
 
     prisma.event.findMany({
       where: {
-        type: { in: ["reply", "bounce", "unsubscribe"] },
+        type: { in: ["reply", "bounce", "bounce_hard", "bounce_soft", "unsubscribe"] },
         createdAt: { gte: from.toDate(), lt: toExcl.toDate() },
         message: {
           workspaceId: s.wid,
@@ -264,8 +264,11 @@ export async function GET(req: Request) {
   for (const r of timesRows) {
     const d = dayjs(r.d).format("YYYY-MM-DD");
     const idx = dayList.indexOf(d);
-    if (idx >= 0 && seriesMap[r.type]) {
-      seriesMap[r.type][idx] = toNum(r.c);
+    // Fold bounce_hard/bounce_soft into bounce series for UI compatibility
+    const t = String((r as any).type || "");
+    const key = t === "bounce_hard" || t === "bounce_soft" ? "bounce" : t;
+    if (idx >= 0 && seriesMap[key]) {
+      seriesMap[key][idx] += toNum(r.c);
     }
   }
 
