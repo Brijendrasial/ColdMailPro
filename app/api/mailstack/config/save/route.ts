@@ -23,5 +23,21 @@ export async function POST(req: NextRequest) {
     update: data,
   });
 
+  // If a Cloudflare token was provided, auto-init Cloudflare on the server.
+  // This writes /etc/mailstack/cloudflare.env via mailstack-addon.sh (worker job).
+  if (tokenRaw) {
+    const job = await prisma.job.create({
+      data: {
+        type: "mailstack:init-cloudflare",
+        payload: JSON.stringify({ workspaceId: s.wid }),
+        runAt: new Date(),
+        status: "queued",
+      },
+    });
+    try {
+      await prisma.jobLog.create({ data: { jobId: job.id, line: "Queued init-cloudflare (token saved from Mailstack settings)" } });
+    } catch {}
+  }
+
   return NextResponse.redirect(absoluteUrl(req, "/app/mailstack"));
 }

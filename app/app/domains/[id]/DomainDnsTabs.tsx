@@ -95,6 +95,10 @@ export default function DomainDnsTabs({
   const [busySync, setBusySync] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  // Security UX: never prefill the real Cloudflare token into the DOM.
+  // If a token exists (saved from Mailstack tab), show a masked indicator and allow replacement.
+  const [replaceCloudflareToken, setReplaceCloudflareToken] = useState(false);
+
   const [outIps, setOutIps] = useState(safeTrim(outboundIpsText));
   const [detectMsg, setDetectMsg] = useState<string>("");
   const [detectBusy, setDetectBusy] = useState(false);
@@ -199,8 +203,24 @@ export default function DomainDnsTabs({
                   </div>
                   <div>
                     <div className="text-xs opacity-70 mb-1">Cloudflare API token</div>
-                    <Input name="cloudflareToken" placeholder="CF API token" />
-                    <div className="text-xs opacity-60 mt-1">Permissions: <b>Zone:Read</b> + <b>DNS:Edit</b>.</div>
+                    {hasCloudflareToken && !replaceCloudflareToken ? (
+                      <div className="flex items-center gap-2">
+                        {/* Masked indicator (not submitted) */}
+                        <Input value="•••••••••••• (saved)" disabled aria-label="Cloudflare token saved" />
+                        <Button type="button" variant="ghost" onClick={() => setReplaceCloudflareToken(true)}>
+                          Replace
+                        </Button>
+                      </div>
+                    ) : (
+                      <Input
+                        name="cloudflareToken"
+                        placeholder={hasCloudflareToken ? "Paste new token to replace" : "CF API token"}
+                        autoComplete="off"
+                      />
+                    )}
+                    <div className="text-xs opacity-60 mt-1">
+                      Permissions: <b>Zone:Read</b> + <b>DNS:Edit</b>. {hasCloudflareToken ? "(Using token saved in Mailstack settings.)" : ""}
+                    </div>
                   </div>
                 </div>
 

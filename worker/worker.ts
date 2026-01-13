@@ -553,8 +553,9 @@ async function logJob(jobId: string, line: string) {
   }
 }
 
-async function runCmd(jobId: string, cmd: string, args: string[], opts?: { cwd?: string }) {
-  await logJob(jobId, `$ ${cmd} ${args.join(" ")}`);
+async function runCmd(jobId: string, cmd: string, args: string[], opts?: { cwd?: string; logArgs?: string[] }) {
+  const la = Array.isArray(opts?.logArgs) ? (opts as any).logArgs : args;
+  await logJob(jobId, `$ ${cmd} ${la.join(" ")}`);
   return await new Promise<void>((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], cwd: opts?.cwd });
     child.stdout.on("data", (d) => logJob(jobId, String(d).trimEnd()));
@@ -698,7 +699,8 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
 
     const [runner, ...prefixArgs] = sudoWrap(addon);
     const args = [...prefixArgs, "init-cloudflare", token, String(acmeEmail)];
-    await runCmd(jobId, runner, args, { cwd: "/root" });
+    const logArgs = [...prefixArgs, "init-cloudflare", "<redacted>", String(acmeEmail)];
+    await runCmd(jobId, runner, args, { cwd: "/root", logArgs });
     await logJob(jobId, "✅ Cloudflare initialized");
     return;
   }
