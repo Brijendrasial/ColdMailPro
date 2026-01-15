@@ -27,9 +27,16 @@ function fmtPct(rate: number) {
   return `${Math.round(rate * 1000) / 10}%`;
 }
 
-export default async function CampaignDeliverabilityPage({ params }: { params: { id: string } }) {
+export default async function CampaignDeliverabilityPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
   const s = await requireSession();
   const id = params.id;
+  const rule = typeof searchParams?.rule === "string" ? searchParams.rule : "";
 
   const camp: any = await prisma.campaign.findFirst({ where: { id, workspaceId: s.wid } });
   if (!camp) {
@@ -40,7 +47,12 @@ export default async function CampaignDeliverabilityPage({ params }: { params: {
     );
   }
 
+  const guardEnabled = Boolean(camp.guardEnabled ?? true);
   const windowHours = Number(camp.guardWindowHours ?? 24);
+  const guardMinSent = Number(camp.guardMinSent ?? 50);
+  const maxHard = Number(camp.guardMaxHardBounceRate ?? 0.05);
+  const maxTotal = Number(camp.guardMaxBounceRate ?? 0.08);
+  const maxUnsub = Number(camp.guardMaxUnsubRate ?? 0.02);
   const since = new Date(Date.now() - windowHours * 3600 * 1000);
 
   const [sent, hardBounces, softBounces, unsubs, qa, activeThrottles] = await Promise.all([
@@ -68,6 +80,12 @@ export default async function CampaignDeliverabilityPage({ params }: { params: {
   if (unsubRate > Number(camp.guardMaxUnsubRate ?? 0.02)) suggestions.push("Unsub rate is high — tighten targeting and make the offer clearer/faster." );
   if (activeThrottles.length) suggestions.push("Some sender mailboxes are throttled — check DNS, inbox placement, and list quality." );
   if (suggestions.length === 0) suggestions.push("Looks healthy. Keep ramping slowly and monitor domain caps (Gmail/Yahoo) as volume grows.");
+
+  const guardActive = guardEnabled && sent >= guardMinSent;
+  const hitHard = guardActive && hardRate > maxHard;
+  const hitTotal = guardActive && bounceRate > maxTotal;
+  const hitUnsub = guardActive && unsubRate > maxUnsub;
+  const wouldPause = hitHard || hitTotal || hitUnsub;
 
   return (
     <Container>
@@ -117,6 +135,63 @@ export default async function CampaignDeliverabilityPage({ params }: { params: {
             {(qa?.warnings?.length ? (
               <div className="text-xs opacity-70">Warnings are non-blocking but can affect deliverability.</div>
             ) : null)}
+          </div>
+        </Card>
+
+        <Card title="Guardrails (auto-pause)" subtitle="When guardrails are enabled, the campaign can auto-pause if recent rates exceed thresholds.">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Pill tone={guardEnabled ? "success" : "neutral"}>{guardEnabled ? "Enabled" : "Disabled"}</Pill>
+            <Badge>Window: {windowHours}h</Badge>
+            <Badge>Min sent: {guardMinSent}</Badge>
+            {guardActive ? <Badge>Active</Badge> : <Badge>Not active yet</Badge>}
+            {wouldPause ? <Pill tone="danger">Would pause</Pill> : <Pill tone="success">Within limits</Pill>}
+          </div>
+
+          <div className="mt-3 grid gap-2 text-sm">
+            <div className={`rounded-xl border border-black/10 dark:border-white/10 p-3 ${rule === "hard_bounce" ? "bg-black/[0.03] dark:bg-white/[0.06]" : ""}`}>
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Hard bounce rate</div>
+                <div className="flex items-center gap-2">
+                  <Badge>{fmtPct(hardRate)} / {fmtPct(maxHard)}</Badge>
+                  {hitHard ? <Pill tone="danger">Hit</Pill> : <Pill tone="success">OK</Pill>}
+                </div>
+              </div>
+              <div className="text-xs opacity-70 mt-1">Rule: if sent ≥ {guardMinSent} in last {windowHours}h and hard bounce rate &gt; {fmtPct(maxHard)}.</div>
+            </div>
+
+            <div className={`rounded-xl border border-black/10 dark:border-white/10 p-3 ${rule === "bounce" || rule === "bounce_spike" ? "bg-black/[0.03] dark:bg-white/[0.06]" : ""}`}>
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Total bounce rate</div>
+                <div className="flex items-center gap-2">
+                  <Badge>{fmtPct(bounceRate)} / {fmtPct(maxTotal)}</Badge>
+                  {hitTotal ? <Pill tone="danger">Hit</Pill> : <Pill tone="success">OK</Pill>}
+                </div>
+              </div>
+              <div className="text-xs opacity-70 mt-1">Rule: if sent ≥ {guardMinSent} in last {windowHours}h and total bounce rate &gt; {fmtPct(maxTotal)}.</div>
+            </div>
+
+            <div className={`rounded-xl border border-black/10 dark:border-white/10 p-3 ${rule === "unsub" || rule === "unsub_spike" ? "bg-black/[0.03] dark:bg-white/[0.06]" : ""}`}>
+              <div className="flex items-center justify-between">
+                <div className="font-medium">Unsubscribe rate</div>
+                <div className="flex items-center gap-2">
+                  <Badge>{fmtPct(unsubRate)} / {fmtPct(maxUnsub)}</Badge>
+                  {hitUnsub ? <Pill tone="danger">Hit</Pill> : <Pill tone="success">OK</Pill>}
+                </div>
+              </div>
+              <div className="text-xs opacity-70 mt-1">Rule: if sent ≥ {guardMinSent} in last {windowHours}h and unsub rate &gt; {fmtPct(maxUnsub)}.</div>
+            </div>
+
+            {camp?.pausedReason ? (
+              <div className={`rounded-xl border border-black/10 dark:border-white/10 p-3 ${rule === "paused" ? "bg-black/[0.03] dark:bg-white/[0.06]" : ""}`}>
+                <div className="font-medium">Paused reason</div>
+                <div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{String(camp.pausedReason)}</div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <Link href={`/app/campaigns/${camp.id}/settings`}><Button variant="ghost">Edit guardrails</Button></Link>
+            <Link href={`/app/campaigns?status=running&health=risk`}><Button variant="ghost">View other risky campaigns</Button></Link>
           </div>
         </Card>
 

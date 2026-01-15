@@ -19,6 +19,7 @@ function buildWhereEM(params: {
   toExcl: Date;
   campaignId?: string;
   mailboxId?: string;
+  bounceType?: string;
   eAlias?: string;
   mAlias?: string;
 }): Prisma.Sql {
@@ -33,6 +34,15 @@ function buildWhereEM(params: {
   ];
   if (params.campaignId) parts.push(Prisma.sql`${Prisma.raw(`${m}.campaignId`)} = ${params.campaignId}`);
   if (params.mailboxId) parts.push(Prisma.sql`${Prisma.raw(`${m}.mailboxId`)} = ${params.mailboxId}`);
+  if (params.bounceType) {
+    if (params.bounceType === "unknown") {
+      parts.push(
+        Prisma.sql`(${Prisma.raw(`${m}.bounceType`)} IS NULL OR ${Prisma.raw(`${m}.bounceType`)} = '' OR ${Prisma.raw(`${m}.bounceType`)} = 'unknown')`
+      );
+    } else {
+      parts.push(Prisma.sql`${Prisma.raw(`${m}.bounceType`)} = ${params.bounceType}`);
+    }
+  }
   return Prisma.sql`WHERE ${andAll(parts)}`;
 }
 
@@ -53,6 +63,10 @@ export async function GET(req: Request) {
   const range = (url.searchParams.get("range") || "7d") as "7d" | "30d" | "90d" | "custom";
   const campaignId = url.searchParams.get("campaignId") || "";
   const mailboxId = url.searchParams.get("mailboxId") || "";
+  const bounceTypeRaw = String(url.searchParams.get("bounceType") || "").trim().toLowerCase();
+  const bounceType = ["blocked", "policy", "hard", "soft", "mailbox_full", "unknown"].includes(bounceTypeRaw)
+    ? bounceTypeRaw
+    : "";
 
   const now = dayjs();
   let from = now.subtract(6, "day").startOf("day");
@@ -84,15 +98,30 @@ export async function GET(req: Request) {
     toExcl: toExclDate,
     campaignId: campaignId || undefined,
     mailboxId: mailboxId || undefined,
+    bounceType: bounceType || undefined,
     eAlias: "e",
     mAlias: "m",
   });
 
   // For subqueries that use different aliases
-  const whereEM2 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, eAlias: "e2", mAlias: "m2" });
-  const whereEM3 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, eAlias: "e3", mAlias: "m3" });
-  const whereEM4 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, eAlias: "e4", mAlias: "m4" });
-  const whereEM5 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, eAlias: "e5", mAlias: "m5" });
+  const whereEM2 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, bounceType: bounceType || undefined, eAlias: "e2", mAlias: "m2" });
+  const whereEM3 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, bounceType: bounceType || undefined, eAlias: "e3", mAlias: "m3" });
+  const whereEM4 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, bounceType: bounceType || undefined, eAlias: "e4", mAlias: "m4" });
+  const whereEM5 = buildWhereEM({ workspaceId: s.wid, from: fromDate, toExcl: toExclDate, campaignId: campaignId || undefined, mailboxId: mailboxId || undefined, bounceType: bounceType || undefined, eAlias: "e5", mAlias: "m5" });
+
+  // Prisma where clause for Event → Message relationship (used by fast counts)
+  const messageWhere: any = {
+    workspaceId: s.wid,
+    ...(campaignId ? { campaignId } : {}),
+    ...(mailboxId ? { mailboxId } : {}),
+  };
+  if (bounceType) {
+    if (bounceType === "unknown") {
+      messageWhere.OR = [{ bounceType: null }, { bounceType: "" }, { bounceType: "unknown" }];
+    } else {
+      messageWhere.bounceType = bounceType;
+    }
+  }
 
   const [
     sent,
@@ -117,12 +146,12 @@ export async function GET(req: Request) {
     campaigns,
     mailboxes,
   ] = await Promise.all([
-    prisma.event.count({ where: { type: "sent", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
-    prisma.event.count({ where: { type: "open", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
-    prisma.event.count({ where: { type: "click", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
-    prisma.event.count({ where: { type: "reply", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
-    prisma.event.count({ where: { type: { in: ["bounce","bounce_hard","bounce_soft"] }, createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
-    prisma.event.count({ where: { type: "unsubscribe", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: { workspaceId: s.wid, ...(campaignId ? { campaignId } : {}), ...(mailboxId ? { mailboxId } : {}) } } }),
+    prisma.event.count({ where: { type: "sent", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: messageWhere } }),
+    prisma.event.count({ where: { type: "open", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: messageWhere } }),
+    prisma.event.count({ where: { type: "click", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: messageWhere } }),
+    prisma.event.count({ where: { type: "reply", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: messageWhere } }),
+    prisma.event.count({ where: { type: { in: ["bounce","bounce_hard","bounce_soft"] }, createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: messageWhere } }),
+    prisma.event.count({ where: { type: "unsubscribe", createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, message: messageWhere } }),
 
     prisma.lead.count({ where: { workspaceId: s.wid, createdAt: { gte: from.toDate(), lt: toExcl.toDate() } } }),
     prisma.enrollment.count({ where: { campaign: { workspaceId: s.wid }, createdAt: { gte: from.toDate(), lt: toExcl.toDate() }, ...(campaignId ? { campaignId } : {}) } }),
@@ -221,11 +250,7 @@ export async function GET(req: Request) {
       where: {
         type: { in: ["reply", "bounce", "bounce_hard", "bounce_soft", "unsubscribe"] },
         createdAt: { gte: from.toDate(), lt: toExcl.toDate() },
-        message: {
-          workspaceId: s.wid,
-          ...(campaignId ? { campaignId } : {}),
-          ...(mailboxId ? { mailboxId } : {}),
-        },
+        message: messageWhere,
       },
       orderBy: { createdAt: "desc" },
       take: 25,

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Card, Input, Button, Textarea, Badge } from "@/components/ui";
+import { Card, Input, Button, Textarea, Pill, Divider } from "@/components/ui";
 
 function isIPv4(v: string) {
   return /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(v);
@@ -46,9 +46,11 @@ export default function AddDomainCard({
   const [selectedIps, setSelectedIps] = useState<Record<string, boolean>>({});
   const [ipsErr, setIpsErr] = useState<string>("");
   const [manualIps, setManualIps] = useState(false);
+  const [copyMsg, setCopyMsg] = useState<string | null>(null);
 
   const parsed = useMemo(() => parseIps(outboundIps), [outboundIps]);
   const spfPreview = useMemo(() => buildSpf(parsed.uniq), [parsed.uniq]);
+  const selectedIpList = useMemo(() => Object.keys(selectedIps).filter((k) => !!selectedIps[k]), [selectedIps]);
 
   const parsedDomains = useMemo(() => {
     const lines = String(domainsRaw || "")
@@ -86,6 +88,25 @@ export default function AddDomainCard({
     }
   }
 
+  function setAll(ips: string[], checked: boolean) {
+    setSelectedIps((m) => {
+      const next = { ...m };
+      for (const ip of ips) next[ip] = checked;
+      return next;
+    });
+  }
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyMsg("Copied");
+      setTimeout(() => setCopyMsg(null), 1200);
+    } catch {
+      setCopyMsg("Copy failed");
+      setTimeout(() => setCopyMsg(null), 1500);
+    }
+  }
+
   // initial detect
   useEffect(() => {
     fetchIps();
@@ -104,171 +125,253 @@ export default function AddDomainCard({
       title="Add domain (generates DKIM keys)"
       right={
         <div className="flex items-center gap-2">
-          <Badge>{parsedDomains.ok.length} domain{parsedDomains.ok.length === 1 ? "" : "s"}</Badge>
-          <Badge>{parsed.uniq.length} outbound IP{parsed.uniq.length === 1 ? "" : "s"}</Badge>
+          <Pill tone={parsedDomains.ok.length ? "info" : "neutral"}>
+            {parsedDomains.ok.length} domain{parsedDomains.ok.length === 1 ? "" : "s"}
+          </Pill>
+          <Pill tone={parsed.uniq.length ? "info" : "neutral"}>
+            {parsed.uniq.length} outbound IP{parsed.uniq.length === 1 ? "" : "s"}
+          </Pill>
         </div>
       }
     >
-      <form action="/api/domains/create" method="post" className="grid gap-3">
-        <div>
-          <div className="text-sm mb-1 opacity-80">Tenant name (required)</div>
-          <Input
-            name="tenantName"
-            required
-            value={tenantName}
-            onChange={(e) => setTenantName(e.target.value)}
-            placeholder="e.g. tenant-1"
-            list="tenantNames"
-          />
-          <datalist id="tenantNames">
-            {tenants.map((t) => (
-              <option key={t.id} value={t.name} />
-            ))}
-          </datalist>
-          <div className="text-xs opacity-60 mt-1">All domains you paste below will be grouped under this tenant.</div>
-        </div>
-        <div>
-          <div className="text-sm mb-1 opacity-80">Domains (one per line)</div>
-          <Textarea
-            name="names"
-            required
-            value={domainsRaw}
-            onChange={(e) => setDomainsRaw(e.target.value)}
-            rows={3}
-            placeholder={`example.com\nexample2.com\n...`}
-          />
-          {parsedDomains.invalid.length ? (
-            <div className="text-xs text-red-700 mt-1">
-              Invalid lines ignored: {parsedDomains.invalid.slice(0, 6).join(", ")}{parsedDomains.invalid.length > 6 ? "…" : ""}
-            </div>
-          ) : (
-            <div className="text-xs opacity-60 mt-1">
-              Tip: paste a whole list. We will skip duplicates automatically.
-            </div>
-          )}
-        </div>
+      <div className="text-sm text-slate-600 -mt-2 mb-4">
+        Create a tenant, paste one (or many) domains, and we’ll generate DKIM keys + a clean SPF suggestion based on your outbound IP pool.
+      </div>
 
+      <form action="/api/domains/create" method="post" className="grid gap-4">
         <input type="hidden" name="dkimSelector" value="default" />
 
-        <div>
-          <div className="text-sm mb-1 opacity-80">Tracking subdomain (optional)</div>
-          <Input name="trackingSubdomain" placeholder="t.%d" />
-          <div className="text-xs opacity-60 mt-1">For bulk add, use <b>%d</b> as the domain placeholder (e.g. <b>t.%d</b>).</div>
-        </div>
+        <div className="grid lg:grid-cols-3 gap-4">
+          {/* Left: main inputs */}
+          <div className="lg:col-span-2 grid gap-4">
+            <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="text-sm font-semibold">Step 1</div>
+                <div className="text-sm text-slate-700">Tenant + domains</div>
+                <div className="ml-auto flex items-center gap-2">
+                  {parsedDomains.invalid.length ? (
+                    <Pill tone="warning">{parsedDomains.invalid.length} invalid</Pill>
+                  ) : parsedDomains.ok.length ? (
+                    <Pill tone="success">ready</Pill>
+                  ) : (
+                    <Pill tone="neutral">paste domains</Pill>
+                  )}
+                </div>
+              </div>
+              <Divider className="my-3" />
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="font-medium">Outbound IPs (used for SPF)</div>
-            <div className="text-xs opacity-70">one per line</div>
-            <div className="ml-auto flex items-center gap-2">
-              {parsed.invalid.length ? <Badge tone="danger">{parsed.invalid.length} invalid</Badge> : <Badge tone="success">valid</Badge>}
-              <Button type="button" variant="ghost" onClick={fetchIps}>Detect from server</Button>
-            </div>
-          </div>
-
-          {ipsErr ? <div className="text-xs text-red-700 mt-2">{ipsErr}</div> : null}
-
-          {detectedPublicIps.length || detectedPrivateIps.length ? (
-            <div className="mt-2 grid gap-2">
-              {detectedPublicIps.length ? (
+              <div className="grid md:grid-cols-2 gap-4">
                 <div>
-                  <div className="text-xs opacity-70 mb-1">Detected public IPv4</div>
-                  <div className="flex flex-wrap gap-2">
-                    {detectedPublicIps.map((ip) => (
-                      <label key={ip} className="flex items-center gap-2 text-xs rounded-full border border-slate-200 px-3 py-1 bg-white">
-                        <input
-                          type="checkbox"
-                          checked={!!selectedIps[ip]}
-                          onChange={(e) => setSelectedIps((m) => ({ ...m, [ip]: e.target.checked }))}
-                        />
-                        <span className="font-mono">{ip}</span>
-                      </label>
+                  <div className="text-xs uppercase tracking-wider text-slate-600 mb-1">Tenant name (required)</div>
+                  <Input
+                    name="tenantName"
+                    required
+                    value={tenantName}
+                    onChange={(e) => setTenantName(e.target.value)}
+                    placeholder="e.g. sial"
+                    list="tenantNames"
+                  />
+                  <datalist id="tenantNames">
+                    {tenants.map((t) => (
+                      <option key={t.id} value={t.name} />
                     ))}
+                  </datalist>
+                  <div className="text-xs text-slate-600 mt-1">All domains pasted below will be grouped under this tenant.</div>
+                </div>
+
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-slate-600 mb-1">Tracking subdomain (optional)</div>
+                  <Input name="trackingSubdomain" placeholder="t.%d" />
+                  <div className="text-xs text-slate-600 mt-1">
+                    Use <b>%d</b> as the domain placeholder for bulk add (example: <b>t.%d</b>).
                   </div>
                 </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="text-xs uppercase tracking-wider text-slate-600 mb-1">Domains (one per line)</div>
+                <Textarea
+                  name="names"
+                  required
+                  value={domainsRaw}
+                  onChange={(e) => setDomainsRaw(e.target.value)}
+                  rows={4}
+                  placeholder={`example.com\nexample2.com\n...`}
+                />
+                <div className="mt-1 flex items-center gap-2 flex-wrap text-xs">
+                  <span className="text-slate-600">Duplicates are skipped automatically.</span>
+                  {parsedDomains.invalid.length ? (
+                    <span className="text-red-700">
+                      Invalid lines ignored: {parsedDomains.invalid.slice(0, 6).join(", ")}
+                      {parsedDomains.invalid.length > 6 ? "…" : ""}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="text-sm font-semibold">Step 2</div>
+                <div className="text-sm text-slate-700">Outbound IP pool (SPF)</div>
+                <div className="ml-auto flex items-center gap-2">
+                  {parsed.invalid.length ? <Pill tone="danger">{parsed.invalid.length} invalid</Pill> : <Pill tone="success">valid</Pill>}
+                  <Button type="button" variant="ghost" onClick={fetchIps}>Detect from server</Button>
+                </div>
+              </div>
+              <Divider className="my-3" />
+
+              {ipsErr ? <div className="text-xs text-red-700 mb-2">{ipsErr}</div> : null}
+
+              {detectedPublicIps.length || detectedPrivateIps.length ? (
+                <div className="grid gap-3">
+                  {detectedPublicIps.length ? (
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="text-xs text-slate-600">Detected public IPv4</div>
+                        <div className="ml-auto flex items-center gap-2">
+                          <Button type="button" variant="ghost" onClick={() => setAll(detectedPublicIps, true)}>Select all</Button>
+                          <Button type="button" variant="ghost" onClick={() => setAll(detectedPublicIps, false)}>Clear</Button>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {detectedPublicIps.map((ip) => (
+                          <label key={ip} className="flex items-center gap-2 text-xs rounded-full border border-slate-200 px-3 py-1 bg-white/70 hover:bg-white transition">
+                            <Input
+                              type="checkbox"
+                              checked={!!selectedIps[ip]}
+                              onChange={(e) => setSelectedIps((m) => ({ ...m, [ip]: e.target.checked }))}
+                            />
+                            <span className="font-mono">{ip}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-xs text-slate-600">
+                        Tip: keep <b>2+</b> outbound IPs if you want zero‑downtime rotation.
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {detectedPrivateIps.length ? (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-slate-600">Show private IPv4 (usually not for SPF)</summary>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {detectedPrivateIps.map((ip) => (
+                          <label key={ip} className="flex items-center gap-2 text-xs rounded-full border border-slate-200 px-3 py-1 bg-white/70 hover:bg-white transition">
+                            <Input
+                              type="checkbox"
+                              checked={!!selectedIps[ip]}
+                              onChange={(e) => setSelectedIps((m) => ({ ...m, [ip]: e.target.checked }))}
+                            />
+                            <span className="font-mono">{ip}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+
+                  <label className="flex items-center gap-2 text-xs text-slate-700">
+                    <Input type="checkbox" checked={manualIps} onChange={(e) => setManualIps(e.target.checked)} />
+                    Manual override (edit text)
+                  </label>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-600">No IPs detected yet.</div>
+              )}
+
+              <Textarea
+                name="outboundIps"
+                value={outboundIps}
+                onChange={(e) => setOutboundIps(e.target.value)}
+                readOnly={!manualIps}
+                rows={4}
+                placeholder={`51.38.38.222\n46.105.154.97\n...`}
+                className="mt-3"
+              />
+              <div className="mt-2 text-xs text-slate-600">
+                Saved as workspace defaults and automatically included in SPF suggestions for newly added domains.
+              </div>
+            </div>
+          </div>
+
+          {/* Right: preview + advanced + create */}
+          <div className="lg:col-span-1 grid gap-4">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-semibold">Preview</div>
+                <div className="ml-auto flex items-center gap-2">
+                  {copyMsg ? <span className="text-xs text-slate-600">{copyMsg}</span> : null}
+                  <Button type="button" variant="ghost" onClick={() => copy(spfPreview)}>Copy SPF</Button>
+                </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-white/70 p-3">
+                <div className="text-xs text-slate-600 mb-1">SPF (TXT at root)</div>
+                <div className="font-mono text-xs break-words">{spfPreview}</div>
+              </div>
+
+              <div className="mt-3 grid gap-2 text-xs text-slate-700">
+                <div className="flex items-center justify-between">
+                  <span>Domains ready</span>
+                  <span className="font-medium">{parsedDomains.ok.length}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Selected outbound IPs</span>
+                  <span className="font-medium">{selectedIpList.length}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>DKIM selector</span>
+                  <span className="font-medium font-mono">default</span>
+                </div>
+              </div>
+
+              {parsed.invalid.length ? (
+                <div className="mt-3 text-xs text-red-700">Invalid IP lines ignored: {parsed.invalid.slice(0, 6).join(", ")}{parsed.invalid.length > 6 ? "…" : ""}</div>
               ) : null}
-              {detectedPrivateIps.length ? (
-                <details className="text-xs">
-                  <summary className="cursor-pointer opacity-70">Show private IPv4 (usually NOT for SPF)</summary>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {detectedPrivateIps.map((ip) => (
-                      <label key={ip} className="flex items-center gap-2 text-xs rounded-full border border-slate-200 px-3 py-1 bg-white">
-                        <input
-                          type="checkbox"
-                          checked={!!selectedIps[ip]}
-                          onChange={(e) => setSelectedIps((m) => ({ ...m, [ip]: e.target.checked }))}
-                        />
-                        <span className="font-mono">{ip}</span>
-                      </label>
-                    ))}
+            </div>
+
+            <details className="rounded-2xl border border-slate-200 bg-white/70 p-4" open={showAdvanced} onToggle={(e) => setShowAdvanced((e.target as any)?.open)}>
+              <summary className="cursor-pointer list-none">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold">Advanced</div>
+                    <div className="text-xs text-slate-600 mt-0.5">Cloudflare + server defaults</div>
                   </div>
-                </details>
-              ) : null}
+                  {hasCloudflareToken ? <Pill tone="success">Cloudflare connected</Pill> : <Pill tone="neutral">Cloudflare optional</Pill>}
+                </div>
+              </summary>
+              <Divider className="my-3" />
 
-              <label className="flex items-center gap-2 text-xs opacity-80">
-                <input type="checkbox" checked={manualIps} onChange={(e) => setManualIps(e.target.checked)} />
-                Manual override (edit text)
-              </label>
+              <div className="grid gap-3">
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-slate-600 mb-1">Server IP (mail.&lt;domain&gt; A record)</div>
+                  <Input name="serverIp" value={serverIp} onChange={(e) => setServerIp(e.target.value)} placeholder="51.38.38.222" />
+                  <div className="text-xs text-slate-600 mt-1">Used for A record suggestions and Mailstack provisioning defaults.</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-slate-600 mb-1">Cloudflare API token</div>
+                  <Input
+                    name="cloudflareToken"
+                    placeholder={hasCloudflareToken ? "(already connected — paste to replace)" : "CF API token"}
+                    autoComplete="off"
+                  />
+                  <div className="text-xs text-slate-600 mt-1">Permissions: <b>Zone:Read</b> + <b>DNS:Edit</b>.</div>
+                </div>
+              </div>
+            </details>
+
+            <Button type="submit" disabled={!tenantName.trim() || !parsedDomains.ok.length}>
+              Create & generate DKIM
+            </Button>
+
+            <div className="text-xs text-slate-600">
+              After creating, the server generates DKIM keys for the tenant and syncs the <b>real</b> DKIM TXT value into the app.
+              If you open a domain immediately, you may briefly see “DKIM pending” until the prepare job finishes.
             </div>
-          ) : (
-            <div className="mt-2 text-xs opacity-70">No IPs detected yet.</div>
-          )}
-
-          <Textarea
-            name="outboundIps"
-            value={outboundIps}
-            onChange={(e) => setOutboundIps(e.target.value)}
-            readOnly={!manualIps}
-            rows={4}
-            placeholder={`51.38.38.222\n51.38.38.223\n...`}
-            className="mt-2"
-          />
-
-          <div className="mt-2 text-xs opacity-70">
-            These IPs are saved as workspace defaults and automatically included in the <b>SPF suggestion</b> for new domains.
           </div>
-
-          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <div className="text-xs opacity-70 mb-1">SPF preview (TXT at root)</div>
-            <div className="font-mono text-xs break-words">{spfPreview}</div>
-          </div>
-
-          {parsed.invalid.length ? (
-            <div className="mt-2 text-xs text-red-700">
-              Invalid lines ignored: {parsed.invalid.slice(0, 6).join(", ")}
-              {parsed.invalid.length > 6 ? "…" : ""}
-            </div>
-          ) : null}
         </div>
-
-        <div>
-          <button type="button" onClick={() => setShowAdvanced((v) => !v)} className="text-sm underline opacity-80">
-            {showAdvanced ? "Hide" : "Show"} Cloudflare / server settings
-          </button>
-        </div>
-
-        {showAdvanced ? (
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <div className="text-sm mb-1 opacity-80">Server IP (for mail.&lt;domain&gt; A record)</div>
-              <Input name="serverIp" value={serverIp} onChange={(e) => setServerIp(e.target.value)} placeholder="51.38.38.222" />
-              <div className="text-xs opacity-60 mt-1">Used for A record suggestions and Mailstack provisioning defaults.</div>
-            </div>
-            <div>
-              <div className="text-sm mb-1 opacity-80">Cloudflare API token (optional)</div>
-              <Input name="cloudflareToken" placeholder={hasCloudflareToken ? "(already connected — paste to replace)" : "CF API token"} />
-              <div className="text-xs opacity-60 mt-1">Permissions: <b>Zone:Read</b> + <b>DNS:Edit</b>.</div>
-            </div>
-          </div>
-        ) : null}
-
-        <Button type="submit" disabled={!tenantName.trim() || !parsedDomains.ok.length}>Create</Button>
       </form>
 
-      <div className="text-xs opacity-70 mt-3">
-        After creating, the server will generate DKIM keys for the tenant and sync the <b>real</b> DKIM TXT value into the app.
-        If you open a domain immediately, you may briefly see “DKIM pending” until the prepare job finishes.
-      </div>
+      {/* footer note moved into right column */}
     </Card>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Input, Pill } from "@/components/ui";
+import { Button, Input, Pill, Kpi, Divider } from "@/components/ui";
 
 type DomainHealth = {
   pending: boolean;
@@ -50,6 +50,28 @@ function statusPill(h: DomainHealth) {
   if (h.status === "warning") return <Pill tone="warning">needs work</Pill>;
   if (h.status === "fail") return <Pill tone="danger">misconfigured</Pill>;
   return <Pill tone="neutral">not checked</Pill>;
+}
+
+function scoreBar(score: number, status: DomainHealth["status"], pending: boolean) {
+  const s = Math.max(0, Math.min(100, Math.round(score || 0)));
+  const tone = pending
+    ? "bg-indigo-500"
+    : status === "healthy"
+      ? "bg-emerald-500"
+      : status === "warning"
+        ? "bg-amber-500"
+        : status === "fail"
+          ? "bg-red-500"
+          : "bg-slate-400";
+
+  return (
+    <div className="mt-2">
+      <div className="h-2 w-28 rounded-full bg-slate-200/80 overflow-hidden">
+        <div className={`${tone} h-full`} style={{ width: `${s}%` }} />
+      </div>
+      <div className="text-[11px] text-slate-600 mt-1">score {s}/100</div>
+    </div>
+  );
 }
 
 function recPill(label: string, ok: boolean | null | undefined, detail?: string) {
@@ -113,6 +135,17 @@ export default function DomainsClient() {
     return out;
   }, [rows, q, filter]);
 
+  const counts = useMemo(() => {
+    const c = { all: rows.length, healthy: 0, warning: 0, fail: 0, pending: 0 };
+    for (const r of rows) {
+      if (r.health?.pending) c.pending += 1;
+      if (r.health?.status === "healthy") c.healthy += 1;
+      if (r.health?.status === "warning") c.warning += 1;
+      if (r.health?.status === "fail") c.fail += 1;
+    }
+    return c;
+  }, [rows]);
+
   async function runCheck(domainId: string) {
     setNotice(null);
     setBusy((m) => ({ ...m, [domainId]: true }));
@@ -173,79 +206,129 @@ export default function DomainsClient() {
     }
   }
 
-  if (loading) return <div className="text-sm opacity-70">Loading…</div>;
-  if (error) return <div className="text-sm text-red-700">{clip(error, 300)}</div>;
+  if (loading) {
+    return (
+      <div className="grid gap-4">
+        <div className="grid sm:grid-cols-4 gap-3 animate-pulse">
+          <div className="glass p-5 h-[90px]" />
+          <div className="glass p-5 h-[90px]" />
+          <div className="glass p-5 h-[90px]" />
+          <div className="glass p-5 h-[90px]" />
+        </div>
+        <div className="glass p-5 h-[220px] animate-pulse" />
+      </div>
+    );
+  }
 
   return (
-    <div className="grid gap-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search domains…" className="max-w-sm" />
-        <select
-          className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as any)}
-        >
-          <option value="all">All</option>
-          <option value="healthy">Healthy</option>
-          <option value="warning">Needs work</option>
-          <option value="fail">Misconfigured</option>
-          <option value="pending">Checking…</option>
-        </select>
-        <Button variant="ghost" onClick={() => refresh()}>Refresh</Button>
-        {notice ? <span className="text-sm text-emerald-700">{notice}</span> : null}
+    <div className="grid gap-4">
+      <div className="grid sm:grid-cols-4 gap-3">
+        <button type="button" onClick={() => setFilter("all")} className="text-left">
+          <Kpi label="Domains" value={counts.all} hint="All domains" tone={filter === "all" ? "info" : "neutral"} />
+        </button>
+        <button type="button" onClick={() => setFilter("healthy")} className="text-left">
+          <Kpi label="Healthy" value={counts.healthy} hint="Ready to send" tone={filter === "healthy" ? "success" : "neutral"} />
+        </button>
+        <button type="button" onClick={() => setFilter("warning")} className="text-left">
+          <Kpi label="Needs work" value={counts.warning} hint="Fix DNS" tone={filter === "warning" ? "warning" : "neutral"} />
+        </button>
+        <button type="button" onClick={() => setFilter("fail")} className="text-left">
+          <Kpi label="Misconfigured" value={counts.fail} hint="Blocking issues" tone={filter === "fail" ? "danger" : "neutral"} />
+        </button>
       </div>
 
-      <div className="overflow-x-auto">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50/60 p-3 text-sm text-red-800">{clip(error, 300)}</div>
+      ) : null}
+      {notice ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 text-sm text-emerald-800">{notice}</div>
+      ) : null}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search domains…" className="max-w-sm" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <button type="button" onClick={() => setFilter("all")}>
+            <Pill tone={filter === "all" ? "info" : "neutral"}>All</Pill>
+          </button>
+          <button type="button" onClick={() => setFilter("pending")}>
+            <Pill tone={filter === "pending" ? "info" : "neutral"}>Checking ({counts.pending})</Pill>
+          </button>
+          <button type="button" onClick={() => setFilter("healthy")}>
+            <Pill tone={filter === "healthy" ? "success" : "neutral"}>Healthy</Pill>
+          </button>
+          <button type="button" onClick={() => setFilter("warning")}>
+            <Pill tone={filter === "warning" ? "warning" : "neutral"}>Needs work</Pill>
+          </button>
+          <button type="button" onClick={() => setFilter("fail")}>
+            <Pill tone={filter === "fail" ? "danger" : "neutral"}>Misconfigured</Pill>
+          </button>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="ghost" onClick={() => refresh()}>Refresh</Button>
+        </div>
+      </div>
+
+      <Divider />
+
+      <div className="table-wrap overflow-x-auto">
         <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left border-b border-slate-200">
-              <th className="py-2 pr-3">Domain</th>
-              <th className="py-2 pr-3">Health</th>
-              <th className="py-2 pr-3">Mailstack</th>
-              <th className="py-2 pr-3">Records</th>
-              <th className="py-2 pr-3">Issues</th>
-              <th className="py-2 pr-3">Last check</th>
-              <th className="py-2 pr-3">Actions</th>
+          <thead className="table-head">
+            <tr className="text-left">
+              <th className="table-cell">Domain</th>
+              <th className="table-cell">Health</th>
+              <th className="table-cell">Mailstack</th>
+              <th className="table-cell">Records</th>
+              <th className="table-cell">Issues</th>
+              <th className="table-cell">Last check</th>
+              <th className="table-cell">Actions</th>
             </tr>
           </thead>
           <tbody>
             {view.map((r) => (
-              <tr key={r.id} className="border-b border-slate-100">
-                <td className="py-2 pr-3">
+              <tr key={r.id} className="table-row">
+                <td className="table-cell">
                   <div className="font-medium">{r.name}</div>
-                  <div className="text-xs opacity-70">selector: {r.dkimSelector}{r.trackingSubdomain ? ` • tracking: ${r.trackingSubdomain}` : ""}</div>
+                  <div className="text-xs text-slate-600 mt-0.5">
+                    selector: <span className="font-mono">{r.dkimSelector}</span>
+                    {r.trackingSubdomain ? (
+                      <>
+                        <span className="mx-1">•</span>
+                        tracking: <span className="font-mono">{r.trackingSubdomain}</span>
+                      </>
+                    ) : null}
+                  </div>
                 </td>
-                <td className="py-2 pr-3">
+                <td className="table-cell">
                   {statusPill(r.health)}
-                  <div className="text-xs opacity-60 mt-1">score: {Math.round(r.health.score || 0)}/100</div>
+                  {scoreBar(r.health.score, r.health.status, r.health.pending)}
                 </td>
-                <td className="py-2 pr-3">
+                <td className="table-cell">
                   {r.mailstack ? (
                     <div className="text-xs">
                       <div className="font-medium">{r.mailstack.tenantName || "(tenant)"}</div>
-                      <div className="opacity-70">IPs: {r.mailstack.ipCount}</div>
+                      <div className="text-slate-600 mt-0.5">IPs: {r.mailstack.ipCount}</div>
                     </div>
                   ) : (
-                    <div className="text-xs opacity-60">—</div>
+                    <div className="text-xs text-slate-500">—</div>
                   )}
                 </td>
-                <td className="py-2 pr-3">
-                  <div className="flex items-center gap-1 flex-wrap">
+                <td className="table-cell">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     {recPill("SPF", r.health.spf?.ok ?? null, r.health.spf?.detail)}
                     {recPill("DKIM", r.health.dkim?.ok ?? null, r.health.dkim?.detail)}
                     {recPill("DMARC", r.health.dmarc?.ok ?? null, r.health.dmarc?.detail)}
                     {recPill("MX", r.health.mx?.ok ?? null, r.health.mx?.detail)}
                   </div>
                 </td>
-                <td className="py-2 pr-3">
-                  <div className="text-xs opacity-80">
+                <td className="table-cell">
+                  <div className="text-xs text-slate-700">
                     {r.health.issues?.length ? clip(r.health.issues.join(" • "), 140) : "—"}
                   </div>
                 </td>
-                <td className="py-2 pr-3">
+                <td className="table-cell">
                   <div>{fmtWhen(r.health.checkedAt)}</div>
                 </td>
-                <td className="py-2 pr-3">
+                <td className="table-cell">
                   <div className="flex items-center gap-2 flex-wrap">
                     <Button variant="ghost" onClick={() => runCheck(r.id)} disabled={!!busy[r.id] || r.health.pending}>
                       {busy[r.id] || r.health.pending ? "Checking…" : "Check"}
@@ -277,7 +360,7 @@ export default function DomainsClient() {
         </table>
       </div>
 
-      {view.length === 0 ? <div className="text-sm opacity-70">No domains match your filters.</div> : null}
+      {view.length === 0 ? <div className="text-sm text-slate-600">No domains match your filters.</div> : null}
     </div>
   );
 }

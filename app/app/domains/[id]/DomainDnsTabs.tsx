@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState, useContext } from "react";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Input, Textarea, Pill } from "@/components/ui";
 
 type DnsRow = { type: string; name: string; value: string; ttl?: number; priority?: number };
 
@@ -246,7 +246,7 @@ export default function DomainDnsTabs({
                   <Button type="submit">Save settings</Button>
                   <Copy text={safeTrim(defaultServerIp)} label="Copy server IP" />
                   <Copy text={zoneText} label="Copy all DNS records" />
-                  {parsed.invalid.length ? <Badge tone="danger">{parsed.invalid.length} invalid IP line{parsed.invalid.length === 1 ? "" : "s"}</Badge> : null}
+                  {parsed.invalid.length ? <Pill tone="danger">{parsed.invalid.length} invalid IP line{parsed.invalid.length === 1 ? "" : "s"}</Pill> : null}
                 </div>
               </form>
 

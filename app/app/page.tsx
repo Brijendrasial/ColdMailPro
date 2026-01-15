@@ -80,6 +80,47 @@ function toNumber(x: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function safeJsonParse(v: any) {
+  try {
+    return JSON.parse(String(v || "{}"));
+  } catch {
+    return null;
+  }
+}
+
+function startOfUtcDay(d: Date) {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+}
+
+function dateOnlyUTC(d: Date) {
+  // YYYY-MM-DD (UTC)
+  return d.toISOString().slice(0, 10);
+}
+
+function analyticsRangeParams(rangeKey: string, rangeStart: Date, rangeEnd: Date) {
+  const p = new URLSearchParams();
+  // Analytics supports: 7d | 30d | 90d | custom
+  if (rangeKey === "30d") {
+    p.set("range", "30d");
+    return p;
+  }
+  if (rangeKey === "custom") {
+    p.set("range", "custom");
+    p.set("from", dateOnlyUTC(rangeStart));
+    p.set("to", dateOnlyUTC(rangeEnd));
+    return p;
+  }
+  if (rangeKey === "24h") {
+    // Analytics ranges are day-based; map 24h into a 2-day custom range (close enough for drill-down).
+    p.set("range", "custom");
+    p.set("from", dateOnlyUTC(rangeStart));
+    p.set("to", dateOnlyUTC(rangeEnd));
+    return p;
+  }
+  p.set("range", "7d");
+  return p;
+}
+
 export default async function Dashboard({
   searchParams,
 }: {
@@ -88,6 +129,10 @@ export default async function Dashboard({
   const s = await requireSession();
 
   const now = new Date();
+  const todayStart = startOfUtcDay(now);
+  const tomorrowStart = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+  const nowPlus60m = new Date(now.getTime() + 60 * 60 * 1000);
+  const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const rangeKey = (searchParams?.range as string | undefined) || "7d";
 
   let rangeStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -137,7 +182,7 @@ export default async function Dashboard({
     campaignsDraft,
     leadsTotal,
     leadsActive,
-    domainsTotal,
+    domains,
     mailboxesActive,
     warmupEnabled,
     mailboxesMissingImap,
@@ -152,6 +197,17 @@ export default async function Dashboard({
     pausedWithReason,
     activeThrottles,
     recentEvents,
+    // Command center
+    mailboxDailyAgg,
+    sentToday,
+    queuedNow,
+    failedToday,
+    enrollDueSoon,
+    warmupPlacement7d,
+    domainDnsJobs,
+    replyThreadsAgg,
+    bounceTypeAgg,
+    recipientDomainAgg,
   ] = await Promise.all([
     prisma.campaign.count({ where: { workspaceId: s.wid, archivedAt: null } }),
     prisma.campaign.count({ where: { workspaceId: s.wid, status: "running", archivedAt: null } }),
@@ -159,7 +215,11 @@ export default async function Dashboard({
     prisma.campaign.count({ where: { workspaceId: s.wid, status: "draft", archivedAt: null } }),
     prisma.lead.count({ where: { workspaceId: s.wid } }),
     prisma.lead.count({ where: { workspaceId: s.wid, status: "active" } }),
-    prisma.domain.count({ where: { workspaceId: s.wid } }),
+    prisma.domain.findMany({
+      where: { workspaceId: s.wid },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, name: true },
+    }),
     prisma.mailbox.count({ where: { workspaceId: s.wid, isActive: true } }),
     prisma.mailbox.count({ where: { workspaceId: s.wid, isActive: true, warmupEnabled: true } }),
     prisma.mailbox.count({
@@ -250,6 +310,119 @@ export default async function Dashboard({
         },
       },
     }),
+
+    // -------------------------------
+    // Command center: Today / Replies / Queue / DNS+Warmup
+    // -------------------------------
+    prisma.mailbox.aggregate({
+      where: { workspaceId: s.wid, isActive: true },
+      _sum: { dailyLimit: true },
+    }),
+    prisma.message.count({ where: { workspaceId: s.wid, sentAt: { gte: todayStart, lt: tomorrowStart } } }),
+    prisma.message.count({ where: { workspaceId: s.wid, status: "queued" } }),
+    prisma.message.count({
+      where: { workspaceId: s.wid, status: "failed", createdAt: { gte: todayStart, lt: tomorrowStart } },
+    }),
+    prisma.enrollment.count({
+      where: {
+        campaign: { workspaceId: s.wid },
+        status: { in: ["queued", "active"] },
+        nextRunAt: { lte: nowPlus60m },
+      },
+    }),
+    prisma.warmupMessage.groupBy({
+      by: ["placement"],
+      where: { workspaceId: s.wid, seedInboxId: { not: null }, receivedAt: { gte: since7d } },
+      _count: { _all: true },
+    }),
+    prisma.job.findMany({
+      where: { type: "domain_dns_check", status: { in: ["queued", "running", "done", "failed"] } },
+      orderBy: { createdAt: "desc" },
+      take: 1200,
+      select: { status: true, payload: true, lastError: true, createdAt: true },
+    }),
+    prisma.$queryRaw`
+      SELECT
+        COUNT(*) AS totalThreads,
+        SUM(CASE WHEN (rs.lastReadAt IS NULL OR r.lastReplyAt > rs.lastReadAt) THEN 1 ELSE 0 END) AS unreadThreads,
+        SUM(
+          CASE
+            WHEN (rs.snoozeUntil IS NOT NULL AND rs.snoozeUntil <= ${now} AND COALESCE(rs.status,'open') IN ('open','follow_up'))
+              THEN 1
+            ELSE 0
+          END
+        ) AS dueThreads,
+        SUM(
+          CASE
+            WHEN (rs.assignedToUserId = ${s.uid} AND COALESCE(rs.status,'open') IN ('open','follow_up'))
+              THEN 1
+            ELSE 0
+          END
+        ) AS mineThreads,
+        SUM(CASE WHEN COALESCE(rs.status,'open') = 'open' THEN 1 ELSE 0 END) AS openThreads,
+        SUM(CASE WHEN COALESCE(rs.status,'open') = 'follow_up' THEN 1 ELSE 0 END) AS followUpThreads
+      FROM (
+        SELECT m.leadId AS leadId, MAX(e.createdAt) AS lastReplyAt
+        FROM Event e
+        JOIN Message m ON m.id = e.messageId
+        WHERE m.workspaceId = ${s.wid}
+          AND m.leadId IS NOT NULL
+          AND e.type = 'reply'
+        GROUP BY m.leadId
+      ) r
+      LEFT JOIN ReplyLeadState rs
+        ON rs.workspaceId = ${s.wid} AND rs.leadId = r.leadId
+    `,
+
+    // Bounce reasons breakdown (unique-by-message) for the selected range
+    prisma.$queryRaw`
+      SELECT COALESCE(m.bounceType,'unknown') AS bounceType, COUNT(DISTINCT e.messageId) AS cnt
+      FROM Event e
+      JOIN Message m ON m.id = e.messageId
+      WHERE m.workspaceId = ${s.wid}
+        AND e.createdAt >= ${rangeStart}
+        AND e.createdAt <= ${rangeEnd}
+        AND e.type IN ('bounce','bounce_hard','bounce_soft')
+      GROUP BY COALESCE(m.bounceType,'unknown')
+      ORDER BY cnt DESC
+    `,
+
+    // Recipient domain hotspots (top domains by volume) + bounce/unsub signals
+    prisma.$queryRaw`
+      SELECT s.domain AS domain,
+             COUNT(*) AS sent,
+             SUM(CASE WHEN b.messageId IS NOT NULL THEN 1 ELSE 0 END) AS bounced,
+             SUM(CASE WHEN u.messageId IS NOT NULL THEN 1 ELSE 0 END) AS unsub
+      FROM (
+        SELECT m.id AS messageId, LOWER(SUBSTRING_INDEX(l.email,'@',-1)) AS domain
+        FROM Message m
+        JOIN Lead l ON l.id = m.leadId
+        WHERE m.workspaceId = ${s.wid}
+          AND m.sentAt IS NOT NULL
+          AND m.sentAt >= ${rangeStart}
+          AND m.sentAt <= ${rangeEnd}
+          AND l.email IS NOT NULL
+          AND l.email <> ''
+          AND l.email LIKE '%@%'
+      ) s
+      LEFT JOIN (
+        SELECT DISTINCT e.messageId
+        FROM Event e
+        WHERE e.type IN ('bounce','bounce_hard','bounce_soft')
+          AND e.createdAt >= ${rangeStart}
+          AND e.createdAt <= ${rangeEnd}
+      ) b ON b.messageId = s.messageId
+      LEFT JOIN (
+        SELECT DISTINCT e.messageId
+        FROM Event e
+        WHERE e.type IN ('unsubscribe','unsub')
+          AND e.createdAt >= ${rangeStart}
+          AND e.createdAt <= ${rangeEnd}
+      ) u ON u.messageId = s.messageId
+      GROUP BY s.domain
+      ORDER BY sent DESC
+      LIMIT 8
+    `,
   ]);
 
   // Support legacy "unsub" events too.
@@ -257,6 +430,172 @@ export default async function Dashboard({
     where: { type: "unsub", createdAt: { gte: rangeStart, lte: rangeEnd }, message: { workspaceId: s.wid } },
   });
   const unsubTotalRange = unsubRange + unsubLegacyRange;
+
+  const domainsTotal = Array.isArray(domains) ? domains.length : 0;
+
+  // -------------------------------
+  // Command center derived values
+  // -------------------------------
+  // Today pacing
+  const capacityToday = toNumber((mailboxDailyAgg as any)?._sum?.dailyLimit ?? 0);
+  const remainingToday = Math.max(0, capacityToday - sentToday);
+  const dayProgress = clamp((now.getTime() - todayStart.getTime()) / (24 * 60 * 60 * 1000), 0, 1);
+  const expectedByNow = Math.round(capacityToday * dayProgress);
+
+  let paceTone: "success" | "warning" | "info" = "success";
+  let paceText = "On pace";
+  if (capacityToday >= 20) {
+    if (sentToday < expectedByNow * 0.85) {
+      paceTone = "warning";
+      paceText = "Behind";
+    } else if (sentToday > expectedByNow * 1.15) {
+      paceTone = "info";
+      paceText = "Ahead";
+    }
+  }
+
+  // Replies snapshot (threads are leads with at least 1 reply)
+  const ra = Array.isArray(replyThreadsAgg) && replyThreadsAgg[0] ? (replyThreadsAgg[0] as any) : {};
+  const replyThreadsTotal = toNumber(ra.totalThreads);
+  const replyUnreadThreads = toNumber(ra.unreadThreads);
+  const replyDueThreads = toNumber(ra.dueThreads);
+  const replyMineThreads = toNumber(ra.mineThreads);
+  const replyOpenThreads = toNumber(ra.openThreads);
+  const replyFollowUpThreads = toNumber(ra.followUpThreads);
+
+  // Warmup placement (last 7d)
+  let warmInbox = 0;
+  let warmSpam = 0;
+  let warmUnknown = 0;
+  for (const r of (warmupPlacement7d as any[])) {
+    const c = toNumber((r as any)?._count?._all);
+    if ((r as any).placement === "inbox") warmInbox += c;
+    else if ((r as any).placement === "spam") warmSpam += c;
+    else warmUnknown += c;
+  }
+  const warmTotal = warmInbox + warmSpam + warmUnknown;
+  const warmInboxRate = warmTotal ? warmInbox / warmTotal : 0;
+  const warmSpamRate = warmTotal ? warmSpam / warmTotal : 0;
+
+  // DNS summary (latest check per domain)
+  const domainIds = new Set((domains as any[]).map((d) => d.id));
+  const pendingDomains = new Set<string>();
+  const latestResultByDomain = new Map<string, any>();
+
+  for (const j of (domainDnsJobs as any[])) {
+    const p = safeJsonParse((j as any).payload);
+    if (!p) continue;
+    if (String(p.workspaceId || "") !== String(s.wid)) continue;
+    const did = String(p.domainId || "");
+    if (!did || !domainIds.has(did)) continue;
+
+    if ((j as any).status === "queued" || (j as any).status === "running") pendingDomains.add(did);
+    if (!latestResultByDomain.has(did) && ((j as any).status === "done" || (j as any).status === "failed")) {
+      latestResultByDomain.set(did, safeJsonParse((j as any).lastError));
+    }
+  }
+
+  let dnsHealthy = 0;
+  let dnsWarn = 0;
+  let dnsFail = 0;
+  let dnsNotChecked = 0;
+
+  for (const d of domains as any[]) {
+    const did = d.id;
+    const r = latestResultByDomain.get(did);
+    if (!r) {
+      if (!pendingDomains.has(did)) dnsNotChecked += 1;
+      continue;
+    }
+    const st = String(r?.summary?.status || "unknown");
+    if (st === "healthy") dnsHealthy += 1;
+    else if (st === "warning") dnsWarn += 1;
+    else if (st === "fail") dnsFail += 1;
+    else dnsWarn += 1;
+  }
+  const dnsPending = pendingDomains.size;
+
+  // Top broken domains (fail/warning/not-checked), for quick access
+  const domainHealth = (domains as any[]).map((d) => {
+    const did = String(d.id);
+    const r = latestResultByDomain.get(did);
+    const pending = pendingDomains.has(did);
+    const status = pending
+      ? "pending"
+      : String(r?.summary?.status || (r ? "unknown" : "not_checked"));
+    const score = toNumber(r?.summary?.score);
+    const issues = Array.isArray(r?.summary?.issues) ? (r.summary.issues as string[]) : [];
+    return { id: did, name: String(d.name || ""), status, pending, score, issues };
+  });
+
+  const domainWeight = (st: string) => {
+    if (st === "fail") return 0;
+    if (st === "warning") return 1;
+    if (st === "unknown") return 2;
+    if (st === "not_checked") return 3;
+    if (st === "pending") return 4;
+    return 5;
+  };
+
+  const brokenDomainsTop = domainHealth
+    .filter((x) => x.status !== "healthy")
+    .sort((a, b) => {
+      const wa = domainWeight(a.status);
+      const wb = domainWeight(b.status);
+      if (wa !== wb) return wa - wb;
+      // lower score = more urgent
+      if (Number.isFinite(a.score) && Number.isFinite(b.score) && a.score !== b.score) return a.score - b.score;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, 3);
+
+  const dnsTone = (st: string) => {
+    if (st === "fail") return "danger" as const;
+    if (st === "warning") return "warning" as const;
+    if (st === "pending") return "info" as const;
+    if (st === "not_checked") return "neutral" as const;
+    return "neutral" as const;
+  };
+
+  const dnsLabel = (st: string) => {
+    if (st === "fail") return "misconfigured";
+    if (st === "warning") return "needs work";
+    if (st === "pending") return "checking";
+    if (st === "not_checked") return "not checked";
+    return st;
+  };
+
+  // Bounce reasons breakdown
+  const bounceByType = new Map<string, number>();
+  for (const r of (bounceTypeAgg as any[])) {
+    const k = String((r as any)?.bounceType || "unknown");
+    bounceByType.set(k, (bounceByType.get(k) || 0) + toNumber((r as any)?.cnt));
+  }
+  const bounceTotal = [...bounceByType.values()].reduce((a, b) => a + b, 0);
+
+  const bounceTypeOrder = ["blocked", "policy", "hard", "soft", "mailbox_full", "unknown"];
+  const bounceBreakdown = bounceTypeOrder
+    .map((k) => ({ type: k, count: bounceByType.get(k) || 0 }))
+    .filter((x) => x.count > 0);
+
+  // Recipient domain hotspots
+  const recipientDomains = (recipientDomainAgg as any[])
+    .map((r) => {
+      const domain = String((r as any)?.domain || "").trim();
+      const sent = toNumber((r as any)?.sent);
+      const bounced = toNumber((r as any)?.bounced);
+      const unsub = toNumber((r as any)?.unsub);
+      return {
+        domain,
+        sent,
+        bounced,
+        unsub,
+        bounceRate: sent > 0 ? bounced / sent : 0,
+        unsubRate: sent > 0 ? unsub / sent : 0,
+      };
+    })
+    .filter((x) => x.domain && x.sent > 0)
+    .slice(0, 8);
 
   // Trend buckets via SQL (fast + accurate)
   const trendRows = (await prisma.$queryRaw`
@@ -547,6 +886,220 @@ export default async function Dashboard({
                 ➜ Analytics & deliverability
               </Link>
             </div>
+          </Card>
+        </div>
+
+        {/* Command center */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+          <Card title="Today pacing" subtitle="Capacity + remaining" right={<Pill tone={paceTone}>{paceText}</Pill>}>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <div className="text-slate-600">Sent today</div>
+                <div className="text-2xl font-semibold text-slate-900">{sentToday}</div>
+              </div>
+              <div>
+                <div className="text-slate-600">Remaining</div>
+                <div className="text-2xl font-semibold text-slate-900">{remainingToday}</div>
+              </div>
+            </div>
+
+            <div className="mt-3 text-xs text-slate-600">
+              Capacity: <b>{capacityToday}</b> · Expected by now: <b>{expectedByNow}</b>
+            </div>
+
+            <div className="mt-2 h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div
+                className="h-full bg-indigo-600"
+                style={{ width: `${Math.round(100 * clamp(capacityToday ? sentToday / capacityToday : 0, 0, 1))}%` }}
+              />
+            </div>
+          </Card>
+
+          <Card
+            title="Replies"
+            subtitle="Triage snapshot"
+            right={<Link href="/app/replies" className="text-sm text-indigo-700 hover:underline">Inbox</Link>}
+          >
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <div className="text-slate-600">Unread</div>
+                <div className="text-2xl font-semibold text-slate-900">{replyUnreadThreads}</div>
+              </div>
+              <div>
+                <div className="text-slate-600">Due now</div>
+                <div className="text-2xl font-semibold text-slate-900">{replyDueThreads}</div>
+              </div>
+              <div>
+                <div className="text-slate-600">Open</div>
+                <div className="font-semibold text-slate-900">{replyOpenThreads}</div>
+              </div>
+              <div>
+                <div className="text-slate-600">Follow-up</div>
+                <div className="font-semibold text-slate-900">{replyFollowUpThreads}</div>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-slate-600">
+              Threads: {replyThreadsTotal} · Mine: {replyMineThreads}
+            </div>
+          </Card>
+
+          <Card
+            title="Queue health"
+            subtitle="Scheduler + failures"
+            right={<Pill tone={failedToday > 0 ? "warning" : "success"}>{failedToday > 0 ? "Watch" : "OK"}</Pill>}
+          >
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <div className="text-slate-600">Queued now</div>
+                <div className="text-2xl font-semibold text-slate-900">{queuedNow}</div>
+              </div>
+              <div>
+                <div className="text-slate-600">Due next 60m</div>
+                <div className="text-2xl font-semibold text-slate-900">{enrollDueSoon}</div>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-slate-600">
+              Failed today: <b>{failedToday}</b>
+            </div>
+          </Card>
+
+          <Card
+            title="DNS + Warmup"
+            subtitle="Deliverability signals"
+            right={<Link href="/app/domains" className="text-sm text-indigo-700 hover:underline">Domains</Link>}
+          >
+            <div className="text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">DNS healthy</span>
+                <span className="font-semibold text-slate-900">{dnsHealthy}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Needs work</span>
+                <span className="font-semibold text-slate-900">{dnsWarn}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Misconfigured</span>
+                <span className="font-semibold text-slate-900">{dnsFail}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Pending / Not checked</span>
+                <span className="font-semibold text-slate-900">{dnsPending} / {dnsNotChecked}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 pt-3 border-t border-slate-200/70 text-xs text-slate-600">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-medium text-slate-700">Top domain issues</div>
+                <Link href="/app/domains" className="text-indigo-700 hover:underline">View</Link>
+              </div>
+
+              {brokenDomainsTop.length === 0 ? (
+                <div className="mt-2">No DNS issues detected (or not checked yet).</div>
+              ) : (
+                <div className="mt-2 grid gap-2">
+                  {brokenDomainsTop.map((d) => (
+                    <div key={d.id} className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link href={`/app/domains/${d.id}`} className="text-slate-900 hover:underline font-medium truncate block">
+                          {d.name}
+                        </Link>
+                        <div className="text-[11px] text-slate-600 truncate max-w-[260px]">
+                          {d.issues?.[0] ? String(d.issues[0]) : "Open domain to see details."}
+                        </div>
+                      </div>
+                      <Pill tone={dnsTone(d.status)}>{dnsLabel(d.status)}</Pill>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3 pt-3 border-t border-slate-200/70">
+                Warmup (7d): Inbox <b>{pct(warmInboxRate)}</b> · Spam <b>{pct(warmSpamRate)}</b>
+                <div className="mt-1">
+                  <Link href="/app/mailboxes/warmup" className="text-indigo-700 hover:underline">Warmup</Link>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* Deliverability insights */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+          <Card
+            title="Bounce reasons"
+            subtitle={rangeLabel}
+            right={<Link href="/app/analytics" className="text-sm text-indigo-700 hover:underline">Analytics</Link>}
+          >
+            {bounceTotal === 0 ? (
+              <div className="text-sm text-slate-600">No bounces detected in this range.</div>
+            ) : (
+              <div className="grid gap-2">
+                <div className="text-xs text-slate-600">Total bounced messages: <b>{bounceTotal}</b></div>
+                <div className="grid gap-2">
+                  {bounceBreakdown.map((x) => {
+                    const p = analyticsRangeParams(rangeKey, rangeStart, rangeEnd);
+                    p.set("tab", "deliverability");
+                    p.set("bounceType", x.type);
+                    const href = `/app/analytics?${p.toString()}`;
+                    const label =
+                      x.type === "blocked"
+                        ? "Blocked"
+                        : x.type === "policy"
+                          ? "Policy"
+                          : x.type === "hard"
+                            ? "Hard"
+                            : x.type === "soft"
+                              ? "Soft"
+                              : x.type === "mailbox_full"
+                                ? "Mailbox full"
+                                : "Unknown";
+                    return (
+                      <Link
+                        key={x.type}
+                        href={href}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/60 px-3 py-2 hover:bg-white transition"
+                        title="Open analytics drill-down"
+                      >
+                        <div className="text-sm text-slate-700">{label}</div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {x.count} <span className="text-slate-600 font-normal">({pct(x.count / Math.max(1, bounceTotal))})</span>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Card>
+
+          <Card
+            title="Recipient domains"
+            subtitle={`Top domains by sent volume · ${rangeLabel}`}
+            right={<Link href="/app/leads" className="text-sm text-indigo-700 hover:underline">Leads</Link>}
+          >
+            {recipientDomains.length === 0 ? (
+              <div className="text-sm text-slate-600">No sent messages with lead emails in this range.</div>
+            ) : (
+              <div className="grid gap-2">
+                {recipientDomains.map((d) => (
+                  <Link
+                    key={d.domain}
+                    href={`/app/leads?prefill=${encodeURIComponent("@" + d.domain)}`}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/60 px-3 py-2 hover:bg-white transition"
+                    title="Open leads filtered by this domain"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-900 truncate">{d.domain}</div>
+                      <div className="text-xs text-slate-600">
+                        Bounce {pct(d.bounceRate)} · Unsub {pct(d.unsubRate)}
+                      </div>
+                    </div>
+                    <Badge>{d.sent} sent</Badge>
+                  </Link>
+                ))}
+                <div className="text-xs text-slate-500">Tip: if a single domain dominates volume, consider per-domain caps to reduce risk.</div>
+              </div>
+            )}
           </Card>
         </div>
 

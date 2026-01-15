@@ -8,6 +8,40 @@ import { BarList, Heatmap, LineAreaChart, Sparkline } from "@/components/analyti
 
 type TabKey = "overview" | "campaigns" | "mailboxes" | "deliverability" | "funnel" | "heatmap" | "events";
 
+type BounceTypeKey = "" | "blocked" | "policy" | "hard" | "soft" | "mailbox_full" | "unknown";
+
+export type AnalyticsInitialParams = {
+  tab?: string;
+  range?: string;
+  from?: string;
+  to?: string;
+  campaignId?: string;
+  mailboxId?: string;
+  bounceType?: string;
+};
+
+function isTabKey(v: string): v is TabKey {
+  return ["overview", "campaigns", "mailboxes", "deliverability", "funnel", "heatmap", "events"].includes(v);
+}
+
+function isRangeKey(v: string): v is AnalyticsRangeKey {
+  return ["7d", "30d", "90d", "custom"].includes(v);
+}
+
+function isBounceType(v: string): v is BounceTypeKey {
+  return ["", "blocked", "policy", "hard", "soft", "mailbox_full", "unknown"].includes(v);
+}
+
+function bounceLabel(v: BounceTypeKey) {
+  if (v === "blocked") return "Blocked";
+  if (v === "policy") return "Policy";
+  if (v === "hard") return "Hard";
+  if (v === "soft") return "Soft";
+  if (v === "mailbox_full") return "Mailbox full";
+  if (v === "unknown") return "Unknown";
+  return "All";
+}
+
 function pct(n: number) {
   if (!isFinite(n)) return "0%";
   return `${Math.round(n * 1000) / 10}%`;
@@ -17,13 +51,22 @@ function fmt(n: number) {
   return (n ?? 0).toLocaleString();
 }
 
-export default function AnalyticsClient() {
-  const [tab, setTab] = useState<TabKey>("overview");
-  const [range, setRange] = useState<AnalyticsRangeKey>("7d");
-  const [customFrom, setCustomFrom] = useState<string>(dayjs().subtract(7, "day").format("YYYY-MM-DD"));
-  const [customTo, setCustomTo] = useState<string>(dayjs().format("YYYY-MM-DD"));
-  const [campaignId, setCampaignId] = useState<string>("");
-  const [mailboxId, setMailboxId] = useState<string>("");
+export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitialParams }) {
+  const initTab = isTabKey(String(initial?.tab || "")) ? (String(initial?.tab) as TabKey) : "overview";
+  const initRange = isRangeKey(String(initial?.range || "")) ? (String(initial?.range) as AnalyticsRangeKey) : "7d";
+  const initFrom = String(initial?.from || "").trim();
+  const initTo = String(initial?.to || "").trim();
+  const initCampaignId = String(initial?.campaignId || "");
+  const initMailboxId = String(initial?.mailboxId || "");
+  const initBounceType = isBounceType(String(initial?.bounceType || "")) ? (String(initial?.bounceType) as BounceTypeKey) : "";
+
+  const [tab, setTab] = useState<TabKey>(() => initTab);
+  const [range, setRange] = useState<AnalyticsRangeKey>(() => initRange);
+  const [customFrom, setCustomFrom] = useState<string>(() => (initFrom ? initFrom : dayjs().subtract(7, "day").format("YYYY-MM-DD")));
+  const [customTo, setCustomTo] = useState<string>(() => (initTo ? initTo : dayjs().format("YYYY-MM-DD")));
+  const [campaignId, setCampaignId] = useState<string>(() => initCampaignId);
+  const [mailboxId, setMailboxId] = useState<string>(() => initMailboxId);
+  const [bounceType, setBounceType] = useState<BounceTypeKey>(() => initBounceType);
 
   const [data, setData] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,8 +81,9 @@ export default function AnalyticsClient() {
     }
     if (campaignId) p.set("campaignId", campaignId);
     if (mailboxId) p.set("mailboxId", mailboxId);
+    if (bounceType) p.set("bounceType", bounceType);
     return p.toString();
-  }, [range, customFrom, customTo, campaignId, mailboxId]);
+  }, [range, customFrom, customTo, campaignId, mailboxId, bounceType]);
 
   async function load() {
     setLoading(true);
@@ -94,7 +138,7 @@ export default function AnalyticsClient() {
       {/* Controls */}
       <div className="glass p-4 sm:p-5">
         <div className="flex flex-col lg:flex-row lg:items-end gap-3">
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 flex-1">
             <div>
               <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Range</div>
               <Select value={range} onChange={(e) => setRange(e.target.value as AnalyticsRangeKey)}>
@@ -123,6 +167,19 @@ export default function AnalyticsClient() {
                 ))}
               </Select>
             </div>
+
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Bounce type</div>
+              <Select value={bounceType} onChange={(e) => setBounceType(e.target.value as BounceTypeKey)}>
+                <option value="">All bounce types</option>
+                <option value="blocked">Blocked</option>
+                <option value="policy">Policy</option>
+                <option value="hard">Hard</option>
+                <option value="soft">Soft</option>
+                <option value="mailbox_full">Mailbox full</option>
+                <option value="unknown">Unknown</option>
+              </Select>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:w-[520px]">
@@ -141,6 +198,7 @@ export default function AnalyticsClient() {
               <Button variant="ghost" onClick={() => {
                 setCampaignId("");
                 setMailboxId("");
+                setBounceType("");
                 setRange("7d");
                 setCustomFrom(dayjs().subtract(7, "day").format("YYYY-MM-DD"));
                 setCustomTo(dayjs().format("YYYY-MM-DD"));
@@ -176,6 +234,7 @@ export default function AnalyticsClient() {
                 </Badge>
                 {campaignId ? <Pill tone="info">Campaign filtered</Pill> : null}
                 {mailboxId ? <Pill tone="info">Mailbox filtered</Pill> : null}
+                {bounceType ? <Pill tone="warning">Bounce type: {bounceLabel(bounceType)}</Pill> : null}
               </>
             ) : null}
           </div>

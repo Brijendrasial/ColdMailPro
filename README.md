@@ -30,7 +30,9 @@ You can access the live demo here:
 > Want to add more? Drop PNGs into `docs/screenshots/` and link them here.
 
 ## Features
-- Campaigns + multi-step sequences
+- Campaigns + multi-step sequences (Instantly-style list: search/sort/status/health filters, bulk run/pause/stop/archive/duplicate, health pill, ops alerts for spikes/DNS/capacity with inline drill-down)
+- Campaign analytics: step summary + per-variant breakdown, **variant winners** (reply-rate winner + uplift)
+- Deliverability drill-down: template QA, sender throttles, and **guardrails (auto-pause thresholds)**
 - Lead import + dedupe
 - Manual lead add (single lead) + optional email verification (ping-email)
 - Import wizard: optional email verification (MX/SMTP) with invalid-row handling
@@ -39,6 +41,7 @@ You can access the live demo here:
 - Open/click tracking (pixel + redirect)
 - Unsubscribe + suppression lists
 - Basic bounce handling (SMTP errors + optional IMAP DSN parsing)
+- Dashboard command center: **today send capacity/pacing**, replies triage snapshot, queue health, DNS/warmup signals, plus **top broken domains**, bounce reason breakdown, and recipient-domain hotspots (with 1-click drill-down to Analytics/Leads)
 - Multi-tenant workspaces + users
 - Message logs + analytics
 - Rich Settings: account/workspace, password change, **2FA (TOTP)**, sessions/devices
