@@ -195,6 +195,7 @@ ColdMail Pro can verify lead emails **before saving** using `ping-email` (syntax
 Where it's available:
 - **Leads → Add lead** (manual add): verify before saving, choose verification mode.
 - **Leads → Import CSV wizard**: optionally verify each row during import, and either *skip invalid rows* or *stop on first error*.
+- **Leads → ✨ Enrich by website → Discover emails**: click **Verify** per email (or **Verify selected**) before importing; includes a **Manual check before adding** box for user-entered emails.
 
 Verification modes:
 - **Full (MX + SMTP mailbox check)**: attempts SMTP verification to confirm mailbox (best-effort).
@@ -226,6 +227,39 @@ PING_EMAIL_ATTEMPTS=1
 - Many providers (including Gmail) may **not reliably disclose mailbox existence** via SMTP (anti-enumeration), so Full mode is still best-effort.
 - If your VPS blocks outbound port 25, Full mode will fail—use Safe mode or unblock/relay SMTP.
 
+## Leads AI (optional)
+
+ColdMail Pro can use an **OpenAI-compatible** API to add AI helpers inside the Leads screen.
+
+Where it's available:
+- **Leads → select leads** → bulk bar → **✨ AI tags** (suggests a shared tag set and lets you apply it).
+- **Leads → select leads** → bulk bar → **✨ AI enrich** (suggests missing fields like name/company/website; applies in safe mode by default: *fill missing only*).
+- **Leads** (top right) → **✨ AI segments** (suggests useful saved views/segments; you can apply or save them).
+- **Leads** (top right) → **✨ Enrich by website** (paste a company site like `https://acme.com`).
+  - If you already have leads with matching email domains (e.g. `@acme.com`), it enriches missing fields in bulk.
+  - It can optionally discover **published emails via AI web search** (similar to ChatGPT browsing), create leads for them (skip duplicates), then enrich.
+  - The modal shows AI-labeled context for each found email (purpose, recommendation, confidence) and links to evidence URLs when available.
+
+### Environment variables
+
+Add these to your `.env` (see `.env.example`):
+
+```env
+LEADS_AI_ENABLED=1
+
+# Shared AI settings (OpenAI / OpenRouter / local gateway)
+AI_BASE_URL=https://api.openai.com/v1
+AI_API_KEY=...
+AI_MODEL=gpt-4o-mini
+AI_TIMEOUT_MS=60000
+
+# AI web search (recommended for email discovery without crawling)
+AI_WEBSEARCH_ENABLED=1
+AI_WEBSEARCH_MODEL=gpt-5
+AI_WEBSEARCH_MAX_TOOL_CALLS=3
+AI_WEBSEARCH_TIMEOUT_MS=120000
+```
+
 ## Security notes
 - Never commit `.env` or any private keys/certs.
 - Keep `.env.example` safe (placeholders only).
@@ -235,3 +269,29 @@ PING_EMAIL_ATTEMPTS=1
 **Proprietary (MTA). Not for redistribution or sale.**
 
 This project is governed by the **ColdMailPro Proprietary License (MTA)** (see `LICENSE`). You may not redistribute, publish, or sell this software, except as explicitly permitted under an executed Master Terms Agreement (“MTA”).
+## Security hardening (applied in this release)
+
+### 1) Signed click-tracking links (fixes open redirect)
+`/t/click` now requires a valid `sig` query param (HMAC) and only allows `http(s)` destinations.  
+New outbound emails automatically generate signed click links.
+
+**New env (recommended):**
+- `TRACKING_LINK_SECRET` — secret used to sign/verify tracking links (falls back to `JWT_SECRET` if unset).
+
+### 2) Avoid logging query-string PII from tracking endpoints
+The Next.js `middleware.ts` no longer runs on `/t/*`, and request logging no longer stores raw query-string values.
+(It records only param names.)
+
+### 3) Separate encryption key from JWT secret (key rotation-friendly)
+Mailbox credentials (and other encrypted fields) now prefer `ENCRYPTION_KEY` instead of `JWT_SECRET`.
+For backward compatibility, decrypt will also try the legacy JWT-derived key.
+
+**New env (recommended):**
+- `ENCRYPTION_KEY` — independent 32-byte key (base64/base64url). If unset, `JWT_SECRET` is used.
+
+### 4) AppLog retention sweep (automatic cleanup)
+The worker performs a daily retention sweep using `LOG_RETENTION_DAYS` (default: 30) and deletes older rows from `AppLog`.
+
+### 5) Basic CSRF mitigation for API routes
+Middleware blocks cross-origin unsafe requests (POST/PUT/PATCH/DELETE) to `/api/*` when an `Origin` header is present and not allowed.
+Use `ALLOWED_ORIGINS` (comma-separated) if you legitimately need cross-origin access.

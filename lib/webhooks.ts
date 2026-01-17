@@ -12,7 +12,7 @@ export async function dispatchWebhooks(workspaceId: string, eventType: string, p
   const targets = hooks
     .filter((h) => (h.events || "").split(",").map((s) => s.trim()).includes(eventType));
 
-  appLogAsync({
+  void appLogAsync({
     level: "info",
     category: "webhook",
     event: "dispatch",
@@ -31,7 +31,7 @@ export async function dispatchWebhooks(workspaceId: string, eventType: string, p
           headers: { "content-type": "application/json", "x-coldmail-signature": sig },
           body,
         });
-        appLogAsync({
+        void appLogAsync({
           level: res.ok ? "info" : "warn",
           category: "webhook",
           event: "deliver",
@@ -40,7 +40,7 @@ export async function dispatchWebhooks(workspaceId: string, eventType: string, p
           data: { url: h.url, status: res.status, ms: Date.now() - started },
         });
       } catch (e: any) {
-        appLogAsync({
+        void appLogAsync({
           level: "error",
           category: "webhook",
           event: "deliver_error",

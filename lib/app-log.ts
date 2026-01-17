@@ -130,5 +130,7 @@ export async function appLog(input: AppLogInput) {
 }
 
 export function appLogAsync(input: AppLogInput) {
-  void appLog(input);
+  // Return the promise so callers can await/catch when needed.
+  // Callers that want fire-and-forget can still do: `void appLogAsync(...)`.
+  return appLog(input);
 }

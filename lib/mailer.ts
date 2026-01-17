@@ -25,7 +25,7 @@ function cleanMsgId(v: any): string | null {
 
 export async function sendEmail(input: SendEmailInput) {
   const started = Date.now();
-  appLogAsync({
+  void appLogAsync({
     level: "info",
     category: "mail",
     event: "send_start",
@@ -93,7 +93,7 @@ export async function sendEmail(input: SendEmailInput) {
 
     const canonicalMessageId = cleanMsgId((info as any).messageId || input.messageId);
 
-    appLogAsync({
+    void appLogAsync({
       level: "info",
       category: "mail",
       event: "send_ok",
@@ -118,7 +118,7 @@ export async function sendEmail(input: SendEmailInput) {
       rejected: (info as any).rejected || [],
     };
   } catch (e: any) {
-    appLogAsync({
+    void appLogAsync({
       level: "error",
       category: "mail",
       event: "send_fail",

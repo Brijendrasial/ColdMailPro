@@ -3,6 +3,10 @@ import { z } from "zod";
 const schema = z.object({
   PUBLIC_APP_URL: z.string().url(),
   JWT_SECRET: z.string().min(16),
+  // Independent encryption key (recommended). If omitted, JWT_SECRET is used.
+  ENCRYPTION_KEY: z.string().optional(),
+  // HMAC secret for signed tracking links (recommended). If omitted, JWT_SECRET is used.
+  TRACKING_LINK_SECRET: z.string().optional(),
   COOKIE_NAME: z.string().min(1).default("coldmail_session"),
   DATABASE_URL: z.string().min(1),
   MAILSTACK_SCRIPT: z.string().optional(),
@@ -72,10 +76,18 @@ const schema = z.object({
 
   // Warmup AI (template generation / rewriting)
   WARMUP_AI_ENABLED: z.coerce.boolean().default(false),
+  LEADS_AI_ENABLED: z.coerce.boolean().default(false),
   AI_BASE_URL: z.string().default("https://api.openai.com/v1"),
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().default("gpt-4o-mini"),
   AI_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
+
+  AI_WEBSEARCH_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+
+  // AI web search (AI finds emails like ChatGPT browsing)
+  AI_WEBSEARCH_ENABLED: z.coerce.boolean().default(false),
+  AI_WEBSEARCH_MODEL: z.string().default("gpt-5"),
+  AI_WEBSEARCH_MAX_TOOL_CALLS: z.coerce.number().int().positive().default(3),
 
   // --- Unified App Logging ---
   INTERNAL_LOG_TOKEN: z.string().optional(),
@@ -90,6 +102,8 @@ const schema = z.object({
 export const env = schema.parse({
   PUBLIC_APP_URL: process.env.PUBLIC_APP_URL,
   JWT_SECRET: process.env.JWT_SECRET,
+  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
+  TRACKING_LINK_SECRET: process.env.TRACKING_LINK_SECRET,
   COOKIE_NAME: process.env.COOKIE_NAME,
   DATABASE_URL: process.env.DATABASE_URL,
   ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS,
@@ -139,10 +153,17 @@ export const env = schema.parse({
   WARMUP_SEED_AUTOREPLY_MAX_DELAY_MIN: process.env.WARMUP_SEED_AUTOREPLY_MAX_DELAY_MIN,
 
   WARMUP_AI_ENABLED: process.env.WARMUP_AI_ENABLED,
+  LEADS_AI_ENABLED: process.env.LEADS_AI_ENABLED,
   AI_BASE_URL: process.env.AI_BASE_URL,
   AI_API_KEY: process.env.AI_API_KEY,
   AI_MODEL: process.env.AI_MODEL,
   AI_TIMEOUT_MS: process.env.AI_TIMEOUT_MS,
+
+  AI_WEBSEARCH_TIMEOUT_MS: process.env.AI_WEBSEARCH_TIMEOUT_MS,
+
+  AI_WEBSEARCH_ENABLED: process.env.AI_WEBSEARCH_ENABLED,
+  AI_WEBSEARCH_MODEL: process.env.AI_WEBSEARCH_MODEL,
+  AI_WEBSEARCH_MAX_TOOL_CALLS: process.env.AI_WEBSEARCH_MAX_TOOL_CALLS,
 
   INTERNAL_LOG_TOKEN: process.env.INTERNAL_LOG_TOKEN,
   APPLOG_DB: process.env.APPLOG_DB,

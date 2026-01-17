@@ -4,6 +4,7 @@ import { simpleParser } from "mailparser";
 import { decrypt } from "@/lib/crypto";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
+import { signTrackingClick } from "@/lib/tracking";
 import { appLogAsync } from "@/lib/app-log";
 import { renderTemplate, stripHtml } from "@/lib/template";
 import { sendEmail } from "@/lib/mailer";
@@ -545,7 +546,7 @@ async function handleMailboxTestSend(jobId: string, payload: any) {
 async function logJob(jobId: string, line: string) {
   console.log(`[job ${jobId}]`, line);
 
-  appLogAsync({ level: "info", category: "worker", event: "job_log", message: line, entityType: "job", entityId: jobId });
+  void appLogAsync({ level: "info", category: "worker", event: "job_log", message: line, entityType: "job", entityId: jobId });
   try {
     await prisma.jobLog.create({ data: { jobId, line } });
   } catch {
@@ -1663,9 +1664,10 @@ function injectTracking(htmlOrText: string, messageId: string, isHtml: boolean) 
 }
 
 function wrapClickTracking(body: string, messageId: string) {
-  // Very simple: replace http(s) links with tracking redirect
+  // Replace http(s) links with a signed tracking redirect to prevent open redirects.
   return body.replace(/https?:\/\/[^\s)]+/g, (m) => {
-    const tracked = `${env.PUBLIC_APP_URL}/t/click?m=${encodeURIComponent(messageId)}&to=${encodeURIComponent(m)}`;
+    const sig = signTrackingClick(m, messageId);
+    const tracked = `${env.PUBLIC_APP_URL}/t/click?m=${encodeURIComponent(messageId)}&to=${encodeURIComponent(m)}&sig=${encodeURIComponent(sig)}`;
     return tracked;
   });
 }
@@ -2985,9 +2987,26 @@ async function main() {
   let lastWarmupSeedSweep = 0;
   let lastReplyReconcile = 0;
   let lastIdleLog = 0;
+  let lastLogRetentionSweep = 0;
   while (true) {
     // periodic IMAP sweep: enqueue sync jobs for active mailboxes
     const now = Date.now();
+
+    // periodic AppLog retention sweep
+    if (env.LOG_RETENTION_DAYS && now - lastLogRetentionSweep > 24 * 60 * 60 * 1000) {
+      lastLogRetentionSweep = now;
+      const cutoff = new Date(Date.now() - env.LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+      await prisma.appLog.deleteMany({ where: { createdAt: { lt: cutoff } } }).catch(() => {});
+      await appLogAsync({
+        level: "info",
+        category: "system",
+        event: "log_retention",
+        message: `AppLog retention sweep complete (days=${env.LOG_RETENTION_DAYS})`,
+        data: { cutoff: cutoff.toISOString() },
+      }).catch(() => {});
+    }
+
+    
     if (now - lastImapSweep > env.IMAP_POLL_MINUTES * 60 * 1000) {
       lastImapSweep = now;
       if (imapDebug) console.log("[imap] sweep tick");

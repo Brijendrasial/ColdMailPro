@@ -93,6 +93,102 @@ export function LeadsClient() {
   const [showSuppressions, setShowSuppressions] = useState(false);
   const [showDuplicates, setShowDuplicates] = useState(false);
   const [showEnroll, setShowEnroll] = useState(false);
+  const [showAiTags, setShowAiTags] = useState(false);
+  const [showAiEnrich, setShowAiEnrich] = useState(false);
+  const [showAiSegments, setShowAiSegments] = useState(false);
+  const [showCompanyEnrich, setShowCompanyEnrich] = useState(false);
+
+  // Enrich-by-website modal
+  const [companyWebsiteUrl, setCompanyWebsiteUrl] = useState<string>("");
+  const [companyEnrichBusy, setCompanyEnrichBusy] = useState<boolean>(false);
+  const [companyEnrichResult, setCompanyEnrichResult] = useState<null | {
+    website: string;
+    matched: number;
+    updated: number;
+    discovered?: number;
+    created?: number;
+    note?: string;
+    rationale?: string;
+  }>(null);
+
+  // Website "discovery" inside enrich-by-website modal
+  const [companyDiscoverBusy, setCompanyDiscoverBusy] = useState<boolean>(false);
+  const [companyDiscoverNote, setCompanyDiscoverNote] = useState<string>("");
+  const [companyDiscovered, setCompanyDiscovered] = useState<Array<{
+    email: string;
+    sourceUrl: string;
+    foundOnSite?: boolean;
+    evidenceUrls?: string[];
+    purpose?: string;
+    recommended?: boolean;
+    confidence?: number;
+    notes?: string;
+  }>>([]);
+  const [companySuggested, setCompanySuggested] = useState<Array<{
+    email: string;
+    sourceUrl: string;
+    foundOnSite?: boolean;
+    evidenceUrls?: string[];
+    purpose?: string;
+    recommended?: boolean;
+    confidence?: number;
+    notes?: string;
+  }>>([]);
+  const [companyDiscoveredSel, setCompanyDiscoveredSel] = useState<Record<string, boolean>>({});
+  const [companyIncludeSuggested, setCompanyIncludeSuggested] = useState<boolean>(false);
+  const [companyOtherEmails, setCompanyOtherEmails] = useState<Array<{ email: string; sourceUrl: string }>>([]);
+  const [companyContactForms, setCompanyContactForms] = useState<Array<{ url: string; sourceUrl: string }>>([]);
+  // Manual email check/add inside website discovery (user-provided)
+  const [companyManualEmail, setCompanyManualEmail] = useState<string>("");
+  const [companyManualEmails, setCompanyManualEmails] = useState<Array<{
+    email: string;
+    sourceUrl: string;
+    purpose?: string;
+    recommended?: boolean;
+    confidence?: number;
+    notes?: string;
+  }>>([]);
+  const [companyImportBusy, setCompanyImportBusy] = useState<boolean>(false);
+  const [companyDiscoverDiag, setCompanyDiscoverDiag] = useState<any>(null);
+  // Per-email verification state for AI-discovered emails (ping-email)
+  const [companyVerifyMode, setCompanyVerifyMode] = useState<"smtp" | "no_smtp">("no_smtp");
+  const [companyRequireMailbox, setCompanyRequireMailbox] = useState<boolean>(false);
+  const [companyVerifyMap, setCompanyVerifyMap] = useState<
+    Record<string, { status: "idle" | "busy" | "valid" | "invalid" | "error"; message?: string }>
+  >({});
+  // Only company-domain inboxes are importable (import endpoint filters by domain anyway).
+  // Keep "other" emails selectable for reference/copy, but don't treat them as import candidates.
+  const discoveredSelected = useMemo(
+    () => [...companyDiscovered, ...companySuggested, ...companyManualEmails]
+      .filter((x) => !!companyDiscoveredSel[x.email])
+      .map((x) => x.email),
+    [companyDiscovered, companySuggested, companyManualEmails, companyDiscoveredSel]
+  );
+
+  const discoveredNotVerified = useMemo(
+    () => discoveredSelected.filter((e) => companyVerifyMap[e]?.status !== "valid"),
+    [discoveredSelected, companyVerifyMap]
+  );
+
+  const canImportDiscovered = discoveredSelected.length > 0 && discoveredNotVerified.length === 0 && !companyImportBusy;
+
+  const companyManualNorm = useMemo(() => String(companyManualEmail || "").trim().toLowerCase(), [companyManualEmail]);
+
+  // AI enrich modal
+  const [aiEnrichHint, setAiEnrichHint] = useState<string>("");
+  const [aiEnrichBusy, setAiEnrichBusy] = useState<boolean>(false);
+  const [aiEnrichRationale, setAiEnrichRationale] = useState<string>("");
+  const [aiEnrichRows, setAiEnrichRows] = useState<Array<{ id: string; firstName: string | null; lastName: string | null; company: string | null; website: string | null }>>([]);
+
+  // AI segments modal
+  const [aiSegmentsBusy, setAiSegmentsBusy] = useState<boolean>(false);
+  const [aiSegments, setAiSegments] = useState<Array<{ name: string; description: string; payload: any }>>([]);
+
+  // AI tags modal
+  const [aiHint, setAiHint] = useState<string>("");
+  const [aiTags, setAiTags] = useState<string>("");
+  const [aiRationale, setAiRationale] = useState<string>("");
+  const [aiBusy, setAiBusy] = useState<boolean>(false);
 
   // Add lead modal data
   const [mailboxes, setMailboxes] = useState<MailboxMini[]>([]);
@@ -345,6 +441,413 @@ export function LeadsClient() {
     }
   }
 
+  async function generateAiTags(hintOverride?: string) {
+    if (!selectedIds.length) return;
+    setAiBusy(true);
+    setAiTags("");
+    setAiRationale("");
+    try {
+      const r = await fetch("/api/leads/ai/suggest-tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds, maxTags: 10, hint: hintOverride ?? aiHint }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) {
+        throw new Error(String(j?.error || `HTTP_${r.status}`));
+      }
+      const tags = Array.isArray(j.tags) ? j.tags : [];
+      setAiTags(tags.join(", "));
+      setAiRationale(String(j.rationale || ""));
+    } catch (e: any) {
+      notify(`❌ AI tags failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  function openAiTagsModal() {
+    setShowAiTags(true);
+    setAiHint("");
+    setAiTags("");
+    setAiRationale("");
+    // fire and forget
+    setTimeout(() => generateAiTags(""), 0);
+  }
+
+  async function applyAiTagsToSelection() {
+    const t = String(aiTags || "").trim();
+    if (!t) {
+      notify("⚠️ No tags to apply");
+      return;
+    }
+    setShowAiTags(false);
+    await bulk("tag_add", { tags: t });
+  }
+
+  async function generateAiEnrich(hintOverride?: string) {
+    if (!selectedIds.length) return;
+    setAiEnrichBusy(true);
+    setAiEnrichRows([]);
+    setAiEnrichRationale("");
+    try {
+      const r = await fetch("/api/leads/ai/enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds, hint: hintOverride ?? aiEnrichHint }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+      const rows = Array.isArray(j.leads) ? j.leads : [];
+      setAiEnrichRows(
+        rows.map((x: any) => ({
+          id: String(x.id),
+          firstName: x.firstName ?? null,
+          lastName: x.lastName ?? null,
+          company: x.company ?? null,
+          website: x.website ?? null,
+        }))
+      );
+      setAiEnrichRationale(String(j.rationale || ""));
+    } catch (e: any) {
+      notify(`❌ AI enrich failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setAiEnrichBusy(false);
+    }
+  }
+
+  function openAiEnrichModal() {
+    setShowAiEnrich(true);
+    setAiEnrichHint("");
+    setAiEnrichRows([]);
+    setAiEnrichRationale("");
+    setTimeout(() => generateAiEnrich(""), 0);
+  }
+
+  async function applyAiEnrichToSelection() {
+    const updates = aiEnrichRows
+      .map((r) => ({
+        id: r.id,
+        firstName: r.firstName,
+        lastName: r.lastName,
+        company: r.company,
+        website: r.website,
+      }))
+      .filter((u) => Boolean(u.firstName || u.lastName || u.company || u.website));
+
+    if (!updates.length) {
+      notify("⚠️ No enrichment to apply");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const r = await fetch("/api/leads/patch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite: false, updates }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+      notify(`✅ Enriched ${j.updated || updates.length} leads (filled missing only)`);
+      setShowAiEnrich(false);
+      setSelected({});
+      setDrawerId(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      notify(`❌ Apply enrich failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function generateAiSegments() {
+    setAiSegmentsBusy(true);
+    setAiSegments([]);
+    try {
+      const r = await fetch("/api/leads/ai/suggest-views", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+      const views = Array.isArray(j.views) ? j.views : [];
+      setAiSegments(views.map((v: any) => ({ name: String(v.name || ""), description: String(v.description || ""), payload: v.payload || {} })));
+    } catch (e: any) {
+      notify(`❌ AI segments failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setAiSegmentsBusy(false);
+    }
+  }
+
+  function openAiSegmentsModal() {
+    setShowAiSegments(true);
+    setAiSegments([]);
+    setTimeout(() => generateAiSegments(), 0);
+  }
+
+  function openCompanyEnrichModal() {
+    setShowCompanyEnrich(true);
+    setCompanyWebsiteUrl("");
+    setCompanyEnrichResult(null);
+    setCompanyDiscoverBusy(false);
+    setCompanyDiscoverNote("");
+    setCompanyDiscovered([]);
+    setCompanySuggested([]);
+    setCompanyManualEmail("");
+    setCompanyManualEmails([]);
+    setCompanyDiscoveredSel({});
+    setCompanyIncludeSuggested(false);
+    setCompanyImportBusy(false);
+    setCompanyDiscoverDiag(null);
+  }
+
+  async function runCompanyDiscover() {
+    const u = String(companyWebsiteUrl || "").trim();
+    if (!u) {
+      notify("⚠️ Enter a website URL first");
+      return;
+    }
+    setCompanyDiscoverBusy(true);
+    setCompanyDiscoverNote("");
+    setCompanyDiscovered([]);
+    setCompanySuggested([]);
+    setCompanyManualEmail("");
+    setCompanyManualEmails([]);
+    setCompanyDiscoveredSel({});
+    setCompanyOtherEmails([]);
+    setCompanyContactForms([]);
+    setCompanyDiscoverDiag(null);
+    try {
+      const r = await fetch("/api/leads/ai/discover-emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ websiteUrl: u, includeSuggested: companyIncludeSuggested }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+
+      // Keep diagnostics for cases where the site blocks fetch/headless.
+      setCompanyDiscoverDiag({
+        scanned: Number(j.scanned || 0),
+        deepMode: j.deepMode || null,
+        attemptedUrls: Array.isArray(j.attemptedUrls) ? j.attemptedUrls : [],
+        failures: Array.isArray(j.failures) ? j.failures : [],
+      });
+      const other = Array.isArray(j.otherEmails) ? j.otherEmails : [];
+      const forms = Array.isArray(j.contactForms) ? j.contactForms : [];
+      setCompanyOtherEmails(other.map((x: any) => ({ email: String(x.email || "").toLowerCase(), sourceUrl: String(x.sourceUrl || "") })).filter((x: any) => x.email && x.sourceUrl));
+      setCompanyContactForms(forms.map((x: any) => ({ url: String(x.url || ""), sourceUrl: String(x.sourceUrl || "") })).filter((x: any) => x.url));
+
+      const rows = [...(Array.isArray(j.emails) ? j.emails : [])];
+      const mapped = rows
+        .map((x: any) => ({
+          email: String(x.email || "").toLowerCase(),
+          sourceUrl: String(x.sourceUrl || ""),
+          foundOnSite: Boolean(x.foundOnSite),
+          evidenceUrls: Array.isArray(x.evidenceUrls) ? x.evidenceUrls.map((u: any) => String(u || "")).filter(Boolean) : [],
+          purpose: String(x.purpose || ""),
+          recommended: Boolean(x.recommended),
+          confidence: typeof x.confidence === "number" ? Number(x.confidence) : undefined,
+          notes: String(x.notes || ""),
+        }))
+        .filter((x: any) => x.email && x.sourceUrl);
+      setCompanyDiscovered(mapped);
+
+      const sug = [...(Array.isArray(j.suggested) ? j.suggested : [])];
+      const mappedSug = sug
+        .map((x: any) => ({
+          email: String(x.email || "").toLowerCase(),
+          sourceUrl: String(x.sourceUrl || ""),
+          foundOnSite: Boolean(x.foundOnSite),
+          evidenceUrls: Array.isArray(x.evidenceUrls) ? x.evidenceUrls.map((u: any) => String(u || "")).filter(Boolean) : [],
+          purpose: String(x.purpose || ""),
+          recommended: Boolean(x.recommended),
+          confidence: typeof x.confidence === "number" ? Number(x.confidence) : undefined,
+          notes: String(x.notes || ""),
+        }))
+        .filter((x: any) => x.email && x.sourceUrl);
+      setCompanySuggested(mappedSug);
+      setCompanyDiscoverNote(String(j.note || ""));
+      // Don't auto-select anything. User should explicitly choose which inboxes to verify + import.
+      setCompanyDiscoveredSel({});
+      // Reset verification results whenever we run a new discovery
+      setCompanyVerifyMap({});
+      const foundCount = mapped.length;
+      const sugCount = mappedSug.length;
+      const otherCount = Array.isArray(j.otherEmails) ? j.otherEmails.length : 0;
+      const formCount = Array.isArray(j.contactForms) ? j.contactForms.length : 0;
+      const parts: string[] = [];
+      if (foundCount) parts.push(`${foundCount} published email${foundCount === 1 ? "" : "s"}`);
+      if (sugCount) parts.push(`${sugCount} AI suggested`);
+      if (otherCount) parts.push(`${otherCount} other-domain`);
+      if (formCount) parts.push(`${formCount} contact form${formCount === 1 ? "" : "s"}`);
+      notify(parts.length ? `✅ Found ${parts.join(" · ")}` : `ℹ️ No emails found`);
+    } catch (e: any) {
+      notify(`❌ Discover failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setCompanyDiscoverBusy(false);
+    }
+  }
+
+  function addManualCompanyEmail(rawEmail: string) {
+    const e = String(rawEmail || "").trim().toLowerCase();
+    if (!e) {
+      notify("⚠️ Enter an email to add");
+      return;
+    }
+
+    // Only allow adding after it's verified as valid
+    if (companyVerifyMap[e]?.status !== "valid") {
+      notify("⚠️ Please verify the email first (needs to be ✅ Valid)");
+      return;
+    }
+
+    const exists = [...companyDiscovered, ...companySuggested, ...companyManualEmails].some((x) => String(x.email || "").toLowerCase() === e);
+    if (!exists) {
+      setCompanyManualEmails((arr) => [{
+        email: e,
+        sourceUrl: "manual",
+        purpose: "manual",
+        recommended: true,
+        confidence: 1,
+        notes: "Manually added by user",
+      }, ...arr]);
+    }
+    setCompanyDiscoveredSel((m) => ({ ...m, [e]: true }));
+    notify(exists ? "ℹ️ Already in list (selected)" : "✅ Added to import list");
+  }
+
+  async function verifyCompanyEmail(email: string) {
+    const e = String(email || "").trim().toLowerCase();
+    if (!e) return;
+    setCompanyVerifyMap((m) => ({ ...m, [e]: { status: "busy", message: "" } }));
+    try {
+      const r = await fetch("/api/leads/verify-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: e,
+          verifyMode: companyVerifyMode,
+          requireMailbox: companyRequireMailbox,
+        }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+      const valid = Boolean(j.valid);
+      const message = String(j.message || "").trim();
+      setCompanyVerifyMap((m) => ({
+        ...m,
+        [e]: { status: valid ? "valid" : "invalid", message },
+      }));
+    } catch (err: any) {
+      const msg = clip(String(err?.message || err || "Verification failed"), 180);
+      setCompanyVerifyMap((m) => ({ ...m, [e]: { status: "error", message: msg } }));
+    }
+  }
+
+  async function verifySelectedCompanyEmails() {
+    const list = discoveredSelected;
+    if (!list.length) {
+      notify("⚠️ Select at least one email first");
+      return;
+    }
+    // Verify sequentially (avoids SMTP rate spikes). Re-verify anything that's not already valid.
+    for (const e of list) {
+      if (companyVerifyMap[e]?.status === "valid") continue;
+      // eslint-disable-next-line no-await-in-loop
+      await verifyCompanyEmail(e);
+    }
+  }
+
+  async function importDiscoveredEmails() {
+    const u = String(companyWebsiteUrl || "").trim();
+    if (!u) {
+      notify("⚠️ Enter a website URL first");
+      return;
+    }
+    const emails = discoveredSelected;
+    if (!emails.length) {
+      notify("⚠️ Select at least one email to import");
+      return;
+    }
+
+    if (discoveredNotVerified.length) {
+      notify(`⚠️ Verify selected emails first (${discoveredNotVerified.length} pending/invalid)`);
+      return;
+    }
+
+    setCompanyImportBusy(true);
+    try {
+      const r = await fetch("/api/leads/ai/import-discovered", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ websiteUrl: u, emails }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+      const created = Number(j.created || 0);
+      const skipped = Number(j.skipped || 0);
+      const enriched = Number(j.enriched || 0);
+      notify(`✅ Imported ${created} leads (skipped ${skipped} duplicates) · enriched ${enriched}`);
+      setRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      notify(`❌ Import failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setCompanyImportBusy(false);
+    }
+  }
+
+  async function runCompanyEnrich() {
+    const u = String(companyWebsiteUrl || "").trim();
+    if (!u) {
+      notify("⚠️ Enter a website URL first");
+      return;
+    }
+
+    setCompanyEnrichBusy(true);
+    setCompanyEnrichResult(null);
+    try {
+      const r = await fetch("/api/leads/ai/enrich-by-website", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ websiteUrl: u, discover: true }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
+
+      setCompanyEnrichResult({
+        website: String(j.website || ""),
+        matched: Number(j.matched || 0),
+        updated: Number(j.updated || 0),
+        created: Number(j.created || 0),
+        discovered: Number(j.discovered || 0),
+        note: String(j.note || ""),
+        rationale: String(j.rationale || ""),
+      });
+
+      // Refresh list to show updates
+      setRefreshKey((k) => k + 1);
+      notify(`✅ Company enrich: ${Number(j.updated || 0)} updated · ${Number(j.created || 0)} new leads · ${Number(j.discovered || 0)} discovered`);
+    } catch (e: any) {
+      notify(`❌ Company enrich failed: ${clip(String(e?.message || e), 140)}`);
+    } finally {
+      setCompanyEnrichBusy(false);
+    }
+  }
+
+  async function saveSuggestedView(name: string, payload: any) {
+    try {
+      const r = await fetch("/api/leads/views", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, payload }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      notify("✅ View saved (shared)");
+      setRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      notify(`❌ Failed to save view: ${clip(String(e?.message || e), 140)}`);
+    }
+  }
+
   async function saveCurrentView() {
     const name = prompt("Save view name:", "My View");
     if (!name) return;
@@ -440,6 +943,12 @@ export function LeadsClient() {
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="ghost" onClick={saveCurrentView}>
               Save view
+            </Button>
+            <Button variant="ghost" onClick={openAiSegmentsModal}>
+              ✨ AI segments
+            </Button>
+            <Button variant="ghost" onClick={openCompanyEnrichModal}>
+              ✨ Enrich by website
             </Button>
             {activeViewId ? (
               <Button variant="danger" onClick={deleteActiveView}>
@@ -557,6 +1066,12 @@ export function LeadsClient() {
                 <span className="font-medium">{selectedIds.length}</span> selected
               </div>
               <div className="flex items-center flex-wrap gap-2">
+                <Button variant="ghost" onClick={openAiTagsModal}>
+                  ✨ AI tags
+                </Button>
+                <Button variant="ghost" onClick={openAiEnrichModal}>
+                  ✨ AI enrich
+                </Button>
                 <Button
                   variant="ghost"
                   onClick={() => {
@@ -777,7 +1292,625 @@ export function LeadsClient() {
 
       {drawerId ? <LeadDrawer id={drawerId} onClose={() => setDrawerId(null)} onToast={notify} /> : null}
 
-      
+      {showAiTags ? (
+        <Modal
+          title={`✨ AI tags (${selectedIds.length} selected)`}
+          onClose={() => {
+            setShowAiTags(false);
+            setAiBusy(false);
+          }}
+          footer={
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs opacity-70">Adds tags (doesn’t remove existing tags).</div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onClick={() => setShowAiTags(false)}>
+                  Cancel
+                </Button>
+                <Button variant="ghost" onClick={() => generateAiTags()} disabled={aiBusy}>
+                  {aiBusy ? "Generating…" : "Regenerate"}
+                </Button>
+                <Button variant="primary" onClick={applyAiTagsToSelection} disabled={aiBusy || !String(aiTags || "").trim()}>
+                  Apply tags
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="text-xs opacity-70">
+              Use AI to suggest a shared tag set for the selected leads. Optionally provide a hint (e.g. “SaaS founders”, “US healthcare”, “B2B agencies”).
+            </div>
+
+            <div>
+              <div className="text-xs opacity-70 mb-1">Hint (optional)</div>
+              <Input value={aiHint} onChange={(e) => setAiHint(e.target.value)} placeholder="e.g. fintech CFOs in the UK" />
+            </div>
+
+            <div>
+              <div className="text-xs opacity-70 mb-1">Suggested tags (comma separated)</div>
+              <TextArea value={aiTags} onChange={(e) => setAiTags(e.target.value)} rows={3} placeholder="saas, founder, us" />
+            </div>
+
+            {aiRationale ? (
+              <div className="glass p-3">
+                <div className="text-xs font-medium mb-1">Why these tags</div>
+                <div className="text-sm whitespace-pre-wrap">{aiRationale}</div>
+              </div>
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
+
+      {showAiEnrich ? (
+        <Modal
+          title={`✨ AI enrich (${selectedIds.length} selected)`}
+          onClose={() => {
+            setShowAiEnrich(false);
+            setAiEnrichBusy(false);
+          }}
+          footer={
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs opacity-70">Fills missing fields only (safe). Does not overwrite existing.</div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onClick={() => setShowAiEnrich(false)}>Cancel</Button>
+                <Button variant="ghost" onClick={() => generateAiEnrich()} disabled={aiEnrichBusy}>
+                  {aiEnrichBusy ? "Generating…" : "Regenerate"}
+                </Button>
+                <Button variant="primary" onClick={applyAiEnrichToSelection} disabled={aiEnrichBusy || !aiEnrichRows.length}>
+                  Apply enrichment
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="text-xs opacity-70">
+              AI suggests missing lead fields (name/company/website) based on the email + existing data. Add an optional hint if you have context.
+            </div>
+
+            <div>
+              <div className="text-xs opacity-70 mb-1">Hint (optional)</div>
+              <Input value={aiEnrichHint} onChange={(e) => setAiEnrichHint(e.target.value)} placeholder="e.g. B2B SaaS founders" />
+            </div>
+
+            <div className="glass p-3 max-h-72 overflow-auto">
+              <div className="text-xs font-medium mb-2">Preview</div>
+              <div className="space-y-2">
+                {aiEnrichRows.length ? (
+                  aiEnrichRows.map((r) => {
+                    const it = items.find((x) => x.id === r.id);
+                    const label = it?.email || r.id;
+                    const parts = [
+                      r.firstName ? `first: ${r.firstName}` : null,
+                      r.lastName ? `last: ${r.lastName}` : null,
+                      r.company ? `company: ${r.company}` : null,
+                      r.website ? `website: ${r.website}` : null,
+                    ].filter(Boolean) as string[];
+                    return (
+                      <div key={r.id} className="border-b border-black/5 dark:border-white/10 pb-2">
+                        <div className="text-sm font-medium">{label}</div>
+                        <div className="text-xs opacity-70">{parts.length ? parts.join(" · ") : "No suggestions"}</div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-sm opacity-70">No suggestions yet.</div>
+                )}
+              </div>
+            </div>
+
+            {aiEnrichRationale ? (
+              <div className="glass p-3">
+                <div className="text-xs font-medium mb-1">Notes</div>
+                <div className="text-sm whitespace-pre-wrap">{aiEnrichRationale}</div>
+              </div>
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
+
+      {showCompanyEnrich ? (
+        <Modal
+          title="✨ Enrich all leads by company website"
+          onClose={() => {
+            setShowCompanyEnrich(false);
+            setCompanyEnrichBusy(false);
+          }}
+          footer={
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs opacity-70">
+                1) Discover inboxes on the website  2) Verify with ping-email  3) Import as leads.
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onClick={() => setShowCompanyEnrich(false)}>
+                  Close
+                </Button>
+                <Button variant="primary" onClick={runCompanyDiscover} disabled={companyDiscoverBusy || !String(companyWebsiteUrl || "").trim()}>
+                  {companyDiscoverBusy ? "Running…" : "Run enrich"}
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="text-xs opacity-70">
+              Paste a company website (e.g. <span className="font-mono">https://acme.com</span>). Click <span className="font-medium">Run enrich</span> to discover inboxes,
+              then select the ones you want, verify via ping-email, and import as leads.
+            </div>
+
+            <div>
+              <div className="text-xs opacity-70 mb-1">Company website URL</div>
+              <Input value={companyWebsiteUrl} onChange={(e) => setCompanyWebsiteUrl(e.target.value)} placeholder="https://example.com" />
+            </div>
+
+            <div className="glass p-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <div className="text-sm font-medium">Find emails on the website (then let AI explain them)</div>
+                  <div className="text-xs opacity-70">
+                    We fetch a few public pages (homepage/contact/etc.), extract company-domain emails, then AI labels what each inbox is for.
+                  </div>
+                  <label className="flex items-center gap-2 text-xs opacity-80 mt-2 select-none">
+                    <input type="checkbox" checked={companyIncludeSuggested} onChange={(e) => setCompanyIncludeSuggested(e.target.checked)} />
+                    Also generate AI inbox suggestions (unverified)
+                  </label>
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-xs opacity-70 mb-1">Verification mode (ping-email)</div>
+                      <Select
+                        value={companyVerifyMode}
+                        onChange={(e) => setCompanyVerifyMode(e.target.value === "smtp" ? "smtp" : "no_smtp")}
+                      >
+                        <option value="no_smtp">Safe: syntax + domain + MX (fast, low risk)</option>
+                        <option value="smtp">Full: MX + SMTP probe (slower)</option>
+                      </Select>
+                      <div className="text-[11px] opacity-60 mt-1">
+                        Note: some providers (e.g. Gmail) may not reliably disclose mailbox existence.
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs opacity-80 select-none md:mt-6">
+                      <input
+                        type="checkbox"
+                        checked={companyRequireMailbox}
+                        onChange={(e) => setCompanyRequireMailbox(e.target.checked)}
+                        disabled={companyVerifyMode === "no_smtp"}
+                      />
+                      Require mailbox confirmation (SMTP only)
+                    </label>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button variant="ghost" onClick={runCompanyDiscover} disabled={companyDiscoverBusy || !String(companyWebsiteUrl || "").trim()}>
+                    {companyDiscoverBusy ? "Discovering…" : "Discover emails"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      const sel: Record<string, boolean> = {};
+                      for (const it of [...companyDiscovered, ...companySuggested, ...companyManualEmails]) sel[it.email] = true;
+                      setCompanyDiscoveredSel(sel);
+                    }}
+                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length)}
+                  >
+                    Select all
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setCompanyDiscoveredSel({})}
+                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length)}
+                  >
+                    Clear
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={verifySelectedCompanyEmails}
+                    disabled={companyDiscoverBusy || companyImportBusy || !discoveredSelected.length}
+                  >
+                    Verify selected
+                  </Button>
+                  <Button variant="primary" onClick={importDiscoveredEmails} disabled={!canImportDiscovered}>
+                    {companyImportBusy ? "Importing…" : `Import (${discoveredSelected.length || 0})`}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={runCompanyEnrich}
+                    disabled={companyDiscoverBusy || companyImportBusy || companyEnrichBusy || !String(companyWebsiteUrl || "").trim()}
+                    title="Optional: fill missing fields for existing leads whose email domain matches this website"
+                  >
+                    {companyEnrichBusy ? "Enriching…" : "Enrich matching leads"}
+                  </Button>
+                </div>
+              </div>
+
+              {companyDiscoverNote ? <div className="text-xs opacity-60 mt-2">{companyDiscoverNote}</div> : null}
+
+              {discoveredSelected.length && discoveredNotVerified.length ? (
+                <div className="text-xs opacity-70 mt-2">
+                  ⚠️ Verify before importing: {discoveredNotVerified.length} selected email{discoveredNotVerified.length === 1 ? "" : "s"} pending/invalid.
+                </div>
+              ) : null}
+
+              <div className="mt-3 glass p-3">
+                <div className="text-xs font-medium">Manual check before adding</div>
+                <div className="text-xs opacity-70 mt-1">
+                  Paste any email you want to verify (including a correction to an AI suggestion). After it becomes ✅ Valid, you can add it to the import list.
+                </div>
+
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <Input
+                    value={companyManualEmail}
+                    onChange={(e) => setCompanyManualEmail(e.target.value)}
+                    placeholder="name@company.com"
+                    className="min-w-[240px] flex-1"
+                  />
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      if (!companyManualNorm) {
+                        notify("⚠️ Enter an email first");
+                        return;
+                      }
+                      verifyCompanyEmail(companyManualNorm);
+                    }}
+                    disabled={!companyManualNorm || companyVerifyMap[companyManualNorm]?.status === "busy"}
+                  >
+                    {companyVerifyMap[companyManualNorm]?.status === "busy" ? "Checking…" : "Check"}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={() => addManualCompanyEmail(companyManualNorm)}
+                    disabled={!companyManualNorm || companyVerifyMap[companyManualNorm]?.status !== "valid"}
+                  >
+                    Add
+                  </Button>
+                </div>
+
+                {companyManualNorm ? (
+                  <div className="text-xs opacity-70 mt-2" title={companyVerifyMap[companyManualNorm]?.message || ""}>
+                    Status: {companyVerifyMap[companyManualNorm]?.status === "valid"
+                      ? "✅ Valid"
+                      : companyVerifyMap[companyManualNorm]?.status === "invalid"
+                        ? "❌ Invalid"
+                        : companyVerifyMap[companyManualNorm]?.status === "busy"
+                          ? "⏳ Checking…"
+                          : companyVerifyMap[companyManualNorm]?.status === "error"
+                            ? "⚠️ Error"
+                            : "Not verified"}
+                  </div>
+                ) : null}
+              </div>
+
+              {companyManualEmails.length ? (
+                <div className="mt-3">
+                  <div className="text-xs font-medium mb-2">Manually added (verified)</div>
+                  <div className="space-y-2 max-h-40 overflow-auto">
+                    {companyManualEmails.map((it) => (
+                      <label key={it.email} className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={!!companyDiscoveredSel[it.email]}
+                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono break-all">{it.email}</div>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
+                              {companyVerifyMap[it.email]?.status === "valid" ? "✅ Valid" : companyVerifyMap[it.email]?.status === "busy" ? "⏳ Verifying…" : companyVerifyMap[it.email]?.status === "error" ? "⚠️ Error" : "Not verified"}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              className="px-2 py-1 text-xs rounded-lg"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                verifyCompanyEmail(it.email);
+                              }}
+                              disabled={companyVerifyMap[it.email]?.status === "busy"}
+                            >
+                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
+                            </Button>
+                          </div>
+                          <div className="text-xs opacity-60 break-all mt-0.5">Source: manually added</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {companyDiscovered.length ? (
+                <div className="mt-3">
+                  <div className="text-xs font-medium mb-2">Emails published on the website</div>
+                  <div className="space-y-2 max-h-56 overflow-auto">
+                    {companyDiscovered.map((it) => (
+                      <label key={it.email} className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={!!companyDiscoveredSel[it.email]}
+                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono break-all">{it.email}</div>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span
+                              className="text-xs opacity-70"
+                              title={companyVerifyMap[it.email]?.message || ""}
+                            >
+                              {companyVerifyMap[it.email]?.status === "valid"
+                                ? "✅ Valid"
+                                : companyVerifyMap[it.email]?.status === "invalid"
+                                  ? "❌ Invalid"
+                                  : companyVerifyMap[it.email]?.status === "busy"
+                                    ? "⏳ Verifying…"
+                                    : companyVerifyMap[it.email]?.status === "error"
+                                      ? "⚠️ Error"
+                                      : "Not verified"}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              className="px-2 py-1 text-xs rounded-lg"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                verifyCompanyEmail(it.email);
+                              }}
+                              disabled={companyVerifyMap[it.email]?.status === "busy"}
+                            >
+                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
+                            </Button>
+                          </div>
+                          <div className="text-xs opacity-70 mt-0.5">
+                            AI: <span className="font-medium">{it.purpose || "other"}</span>
+                            {typeof it.confidence === "number" ? <span className="opacity-70"> · {(it.confidence * 100).toFixed(0)}%</span> : null}
+                            {it.recommended ? <span className="ml-1">· ✅ ok for outreach</span> : <span className="ml-1">· 🚫 avoid outreach</span>}
+                          </div>
+                          {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
+                          {it.evidenceUrls?.length ? (
+                            <div className="text-xs opacity-60 mt-0.5 break-all">
+                              Found on: {it.evidenceUrls.slice(0, 2).map((u, idx) => (
+                                <span key={u}>
+                                  <a className="underline" href={u} target="_blank" rel="noreferrer">page {idx + 1}</a>
+                                  {idx === 0 && it.evidenceUrls!.length > 2 ? <span className="opacity-60"> (+{it.evidenceUrls!.length - 2} more)</span> : null}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {companySuggested.length ? (
+                <div className="mt-3">
+                  <div className="text-xs font-medium mb-2">AI-suggested inboxes (unverified)</div>
+                  <div className="space-y-2 max-h-56 overflow-auto">
+                    {companySuggested.map((it) => (
+                      <label key={it.email} className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={!!companyDiscoveredSel[it.email]}
+                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono break-all">{it.email}</div>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span
+                              className="text-xs opacity-70"
+                              title={companyVerifyMap[it.email]?.message || ""}
+                            >
+                              {companyVerifyMap[it.email]?.status === "valid"
+                                ? "✅ Valid"
+                                : companyVerifyMap[it.email]?.status === "invalid"
+                                  ? "❌ Invalid"
+                                  : companyVerifyMap[it.email]?.status === "busy"
+                                    ? "⏳ Verifying…"
+                                    : companyVerifyMap[it.email]?.status === "error"
+                                      ? "⚠️ Error"
+                                      : "Not verified"}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              className="px-2 py-1 text-xs rounded-lg"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                verifyCompanyEmail(it.email);
+                              }}
+                              disabled={companyVerifyMap[it.email]?.status === "busy"}
+                            >
+                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
+                            </Button>
+                          </div>
+                          <div className="text-xs opacity-70 mt-0.5">
+                            AI: <span className="font-medium">{it.purpose || "other"}</span>
+                            {typeof it.confidence === "number" ? <span className="opacity-70"> · {(it.confidence * 100).toFixed(0)}%</span> : null}
+                            {it.recommended ? <span className="ml-1">· ✅ ok for outreach</span> : <span className="ml-1">· 🚫 avoid outreach</span>}
+                          </div>
+                          {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
+                          <div className="text-xs opacity-60 break-all mt-0.5">Source: AI suggested (unverified)</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+
+              {companyManualEmails.length ? (
+                <div className="mt-3">
+                  <div className="text-xs font-medium mb-2">Manually added emails</div>
+                  <div className="space-y-2 max-h-40 overflow-auto">
+                    {companyManualEmails.map((it) => (
+                      <label key={it.email} className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={!!companyDiscoveredSel[it.email]}
+                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono break-all">{it.email}</div>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
+                              {companyVerifyMap[it.email]?.status === "valid"
+                                ? "✅ Valid"
+                                : companyVerifyMap[it.email]?.status === "invalid"
+                                  ? "❌ Invalid"
+                                  : companyVerifyMap[it.email]?.status === "busy"
+                                    ? "⏳ Verifying…"
+                                    : companyVerifyMap[it.email]?.status === "error"
+                                      ? "⚠️ Error"
+                                      : "Not verified"}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              className="px-2 py-1 text-xs rounded-lg"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                verifyCompanyEmail(it.email);
+                              }}
+                              disabled={companyVerifyMap[it.email]?.status === "busy"}
+                            >
+                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
+                            </Button>
+                          </div>
+                          <div className="text-xs opacity-60 break-all mt-0.5">Source: manually added</div>
+                          {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {companyOtherEmails.length ? (
+                <div className="mt-3">
+                  <div className="text-xs font-medium mb-2">Other public emails (not company domain)</div>
+                  <div className="space-y-2 max-h-40 overflow-auto">
+                    {companyOtherEmails.map((it) => (
+                      <label key={it.email} className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={!!companyDiscoveredSel[it.email]}
+                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                        />
+                        <div>
+                          <div className="font-mono">{it.email}</div>
+                          <div className="text-xs opacity-60 break-all">Source: {it.sourceUrl}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {companyContactForms.length ? (
+                <div className="mt-3 glass p-3">
+                  <div className="text-xs font-medium">Contact forms found</div>
+                  <div className="text-xs opacity-70 mt-1">If the site does not publish emails, these are the best official ways to reach them.</div>
+                  <div className="mt-2 space-y-1 max-h-40 overflow-auto">
+                    {companyContactForms.map((f, idx) => (
+                      <div key={`${f.url}-${idx}`} className="text-xs break-all">
+                        <a className="underline" href={f.url} target="_blank" rel="noreferrer">{f.url}</a>
+                        {f.sourceUrl && f.sourceUrl !== f.url ? (
+                          <span className="opacity-60"> — found on {f.sourceUrl}</span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {!companyDiscovered.length && !companySuggested.length && !companyOtherEmails.length && !companyContactForms.length ? (
+                <div className="text-sm opacity-70 mt-3">No emails found yet.</div>
+              ) : null}
+            </div>
+
+            {companyEnrichResult ? (
+              <div className="glass p-3">
+                <div className="text-sm font-medium">Result</div>
+                <div className="text-xs opacity-70 mt-1">Website: <span className="font-mono">{companyEnrichResult.website}</span></div>
+                <div className="text-xs opacity-70 mt-1">Matched leads: {companyEnrichResult.matched}</div>
+                <div className="text-xs opacity-70 mt-1">Updated (filled missing): {companyEnrichResult.updated}</div>
+                <div className="text-xs opacity-70 mt-1">Discovered emails (AI): {companyEnrichResult.discovered}</div>
+                <div className="text-xs opacity-70 mt-1">New leads created: {companyEnrichResult.created}</div>
+                {companyEnrichResult.note ? <div className="text-xs opacity-60 mt-2">{companyEnrichResult.note}</div> : null}
+                {companyEnrichResult.rationale ? (
+                  <div className="mt-3">
+                    <div className="text-xs font-medium mb-1">Notes</div>
+                    <div className="text-sm whitespace-pre-wrap">{companyEnrichResult.rationale}</div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
+
+      {showAiSegments ? (
+        <Modal
+          title="✨ AI segments"
+          onClose={() => {
+            setShowAiSegments(false);
+            setAiSegmentsBusy(false);
+          }}
+          footer={
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs opacity-70">Suggested saved views (segments) based on your lead stats.</div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onClick={() => setShowAiSegments(false)}>Close</Button>
+                <Button variant="ghost" onClick={generateAiSegments} disabled={aiSegmentsBusy}>
+                  {aiSegmentsBusy ? "Generating…" : "Regenerate"}
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            {aiSegments.length ? (
+              <div className="space-y-2">
+                {aiSegments.map((v, idx) => (
+                  <div key={`${v.name}-${idx}`} className="glass p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold">{v.name}</div>
+                        <div className="text-xs opacity-70">{v.description}</div>
+                        <div className="text-xs opacity-60 mt-1">
+                          status: {String(v.payload?.status || "all")} · contacted: {String(v.payload?.contacted || "")} · tag: {String(v.payload?.tag || "")}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            applyViewPayload(v.payload, null);
+                            setShowAiSegments(false);
+                          }}
+                        >
+                          Apply
+                        </Button>
+                        <Button variant="primary" onClick={() => saveSuggestedView(v.name, v.payload)}>
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm opacity-70">{aiSegmentsBusy ? "Generating suggestions…" : "No suggestions yet."}</div>
+            )}
+          </div>
+        </Modal>
+      ) : null}
+
       {showAdd ? (
         <Modal title="Add lead (manual)" onClose={() => setShowAdd(false)}>
           <div className="space-y-3">
