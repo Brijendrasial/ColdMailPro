@@ -25,6 +25,10 @@ export async function GET(req: NextRequest) {
 
   const q = norm(url.searchParams.get("q") || "");
   const status = norm(url.searchParams.get("status") || "");
+  const stage = norm(url.searchParams.get("stage") || "");
+  const listId = norm(url.searchParams.get("listId") || "");
+  const ownerUserId = norm(url.searchParams.get("ownerUserId") || "");
+  const tasks = norm(url.searchParams.get("tasks") || ""); // "" | overdue | due_7d | none
   const tag = norm(url.searchParams.get("tag") || "");
   const campaignId = norm(url.searchParams.get("campaignId") || "");
   const contacted = norm(url.searchParams.get("contacted") || ""); // "1" | "0" | ""
@@ -37,6 +41,18 @@ export async function GET(req: NextRequest) {
 
   if (status && status !== "all") {
     where.status = status;
+  }
+
+  if (stage && stage !== "all") {
+    where.stage = stage;
+  }
+
+  if (listId && listId !== "all") {
+    where.listId = listId;
+  }
+
+  if (ownerUserId && ownerUserId !== "all") {
+    where.ownerUserId = ownerUserId;
   }
 
   if (tag) {
@@ -52,6 +68,16 @@ export async function GET(req: NextRequest) {
     where.messages = { some: {} };
   } else if (contacted === "0") {
     where.messages = { none: {} };
+  }
+
+  if (tasks === "overdue") {
+    where.tasks = { some: { completedAt: null, dueAt: { lt: new Date() } } };
+  } else if (tasks === "due_7d") {
+    const now = new Date();
+    const soon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    where.tasks = { some: { completedAt: null, dueAt: { gte: now, lte: soon } } };
+  } else if (tasks === "none") {
+    where.tasks = { none: { completedAt: null } };
   }
 
   if (q) {
@@ -74,6 +100,19 @@ export async function GET(req: NextRequest) {
       take: pageSize,
       include: {
         _count: { select: { enrollments: true } },
+        owner: { select: { id: true, name: true, email: true } },
+        list: { select: { id: true, name: true } },
+        tasks: {
+          select: { id: true, dueAt: true, completedAt: true, title: true },
+          where: { completedAt: null },
+          orderBy: { dueAt: "asc" },
+          take: 1,
+        },
+        activities: {
+          select: { id: true, type: true, text: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
         enrollments: {
           select: {
             id: true,
@@ -113,10 +152,17 @@ export async function GET(req: NextRequest) {
       company: l.company,
       website: l.website,
       status: l.status,
+      stage: (l as any).stage,
+      owner: (l as any).owner ? { id: (l as any).owner.id, name: (l as any).owner.name, email: (l as any).owner.email } : null,
+      list: (l as any).list ? { id: (l as any).list.id, name: (l as any).list.name } : null,
       tags: tagsArr,
       createdAt: l.createdAt,
       enrollmentsCount: (l as any)._count?.enrollments || l.enrollments?.length || 0,
       campaigns: (l.enrollments || []).map((e) => e.campaign).filter(Boolean),
+      nextTask: (l as any).tasks?.[0] ? { id: (l as any).tasks[0].id, title: (l as any).tasks[0].title, dueAt: (l as any).tasks[0].dueAt } : null,
+      lastActivity: (l as any).activities?.[0]
+        ? { type: (l as any).activities[0].type, text: (l as any).activities[0].text, createdAt: (l as any).activities[0].createdAt }
+        : null,
       lastMessage: last
         ? {
             status: last.status,

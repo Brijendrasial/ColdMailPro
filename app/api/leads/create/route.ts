@@ -55,6 +55,18 @@ export async function POST(req: NextRequest) {
   const body = parsed.data;
   const email = body.email.trim().toLowerCase();
 
+  // Global suppression (DNC) safety: never create leads for suppressed emails.
+  const suppressed = await prisma.suppression.findUnique({
+    where: { workspaceId_email: { workspaceId: s.wid, email } },
+    select: { reason: true },
+  });
+  if (suppressed) {
+    return NextResponse.json(
+      { ok: false, error: `Suppressed (DNC): ${suppressed.reason}` },
+      { status: 422 }
+    );
+  }
+
   const allowedStatuses = new Set(["active", "replied", "unsubscribed", "bounced", "suppressed"]);
   const status = body.status ? String(body.status).trim().toLowerCase() : "active";
   const finalStatus = allowedStatuses.has(status) ? status : "active";

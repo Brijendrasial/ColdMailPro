@@ -39,6 +39,12 @@ model User {
   appLogs       AppLog[]
   // Shared Team Inbox: threads can be assigned to a teammate
   assignedReplyLeadStates ReplyLeadState[] @relation("AssignedReplyLeadStates")
+
+  // Leads: workflow + collaboration
+  ownedLeads       Lead[]         @relation("LeadOwner")
+  leadNotes        LeadNote[]     @relation("LeadNoteAuthor")
+  createdLeadTasks LeadTask[]     @relation("LeadTaskCreator")
+  leadActivities   LeadActivity[] @relation("LeadActivityActor")
 }
 
 model Workspace {
@@ -74,6 +80,12 @@ model Workspace {
 
   // Leads: saved views (shared per workspace)
   leadViews   LeadView[]
+
+  // Leads: workflow helpers
+  leadLists   LeadList[]
+  leadNotes   LeadNote[]
+  leadTasks   LeadTask[]
+  leadActivities LeadActivity[]
 
   // Warmup suite
   warmupProfiles WarmupProfile[]
@@ -288,6 +300,12 @@ model Lead {
   company      String?
   website      String?
   status       String   @default("active") // active, bounced, replied, unsubscribed, suppressed
+  // Workflow pipeline stage (UI: Kanban / table). Separate from delivery status.
+  stage        String   @default("new") // new, enriched, verified, ready, contacted, replied, interested, not_fit
+  // Optional ownership for collaboration.
+  ownerUserId  String?
+  // Optional lead list (simple CRM lists).
+  listId       String?
   tags         String?  @db.LongText // comma separated
   createdAt    DateTime @default(now())
 
@@ -297,10 +315,92 @@ model Lead {
   enrollments  Enrollment[] @relation("LeadEnrollments")
   messages     Message[] @relation("LeadMessages")
 
+  // Workflow + collaboration
+  owner        User?     @relation("LeadOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  list         LeadList? @relation(fields: [listId], references: [id], onDelete: SetNull)
+
+  notes        LeadNote[]
+  tasks        LeadTask[]
+  activities   LeadActivity[]
+
   // Shared Team Inbox state for replies (per lead)
   replyLeadStates ReplyLeadState[]
 
   @@unique([workspaceId, email])
+  @@index([workspaceId, stage])
+  @@index([workspaceId, ownerUserId])
+  @@index([workspaceId, listId])
+}
+
+// Simple lists for organizing leads ("move to list" bulk action)
+model LeadList {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  leads       Lead[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, updatedAt])
+}
+
+// Notes / call logs / manual updates on a lead
+model LeadNote {
+  id          String   @id @default(uuid())
+  workspaceId String
+  leadId      String
+  authorUserId String?
+  kind        String   @default("note") // note, call, meeting
+  body        String   @db.LongText
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead        Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author      User?     @relation("LeadNoteAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, leadId, createdAt])
+}
+
+// Tasks / reminders associated with a lead
+model LeadTask {
+  id          String   @id @default(uuid())
+  workspaceId String
+  leadId      String
+  createdByUserId String?
+  title       String
+  dueAt       DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead        Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdBy   User?     @relation("LeadTaskCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, leadId, dueAt])
+  @@index([workspaceId, completedAt])
+}
+
+// Activity timeline (status/stage changes, verifications, imports, etc.)
+model LeadActivity {
+  id          String   @id @default(uuid())
+  workspaceId String
+  leadId      String
+  actorUserId String?
+  type        String
+  text        String?  @db.LongText
+  meta        Json?
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead        Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  actor       User?     @relation("LeadActivityActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, leadId, createdAt])
+  @@index([workspaceId, type])
 }
 
 // -------------------------

@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { env } from "@/lib/env";
+import { PingEmail } from "ping-email";
+import { emailDomain, hasMxRecord, isDisposable, isFreeProvider, isRoleBased, riskScore } from "@/lib/email-quality";
+import { logLeadActivity } from "@/lib/lead-activity";
 
 type Action =
   | "tag_add"
   | "tag_remove"
   | "set_status"
+  | "set_stage"
+  | "assign_owner"
+  | "move_list"
+  | "create_task"
+  | "verify_email"
   | "dnc"
   | "unsuppress"
   | "enroll_campaign"
@@ -82,7 +91,155 @@ export async function POST(req: NextRequest) {
     const status = norm(String(body.status || ""));
     if (!status) return NextResponse.json({ ok: false, error: "Missing status" }, { status: 400 });
     await prisma.lead.updateMany({ where: { id: { in: foundIds } }, data: { status } });
+    await Promise.all(foundIds.map((leadId) => logLeadActivity({ workspaceId: s.wid, leadId, actorUserId: s.uid || null, type: "status", text: `Status set to ${status}` })));
     return NextResponse.json({ ok: true });
+  }
+
+  if (action === "set_stage") {
+    const stage = norm(String(body.stage || ""));
+    if (!stage) return NextResponse.json({ ok: false, error: "Missing stage" }, { status: 400 });
+    await prisma.lead.updateMany({ where: { id: { in: foundIds }, workspaceId: s.wid }, data: { stage } as any });
+    await Promise.all(foundIds.map((leadId) => logLeadActivity({ workspaceId: s.wid, leadId, actorUserId: s.uid || null, type: "stage", text: `Stage set to ${stage}` })));
+    return NextResponse.json({ ok: true });
+  }
+
+  if (action === "assign_owner") {
+    const ownerUserId = String(body.ownerUserId || "").trim();
+    const val = ownerUserId ? ownerUserId : null;
+    if (ownerUserId) {
+      const mem = await prisma.membership.findFirst({ where: { workspaceId: s.wid, userId: ownerUserId }, select: { id: true } });
+      if (!mem) return NextResponse.json({ ok: false, error: "Owner is not a member of this workspace" }, { status: 400 });
+    }
+    await prisma.lead.updateMany({ where: { id: { in: foundIds }, workspaceId: s.wid }, data: { ownerUserId: val } as any });
+    await Promise.all(foundIds.map((leadId) => logLeadActivity({ workspaceId: s.wid, leadId, actorUserId: s.uid || null, type: "owner", text: val ? `Owner assigned` : `Owner cleared`, meta: { ownerUserId: val } })));
+    return NextResponse.json({ ok: true });
+  }
+
+  if (action === "move_list") {
+    const listId = String(body.listId || "").trim();
+    const val = listId ? listId : null;
+    if (listId) {
+      const list = await prisma.leadList.findFirst({ where: { id: listId, workspaceId: s.wid }, select: { id: true, name: true } });
+      if (!list) return NextResponse.json({ ok: false, error: "List not found" }, { status: 404 });
+    }
+    await prisma.lead.updateMany({ where: { id: { in: foundIds }, workspaceId: s.wid }, data: { listId: val } as any });
+    await Promise.all(foundIds.map((leadId) => logLeadActivity({ workspaceId: s.wid, leadId, actorUserId: s.uid || null, type: "list", text: val ? `Moved to list` : `Removed from list`, meta: { listId: val } })));
+    return NextResponse.json({ ok: true });
+  }
+
+  if (action === "create_task") {
+    const title = String(body.title || "").trim();
+    const dueAtRaw = body.dueAt ? String(body.dueAt).trim() : "";
+    if (!title) return NextResponse.json({ ok: false, error: "Missing title" }, { status: 400 });
+
+    let dueAt: Date | null = null;
+    if (dueAtRaw) {
+      const d = new Date(dueAtRaw);
+      if (Number.isNaN(d.getTime())) return NextResponse.json({ ok: false, error: "Invalid dueAt" }, { status: 400 });
+      dueAt = d;
+    }
+
+    await prisma.leadTask.createMany({
+      data: foundIds.map((leadId) => ({
+        workspaceId: s.wid,
+        leadId,
+        createdByUserId: s.uid || null,
+        title,
+        dueAt: dueAt || undefined,
+      })),
+    });
+
+    await Promise.all(
+      foundIds.map((leadId) =>
+        logLeadActivity({
+          workspaceId: s.wid,
+          leadId,
+          actorUserId: s.uid || null,
+          type: "task",
+          text: `Task created: ${title}`,
+          meta: { title, dueAt: dueAt ? dueAt.toISOString() : null },
+        })
+      )
+    );
+
+    return NextResponse.json({ ok: true });
+  }
+
+  if (action === "verify_email") {
+    if (!env.PING_EMAIL_ENABLED) {
+      return NextResponse.json({ ok: false, error: "Email verification is not enabled (PING_EMAIL_ENABLED=1)." }, { status: 400 });
+    }
+    const fqdn = env.PING_EMAIL_FQDN || undefined;
+    const sender = env.PING_EMAIL_SENDER || undefined;
+    if (!fqdn || !sender) {
+      return NextResponse.json({ ok: false, error: "PING_EMAIL_FQDN and PING_EMAIL_SENDER are required." }, { status: 400 });
+    }
+    const verifyMode = String(body.verifyMode || "no_smtp");
+    const requireMailbox = !!body.requireMailbox;
+    const ignoreSMTPVerify = verifyMode === "no_smtp";
+    if (requireMailbox && ignoreSMTPVerify) {
+      return NextResponse.json({ ok: false, error: "Mailbox verification requires SMTP mode" }, { status: 400 });
+    }
+
+    const pingEmail = new PingEmail({
+      port: env.PING_EMAIL_PORT,
+      fqdn,
+      sender,
+      timeout: env.PING_EMAIL_TIMEOUT_MS,
+      attempts: env.PING_EMAIL_ATTEMPTS,
+      ignoreSMTPVerify,
+      debug: env.PING_EMAIL_DEBUG,
+    } as any);
+
+    const results: Array<{ leadId: string; email: string; valid: boolean; message: string; risk: any }> = [];
+    for (const l of leads) {
+      const email = String(l.email || "").trim().toLowerCase();
+      const suppressed = await prisma.suppression.findUnique({ where: { workspaceId_email: { workspaceId: s.wid, email } }, select: { reason: true } });
+      const dom = emailDomain(email);
+      const mxOk = dom ? await hasMxRecord(dom) : false;
+      const baseFlags: any = {
+        suppressed: !!suppressed,
+        noMx: !mxOk,
+        freeProvider: isFreeProvider(dom),
+        roleBased: isRoleBased(email),
+        disposable: isDisposable(dom),
+      };
+      if (suppressed) {
+        const risk = { score: riskScore({ ...baseFlags, notVerified: false }, false), flags: baseFlags, domain: dom, mx: mxOk };
+        results.push({ leadId: l.id, email, valid: false, message: `Suppressed (DNC) - ${suppressed.reason}`, risk });
+        await logLeadActivity({ workspaceId: s.wid, leadId: l.id, actorUserId: s.uid || null, type: "verify", text: "Verification blocked (suppressed)", meta: { email, valid: false, reason: suppressed.reason, risk } });
+        continue;
+      }
+      try {
+        const res = await pingEmail.ping(email);
+        const valid = !!res?.valid;
+        const message = String(res?.message || "").trim() || (valid ? "OK" : "Invalid email");
+        const mailboxConfirmed = message === "Valid email";
+        const catchAll =
+          !!(res as any)?.catchAll ||
+          !!(res as any)?.isCatchAll ||
+          /catch[ -]?all/i.test(String((res as any)?.message || "")) ||
+          /catch[ -]?all/i.test(String((res as any)?.details || ""));
+        const flags = { ...baseFlags, catchAll: !!catchAll, notVerified: !valid };
+        const score = riskScore(flags as any, valid);
+        const risk = { score, flags, domain: dom, mx: mxOk };
+
+        const finalValid = requireMailbox ? !!(valid && mailboxConfirmed) : valid;
+        const finalMsg = requireMailbox && !mailboxConfirmed ? `Not confirmed: ${message}` : message;
+        results.push({ leadId: l.id, email, valid: finalValid, message: finalMsg, risk });
+        await logLeadActivity({ workspaceId: s.wid, leadId: l.id, actorUserId: s.uid || null, type: "verify", text: `${finalValid ? "Valid" : "Invalid"}: ${finalMsg}`, meta: { email, valid: finalValid, risk } });
+      } catch (e: any) {
+        results.push({ leadId: l.id, email, valid: false, message: `Error: ${String(e?.message || e)}`, risk: null });
+        await logLeadActivity({ workspaceId: s.wid, leadId: l.id, actorUserId: s.uid || null, type: "verify", text: "Verification error", meta: { email, error: String(e?.message || e) } });
+      }
+    }
+
+    const summary = {
+      total: results.length,
+      valid: results.filter((r) => r.valid).length,
+      invalid: results.filter((r) => !r.valid).length,
+    };
+    return NextResponse.json({ ok: true, summary, results });
   }
 
   if (action === "dnc") {

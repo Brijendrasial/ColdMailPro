@@ -62,6 +62,21 @@ export async function POST(req: NextRequest) {
   const text = await file.text();
   const records: any[] = parse(text, { columns: true, skip_empty_lines: true, trim: true });
 
+  // Preload suppressions for faster checks during import.
+  const emailList: string[] = [];
+  const emailSeen = new Set<string>();
+  for (const r of records) {
+    const e = normEmail(r.email || r.Email);
+    if (!e) continue;
+    if (emailSeen.has(e)) continue;
+    emailSeen.add(e);
+    emailList.push(e);
+  }
+  const suppressedRows = emailList.length
+    ? await prisma.suppression.findMany({ where: { workspaceId: s.wid, email: { in: emailList } }, select: { email: true, reason: true } })
+    : [];
+  const suppressedMap = new Map(suppressedRows.map((x) => [String(x.email).toLowerCase(), String(x.reason || "")]));
+
   // Email verification setup (optional)
   let pingEmail: any = null;
   if (verify) {
@@ -123,6 +138,17 @@ export async function POST(req: NextRequest) {
       invalidRows.push({ row: rowNo, email: "", message: "Missing email" });
       if (onInvalid === "fail") {
         return NextResponse.json({ ok: false, error: "Invalid rows in CSV", inserted, updated, skipped, invalid, verified, invalidRows }, { status: 422 });
+      }
+      continue;
+    }
+
+    // Block suppressed emails from import (global DNC list)
+    const supReason = suppressedMap.get(email);
+    if (supReason) {
+      invalid++;
+      invalidRows.push({ row: rowNo, email, message: `Suppressed (DNC) - ${supReason}` });
+      if (onInvalid === "fail") {
+        return NextResponse.json({ ok: false, error: "Suppressed emails found", inserted, updated, skipped, invalid, verified, invalidRows }, { status: 422 });
       }
       continue;
     }

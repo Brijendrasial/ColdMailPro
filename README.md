@@ -36,6 +36,9 @@ You can access the live demo here:
 - Lead import + dedupe
 - Manual lead add (single lead) + optional email verification (ping-email)
 - Import wizard: optional email verification (MX/SMTP) with invalid-row handling
+- Leads (workflow): bulk actions (tag/verify/enrich/delete/assign owner/move list/**create tasks**), stages + optional Kanban view (**drag → stage update**)
+- Leads (productivity): per-lead drawer with notes/call logs/meetings, tasks/reminders, and an activity timeline
+- Leads (quality & safety): email risk badges (catch-all/free/role/disposable/no-MX/suppressed), email fallback generator (pattern suggestions) + verify-before-import
 - SMTP mailbox pools + rotation
 - Worker-based sending + scheduling + daily limits + pacing
 - Open/click tracking (pixel + redirect)
@@ -195,7 +198,11 @@ ColdMail Pro can verify lead emails **before saving** using `ping-email` (syntax
 Where it's available:
 - **Leads → Add lead** (manual add): verify before saving, choose verification mode.
 - **Leads → Import CSV wizard**: optionally verify each row during import, and either *skip invalid rows* or *stop on first error*.
-- **Leads → ✨ Enrich by website → Discover emails**: click **Verify** per email (or **Verify selected**) before importing; includes a **Manual check before adding** box for user-entered emails.
+- **Leads → ✨ Enrich by website → Discover emails**: shows **all emails found**, then you can **Select → Verify (ping-email) → Import**. Includes:
+  - **Risk score + flags** per email (catch-all, free provider, role-based, disposable, no-MX, suppressed)
+  - **Manual check before adding** (verify first, then add)
+  - **Email fallback generator**: generate common patterns (first.last, f.last, etc.) and verify before importing
+  - **Auto-suppress safety**: suppressed (DNC) emails are blocked during create + CSV import + AI import
 
 Verification modes:
 - **Full (MX + SMTP mailbox check)**: attempts SMTP verification to confirm mailbox (best-effort).
@@ -234,6 +241,7 @@ ColdMail Pro can use an **OpenAI-compatible** API to add AI helpers inside the L
 Where it's available:
 - **Leads → select leads** → bulk bar → **✨ AI tags** (suggests a shared tag set and lets you apply it).
 - **Leads → select leads** → bulk bar → **✨ AI enrich** (suggests missing fields like name/company/website; applies in safe mode by default: *fill missing only*).
+- **Leads → select leads** → bulk bar → **+ Task** (creates the same follow-up/reminder task for all selected leads).
 - **Leads** (top right) → **✨ AI segments** (suggests useful saved views/segments; you can apply or save them).
 - **Leads** (top right) → **✨ Enrich by website** (paste a company site like `https://acme.com`).
   - If you already have leads with matching email domains (e.g. `@acme.com`), it enriches missing fields in bulk.

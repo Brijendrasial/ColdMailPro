@@ -68,10 +68,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "No company-domain emails to import" }, { status: 400 });
   }
 
+  // Block suppressed emails (DNC) from being imported
+  const suppressed = await prisma.suppression.findMany({
+    where: { workspaceId: s.wid, email: { in: uniq } },
+    select: { email: true, reason: true },
+  });
+  const suppressedSet = new Set(suppressed.map((x) => String(x.email).toLowerCase()));
+  const allowed = uniq.filter((e) => !suppressedSet.has(e));
+
+  if (!allowed.length) {
+    return NextResponse.json({ ok: false, error: "All selected emails are suppressed (DNC)", suppressed }, { status: 422 });
+  }
+
   const normTags = normalizeTags(tags);
 
   // AI-only: create minimal lead rows (email + status + tags). Enrichment happens via aiEnrichLeads.
-  const data = uniq.map((email) =>
+  const data = allowed.map((email) =>
     ({
       workspaceId: s.wid,
       email,
@@ -84,7 +96,7 @@ export async function POST(req: NextRequest) {
 
   // Fetch the current set (created + pre-existing duplicates) so we can enrich consistently.
   const existing = await prisma.lead.findMany({
-    where: { workspaceId: s.wid, email: { in: uniq } },
+    where: { workspaceId: s.wid, email: { in: allowed } },
     select: { id: true, email: true, firstName: true, lastName: true, company: true, website: true },
   });
 
@@ -123,9 +135,12 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     website: parsedWebsite.url,
-    importedRequested: uniq.length,
+    importedSelected: uniq.length,
+    importedRequested: allowed.length,
     created: created.count,
-    skipped: Math.max(0, uniq.length - created.count),
+    skipped: Math.max(0, allowed.length - created.count),
+    skippedSuppressed: uniq.length - allowed.length,
+    suppressed: suppressed,
     enriched: ops.length,
     note: uniq.length >= MAX_IMPORT ? `Reached safety limit of ${MAX_IMPORT} emails.` : "",
   });

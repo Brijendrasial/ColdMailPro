@@ -18,10 +18,15 @@ export type LeadRow = {
   company?: string | null;
   website?: string | null;
   status: string;
+  stage?: string;
+  owner?: null | { id: string; name?: string | null; email?: string | null };
+  list?: null | { id: string; name: string };
   tags: string[];
   createdAt: string;
   enrollmentsCount: number;
   campaigns: CampaignMini[];
+  nextTask?: null | { id: string; title: string; dueAt: string | null };
+  lastActivity?: null | { type: string; text?: string | null; createdAt: string };
   lastMessage: null | {
     status: string;
     subject?: string | null;
@@ -63,8 +68,15 @@ export function LeadsClient() {
   // Filters
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>("all");
+  const [stage, setStage] = useState<string>("all");
+  const [listId, setListId] = useState<string>("all");
+  const [ownerUserId, setOwnerUserId] = useState<string>("all");
+  const [tasksFilter, setTasksFilter] = useState<string>(""); // "" | overdue | due_7d | none
   const [tag, setTag] = useState<string>("");
   const [contacted, setContacted] = useState<string>(""); // "" | "1" | "0"
+
+  // View mode
+  const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
 
   // Paging
   const [page, setPage] = useState(1);
@@ -87,11 +99,25 @@ export function LeadsClient() {
   const [views, setViews] = useState<LeadViewRow[]>([]);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
 
+  // Lists + owners (for bulk assign / move)
+  const [lists, setLists] = useState<Array<{ id: string; name: string }>>([]);
+  const [owners, setOwners] = useState<Array<{ id: string; name?: string | null; email?: string | null }>>([]);
+  const [newListName, setNewListName] = useState<string>("");
+
+  // Bulk helpers
+  const [bulkStage, setBulkStage] = useState<string>("");
+  const [bulkOwner, setBulkOwner] = useState<string>("");
+  const [bulkList, setBulkList] = useState<string>("");
+  const [bulkTaskTitle, setBulkTaskTitle] = useState<string>("");
+  const [bulkTaskDueDate, setBulkTaskDueDate] = useState<string>(""); // YYYY-MM-DD
+  const [showBulkTask, setShowBulkTask] = useState(false);
+
   // Modals
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSuppressions, setShowSuppressions] = useState(false);
   const [showDuplicates, setShowDuplicates] = useState(false);
+  const [showLists, setShowLists] = useState(false);
   const [showEnroll, setShowEnroll] = useState(false);
   const [showAiTags, setShowAiTags] = useState(false);
   const [showAiEnrich, setShowAiEnrich] = useState(false);
@@ -148,21 +174,40 @@ export function LeadsClient() {
     confidence?: number;
     notes?: string;
   }>>([]);
+  // Email fallback generator (pattern-based suggestions when no email is found)
+  const [companyFallbackFirst, setCompanyFallbackFirst] = useState<string>("");
+  const [companyFallbackLast, setCompanyFallbackLast] = useState<string>("");
+  const [companyGenerated, setCompanyGenerated] = useState<Array<{
+    email: string;
+    sourceUrl: string;
+    purpose?: string;
+    recommended?: boolean;
+    confidence?: number;
+    notes?: string;
+  }>>([]);
   const [companyImportBusy, setCompanyImportBusy] = useState<boolean>(false);
   const [companyDiscoverDiag, setCompanyDiscoverDiag] = useState<any>(null);
   // Per-email verification state for AI-discovered emails (ping-email)
   const [companyVerifyMode, setCompanyVerifyMode] = useState<"smtp" | "no_smtp">("no_smtp");
   const [companyRequireMailbox, setCompanyRequireMailbox] = useState<boolean>(false);
   const [companyVerifyMap, setCompanyVerifyMap] = useState<
-    Record<string, { status: "idle" | "busy" | "valid" | "invalid" | "error"; message?: string }>
+    Record<
+      string,
+      {
+        status: "idle" | "busy" | "valid" | "invalid" | "error";
+        message?: string;
+        riskScore?: number;
+        riskFlags?: any;
+      }
+    >
   >({});
   // Only company-domain inboxes are importable (import endpoint filters by domain anyway).
   // Keep "other" emails selectable for reference/copy, but don't treat them as import candidates.
   const discoveredSelected = useMemo(
-    () => [...companyDiscovered, ...companySuggested, ...companyManualEmails]
+    () => [...companyDiscovered, ...companySuggested, ...companyManualEmails, ...companyGenerated]
       .filter((x) => !!companyDiscoveredSel[x.email])
       .map((x) => x.email),
-    [companyDiscovered, companySuggested, companyManualEmails, companyDiscoveredSel]
+    [companyDiscovered, companySuggested, companyManualEmails, companyGenerated, companyDiscoveredSel]
   );
 
   const discoveredNotVerified = useMemo(
@@ -261,7 +306,7 @@ export function LeadsClient() {
     // reset selection when filters change
     setSelected({});
     setDrawerId(null);
-  }, [q, status, tag, contacted, pageSize]);
+  }, [q, status, stage, listId, ownerUserId, tasksFilter, tag, contacted, pageSize]);
 
   // Load saved views
   useEffect(() => {
@@ -285,6 +330,42 @@ export function LeadsClient() {
     };
   }, [refreshKey]);
 
+  // Load lists + owners (best-effort; UI should still work if not migrated yet)
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/leads/lists", { cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text());
+        return await r.json();
+      })
+      .then((d) => {
+        if (cancelled) return;
+        setLists(Array.isArray(d.lists) ? d.lists : []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLists([]);
+      });
+
+    fetch("/api/leads/owners", { cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text());
+        return await r.json();
+      })
+      .then((d) => {
+        if (cancelled) return;
+        setOwners(Array.isArray(d.owners) ? d.owners : []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOwners([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
   // Load leads list
   useEffect(() => {
     let cancelled = false;
@@ -292,6 +373,10 @@ export function LeadsClient() {
     const params = new URLSearchParams();
     if (q.trim()) params.set("q", q.trim());
     if (status && status !== "all") params.set("status", status);
+    if (stage && stage !== "all") params.set("stage", stage);
+    if (listId && listId !== "all") params.set("listId", listId);
+    if (ownerUserId && ownerUserId !== "all") params.set("ownerUserId", ownerUserId);
+    if (tasksFilter) params.set("tasks", tasksFilter);
     if (tag.trim()) params.set("tag", tag.trim());
     if (contacted) params.set("contacted", contacted);
     params.set("page", String(page));
@@ -321,7 +406,7 @@ export function LeadsClient() {
     return () => {
       cancelled = true;
     };
-  }, [q, status, tag, contacted, page, pageSize, refreshKey]);
+  }, [q, status, stage, listId, ownerUserId, tasksFilter, tag, contacted, page, pageSize, refreshKey]);
 
   function toggleAll(on: boolean) {
     const next: Record<string, boolean> = {};
@@ -417,20 +502,65 @@ export function LeadsClient() {
     }
   }
 
+  function isoFromDateInputLocal(v: string): string | null {
+    const t = String(v || "").trim();
+    if (!t) return null;
+    const d = new Date(t + "T09:00:00.000Z");
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+  }
+
+  function nextMondayISOLocal(): string {
+    const now = new Date();
+    const day = now.getUTCDay(); // 0=Sun
+    const diff = (8 - day) % 7 || 7;
+    const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + diff, 9, 0, 0));
+    return target.toISOString();
+  }
+
+  function plusDaysISOLocal(days: number): string {
+    const now = new Date();
+    const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + days, 9, 0, 0));
+    return target.toISOString();
+  }
+
   async function bulk(
-    action: "tag_add" | "tag_remove" | "set_status" | "dnc" | "unsuppress" | "enroll_campaign" | "stop_campaigns" | "delete",
-    payload: any = {}
+    action:
+      | "tag_add"
+      | "tag_remove"
+      | "set_status"
+      | "set_stage"
+      | "assign_owner"
+      | "move_list"
+      | "create_task"
+      | "verify_email"
+      | "dnc"
+      | "unsuppress"
+      | "enroll_campaign"
+      | "stop_campaigns"
+      | "delete",
+    payload: any = {},
+    idsOverride?: string[]
   ) {
-    if (!selectedIds.length) return;
+    const ids = idsOverride && idsOverride.length ? idsOverride : selectedIds;
+    if (!ids.length) return;
     setLoading(true);
     try {
       const r = await fetch("/api/leads/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selectedIds, action, ...payload }),
+        body: JSON.stringify({ ids, action, ...payload }),
       });
-      if (!r.ok) throw new Error(await r.text());
-      notify("✅ Updated");
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(String(j?.error || `HTTP_${r.status}`));
+
+      if (action === "verify_email") {
+        const s = j?.summary;
+        if (s) notify(`✅ Verified: ${s.valid}/${s.total} valid`);
+        else notify("✅ Verified");
+      } else {
+        notify("✅ Updated");
+      }
       setSelected({});
       setDrawerId(null);
       setRefreshKey((k) => k + 1);
@@ -700,7 +830,7 @@ export function LeadsClient() {
       return;
     }
 
-    const exists = [...companyDiscovered, ...companySuggested, ...companyManualEmails].some((x) => String(x.email || "").toLowerCase() === e);
+    const exists = [...companyDiscovered, ...companySuggested, ...companyManualEmails, ...companyGenerated].some((x) => String(x.email || "").toLowerCase() === e);
     if (!exists) {
       setCompanyManualEmails((arr) => [{
         email: e,
@@ -733,9 +863,11 @@ export function LeadsClient() {
       if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
       const valid = Boolean(j.valid);
       const message = String(j.message || "").trim();
+      const riskScore = Number(j?.risk?.score || 0);
+      const riskFlags = j?.risk?.flags || null;
       setCompanyVerifyMap((m) => ({
         ...m,
-        [e]: { status: valid ? "valid" : "invalid", message },
+        [e]: { status: valid ? "valid" : "invalid", message, riskScore, riskFlags },
       }));
     } catch (err: any) {
       const msg = clip(String(err?.message || err || "Verification failed"), 180);
@@ -785,8 +917,9 @@ export function LeadsClient() {
       if (!r.ok || !j?.ok) throw new Error(String(j?.message || j?.error || `HTTP_${r.status}`));
       const created = Number(j.created || 0);
       const skipped = Number(j.skipped || 0);
+      const skippedSuppressed = Number(j.skippedSuppressed || 0);
       const enriched = Number(j.enriched || 0);
-      notify(`✅ Imported ${created} leads (skipped ${skipped} duplicates) · enriched ${enriched}`);
+      notify(`✅ Imported ${created} leads (skipped ${skipped} duplicates${skippedSuppressed ? `, ${skippedSuppressed} suppressed` : ""}) · enriched ${enriched}`);
       setRefreshKey((k) => k + 1);
     } catch (e: any) {
       notify(`❌ Import failed: ${clip(String(e?.message || e), 140)}`);
@@ -933,6 +1066,9 @@ export function LeadsClient() {
           <Button variant="ghost" onClick={() => setShowDuplicates(true)}>
             Duplicates
           </Button>
+          <Button variant="ghost" onClick={() => setShowLists(true)}>
+            Lists
+          </Button>
         </div>
       </div>
 
@@ -1053,9 +1189,124 @@ export function LeadsClient() {
             </div>
 
             <div className="md:col-span-1 flex gap-2">
-              <Button variant="ghost" onClick={() => { setQ(""); setStatus("all"); setTag(""); setContacted(""); setPage(1); setActiveViewId(null); }}>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setQ("");
+                  setStatus("all");
+                  setStage("all");
+                  setListId("all");
+                  setOwnerUserId("all");
+                  setTasksFilter("");
+                  setTag("");
+                  setContacted("");
+                  setPage(1);
+                  setActiveViewId(null);
+                }}
+              >
                 Reset
               </Button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+            <div className="md:col-span-3">
+              <div className="text-xs opacity-70 mb-1">Stage</div>
+              <Select
+                value={stage}
+                onChange={(e) => {
+                  setStage(e.target.value);
+                  setPage(1);
+                  setActiveViewId(null);
+                }}
+                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+              >
+                <option value="all">All</option>
+                <option value="new">New</option>
+                <option value="enriched">Enriched</option>
+                <option value="verified">Verified</option>
+                <option value="ready">Ready</option>
+                <option value="contacted">Contacted</option>
+                <option value="replied">Replied</option>
+                <option value="interested">Interested</option>
+                <option value="not_fit">Not fit</option>
+              </Select>
+            </div>
+
+            <div className="md:col-span-3">
+              <div className="text-xs opacity-70 mb-1">List</div>
+              <Select
+                value={listId}
+                onChange={(e) => {
+                  setListId(e.target.value);
+                  setPage(1);
+                  setActiveViewId(null);
+                }}
+                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+              >
+                <option value="all">All</option>
+                {lists.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="md:col-span-3">
+              <div className="text-xs opacity-70 mb-1">Owner</div>
+              <Select
+                value={ownerUserId}
+                onChange={(e) => {
+                  setOwnerUserId(e.target.value);
+                  setPage(1);
+                  setActiveViewId(null);
+                }}
+                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+              >
+                <option value="all">All</option>
+                {owners.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name || u.email || u.id}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="md:col-span-2">
+              <div className="text-xs opacity-70 mb-1">Tasks</div>
+              <Select
+                value={tasksFilter}
+                onChange={(e) => {
+                  setTasksFilter(e.target.value);
+                  setPage(1);
+                  setActiveViewId(null);
+                }}
+                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
+              >
+                <option value="">Any</option>
+                <option value="overdue">Overdue</option>
+                <option value="due_7d">Due in 7 days</option>
+                <option value="none">No open tasks</option>
+              </Select>
+            </div>
+
+            <div className="md:col-span-1">
+              <div className="text-xs opacity-70 mb-1">View</div>
+              <div className="inline-flex w-full rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                <button
+                  className={`h-10 flex-1 px-3 text-sm ${viewMode === "table" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10"}`}
+                  onClick={() => setViewMode("table")}
+                >
+                  Table
+                </button>
+                <button
+                  className={`h-10 flex-1 px-3 text-sm border-l border-black/10 dark:border-white/10 ${viewMode === "kanban" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10"}`}
+                  onClick={() => setViewMode("kanban")}
+                >
+                  Kanban
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1072,6 +1323,120 @@ export function LeadsClient() {
                 <Button variant="ghost" onClick={openAiEnrichModal}>
                   ✨ AI enrich
                 </Button>
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    const hint = prompt("Optional hint for enrichment (e.g. ICP/job titles to focus on):", "") ?? null;
+                    if (hint === null) return;
+                    const overwrite = confirm("Overwrite existing first/last/company/website fields if AI suggests changes?\n\nOK = overwrite\nCancel = fill only missing fields");
+                    try {
+                      setBulkBusy(true);
+                      const r = await fetch("/api/leads/ai/enrich-apply", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ids: selectedIds, hint, overwrite }),
+                      });
+                      if (!r.ok) throw new Error(await r.text());
+                      const d = await r.json();
+                      notify(`✅ Enriched ${Number(d.updated || 0)} leads`);
+                      setRefreshKey((k) => k + 1);
+                    } catch (e: any) {
+                      notify(`❌ Bulk enrich failed: ${clip(String(e?.message || e), 140)}`);
+                    } finally {
+                      setBulkBusy(false);
+                    }
+                  }}
+                >
+                  ⚡ Bulk enrich
+                </Button>
+
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    // lightweight verification pass: MX + heuristics (+ optional SMTP based on server settings)
+                    bulk("verify_email", { verifyMode: "no_smtp", requireMailbox: false });
+                  }}
+                >
+                  Verify emails
+                </Button>
+
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setBulkTaskTitle("");
+                    setBulkTaskDueDate("");
+                    setShowBulkTask(true);
+                  }}
+                >
+                  + Task
+                </Button>
+
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={bulkStage}
+                    onChange={(e) => setBulkStage(e.target.value)}
+                    className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
+                  >
+                    <option value="">Set stage…</option>
+                    <option value="new">New</option>
+                    <option value="enriched">Enriched</option>
+                    <option value="verified">Verified</option>
+                    <option value="ready">Ready</option>
+                    <option value="contacted">Contacted</option>
+                    <option value="replied">Replied</option>
+                    <option value="interested">Interested</option>
+                    <option value="not_fit">Not fit</option>
+                  </Select>
+                  <Button variant="ghost" disabled={!bulkStage} onClick={() => bulk("set_stage", { stage: bulkStage })}>
+                    Apply
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={bulkOwner}
+                    onChange={(e) => setBulkOwner(e.target.value)}
+                    className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
+                  >
+                    <option value="">Assign owner…</option>
+                    <option value="__clear__">(Clear)</option>
+                    {owners.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name || u.email || u.id}
+                      </option>
+                    ))}
+                  </Select>
+                  <Button
+                    variant="ghost"
+                    disabled={!bulkOwner}
+                    onClick={() => bulk("assign_owner", { ownerUserId: bulkOwner === "__clear__" ? "" : bulkOwner })}
+                  >
+                    Apply
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={bulkList}
+                    onChange={(e) => setBulkList(e.target.value)}
+                    className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
+                  >
+                    <option value="">Move to list…</option>
+                    <option value="__clear__">(Remove)</option>
+                    {lists.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Button
+                    variant="ghost"
+                    disabled={!bulkList}
+                    onClick={() => bulk("move_list", { listId: bulkList === "__clear__" ? "" : bulkList })}
+                  >
+                    Apply
+                  </Button>
+                </div>
                 <Button
                   variant="ghost"
                   onClick={() => {
@@ -1170,7 +1535,18 @@ export function LeadsClient() {
             </div>
           ) : null}
 
-          {/* Table */}
+          {/* Table / Kanban */}
+          {viewMode === "kanban" ? (
+            <KanbanBoard
+              items={items}
+              selected={selected}
+              onToggleOne={toggleOne}
+              onOpen={(id) => setDrawerId(id)}
+              onMoveStage={async (id, st) => {
+                await bulk("set_stage", { stage: st }, [id]);
+              }}
+            />
+          ) : (
           <div className="table-wrap">
             <table className="min-w-[1060px] w-full text-sm">
               <thead className="table-head">
@@ -1180,9 +1556,13 @@ export function LeadsClient() {
                   </th>
                   <th className="table-cell text-left">Lead</th>
                   <th className="table-cell text-left">Company</th>
+                  <th className="table-cell text-left">Stage</th>
+                  <th className="table-cell text-left">Owner</th>
+                  <th className="table-cell text-left">List</th>
                   <th className="table-cell text-left">Tags</th>
                   <th className="table-cell text-left">Status</th>
                   <th className="table-cell text-left">Campaigns</th>
+                  <th className="table-cell text-left">Next task</th>
                   <th className="table-cell text-left">Last activity</th>
                   <th className="table-cell text-left">Actions</th>
                 </tr>
@@ -1192,8 +1572,8 @@ export function LeadsClient() {
                   const name = [it.firstName, it.lastName].filter(Boolean).join(" ");
                   const company = it.company || "—";
                   const last = it.lastMessage;
-                  const lastLine = last ? `${last.status}${last.campaign?.name ? ` • ${last.campaign.name}` : ""}` : "—";
-                  const lastAt = last?.sentAt || last?.createdAt || it.createdAt;
+                  const lastLine = it.lastActivity?.text || (last ? `${last.status}${last.campaign?.name ? ` • ${last.campaign.name}` : ""}` : "—");
+                  const lastAt = it.lastActivity?.createdAt || last?.sentAt || last?.createdAt || it.createdAt;
                   return (
                     <tr key={it.id} className="table-row">
                       <td className="table-cell">
@@ -1206,6 +1586,15 @@ export function LeadsClient() {
                       <td className="table-cell">
                         <div className="font-medium">{clip(company, 28)}</div>
                         <div className="text-xs opacity-70">{it.website ? clip(it.website, 34) : "—"}</div>
+                      </td>
+                      <td className="table-cell">
+                        <Pill tone="neutral">{it.stage || "new"}</Pill>
+                      </td>
+                      <td className="table-cell">
+                        <div className="text-xs opacity-80">{it.owner?.name || it.owner?.email || "—"}</div>
+                      </td>
+                      <td className="table-cell">
+                        <div className="text-xs opacity-80">{it.list?.name || "—"}</div>
                       </td>
                       <td className="table-cell">
                         <div className="flex flex-wrap gap-1">
@@ -1221,6 +1610,16 @@ export function LeadsClient() {
                           {it.campaigns?.length ? it.campaigns.slice(0, 2).map((c) => <Badge key={c.id}>{clip(c.name, 18)}</Badge>) : <span className="opacity-60">—</span>}
                           {it.campaigns?.length > 2 ? <Badge>+{it.campaigns.length - 2}</Badge> : null}
                         </div>
+                      </td>
+                      <td className="table-cell">
+                        {it.nextTask ? (
+                          <div>
+                            <div className="text-xs opacity-80">{clip(it.nextTask.title, 26)}</div>
+                            <div className="text-xs opacity-60">{it.nextTask.dueAt ? fmtDate(it.nextTask.dueAt) : "No due"}</div>
+                          </div>
+                        ) : (
+                          <span className="opacity-60">—</span>
+                        )}
                       </td>
                       <td className="table-cell">
                         <div className="text-xs opacity-80">{lastLine}</div>
@@ -1264,6 +1663,7 @@ export function LeadsClient() {
               </tbody>
             </table>
           </div>
+          )}
 
           {!loading && items.length === 0 ? <EmptyState title="No leads found" subtitle="Try adjusting your filters, or import a CSV to get started." /> : null}
 
@@ -1291,6 +1691,59 @@ export function LeadsClient() {
       </Card>
 
       {drawerId ? <LeadDrawer id={drawerId} onClose={() => setDrawerId(null)} onToast={notify} /> : null}
+
+
+      {showBulkTask ? (
+        <Modal
+          title={`Create task (${selectedIds.length} leads)`}
+          onClose={() => setShowBulkTask(false)}
+          footer={
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="ghost" onClick={() => setShowBulkTask(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!String(bulkTaskTitle || "").trim()}
+                onClick={async () => {
+                  const title = String(bulkTaskTitle || "").trim();
+                  if (!title) return;
+                  const dueAt = isoFromDateInputLocal(bulkTaskDueDate);
+                  await bulk("create_task", { title, dueAt });
+                  setShowBulkTask(false);
+                  setBulkTaskTitle("");
+                  setBulkTaskDueDate("");
+                }}
+              >
+                Create task
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs opacity-70 mb-1">Title</div>
+              <Input value={bulkTaskTitle} onChange={(e) => setBulkTaskTitle(e.target.value)} placeholder="Follow up" />
+            </div>
+            <div>
+              <div className="text-xs opacity-70 mb-1">Due date (optional)</div>
+              <Input type="date" value={bulkTaskDueDate} onChange={(e) => setBulkTaskDueDate(e.target.value)} />
+              <div className="flex gap-2 mt-2 flex-wrap">
+                <Button variant="ghost" onClick={() => setBulkTaskDueDate(plusDaysISOLocal(3).slice(0, 10))}>
+                  Follow up in 3 days
+                </Button>
+                <Button variant="ghost" onClick={() => setBulkTaskDueDate(nextMondayISOLocal().slice(0, 10))}>
+                  Call on Monday
+                </Button>
+                <Button variant="ghost" onClick={() => setBulkTaskDueDate("")}>
+                  Clear
+                </Button>
+              </div>
+            </div>
+            <div className="text-xs opacity-70">Creates the same task on each selected lead.</div>
+          </div>
+        </Modal>
+      ) : null}
 
       {showAiTags ? (
         <Modal
@@ -1487,17 +1940,17 @@ export function LeadsClient() {
                     variant="ghost"
                     onClick={() => {
                       const sel: Record<string, boolean> = {};
-                      for (const it of [...companyDiscovered, ...companySuggested, ...companyManualEmails]) sel[it.email] = true;
+                      for (const it of [...companyDiscovered, ...companySuggested, ...companyManualEmails, ...companyGenerated]) sel[it.email] = true;
                       setCompanyDiscoveredSel(sel);
                     }}
-                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length)}
+                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length && !companyGenerated.length)}
                   >
                     Select all
                   </Button>
                   <Button
                     variant="ghost"
                     onClick={() => setCompanyDiscoveredSel({})}
-                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length)}
+                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length && !companyGenerated.length)}
                   >
                     Clear
                   </Button>
@@ -1580,6 +2033,160 @@ export function LeadsClient() {
                 ) : null}
               </div>
 
+              <div className="mt-3 glass p-3">
+                <div className="text-xs font-medium">Email fallback generator (patterns)</div>
+                <div className="text-xs opacity-70 mt-1">
+                  If no valid inbox is found, generate common patterns (e.g. <span className="font-mono">first.last@company.com</span>) and verify each via ping-email before importing.
+                </div>
+
+                <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">First name</div>
+                    <Input value={companyFallbackFirst} onChange={(e) => setCompanyFallbackFirst(e.target.value)} placeholder="first" />
+                  </div>
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">Last name</div>
+                    <Input value={companyFallbackLast} onChange={(e) => setCompanyFallbackLast(e.target.value)} placeholder="last" />
+                  </div>
+                  <div className="md:mt-6 flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        const raw = String(companyWebsiteUrl || "").trim();
+                        let host = "";
+                        try {
+                          const u = new URL(raw.includes("://") ? raw : `https://${raw}`);
+                          host = (u.hostname || "").replace(/^www\./, "");
+                        } catch {
+                          host = "";
+                        }
+                        if (!host) {
+                          notify("⚠️ Enter a valid company website URL first");
+                          return;
+                        }
+                        const fn = String(companyFallbackFirst || "").trim().toLowerCase();
+                        const ln = String(companyFallbackLast || "").trim().toLowerCase();
+                        if (!fn && !ln) {
+                          notify("⚠️ Enter first name or last name");
+                          return;
+                        }
+                        const f = fn ? (fn[0] || "") : "";
+                        const l = ln ? (ln[0] || "") : "";
+                        const locals: string[] = [];
+                        if (fn && ln) {
+                          locals.push(
+                            `${fn}.${ln}`,
+                            `${fn}${ln}`,
+                            `${fn}_${ln}`,
+                            `${fn}-${ln}`,
+                            `${f}${ln}`,
+                            `${f}.${ln}`,
+                            `${f}_${ln}`,
+                            `${f}-${ln}`,
+                            `${fn}${l}`,
+                            `${fn}.${l}`,
+                            `${ln}.${fn}`,
+                            `${ln}${fn}`,
+                          );
+                        }
+                        if (fn) locals.push(`${fn}`, `${f}`);
+                        if (ln) locals.push(`${ln}`, `${l}`);
+                        const uniq: string[] = [];
+                        const seen = new Set<string>();
+                        for (const local of locals) {
+                          const localClean = String(local || "").trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
+                          if (!localClean) continue;
+                          const e = `${localClean}@${host}`;
+                          const key = e.toLowerCase();
+                          if (seen.has(key)) continue;
+                          seen.add(key);
+                          uniq.push(e);
+                        }
+                        setCompanyGenerated((prev) => {
+                          const existing = new Set([...companyDiscovered, ...companySuggested, ...companyManualEmails, ...prev].map((x) => String(x.email || "").toLowerCase()));
+                          const add = uniq
+                            .filter((e) => !existing.has(e.toLowerCase()))
+                            .map((email) => ({
+                              email: email.toLowerCase(),
+                              sourceUrl: "pattern",
+                              purpose: "pattern",
+                              recommended: true,
+                              confidence: 0.2,
+                              notes: "Generated pattern (verify before import)",
+                            }));
+                          return [...add, ...prev];
+                        });
+                        notify("✅ Generated pattern emails (select + verify)");
+                      }}
+                    >
+                      Generate patterns
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setCompanyGenerated([]);
+                        notify("Cleared generated patterns");
+                      }}
+                      disabled={!companyGenerated.length}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+
+                {companyGenerated.length ? (
+                  <div className="mt-3">
+                    <div className="text-xs font-medium mb-2">Generated (verify then import)</div>
+                    <div className="space-y-2 max-h-40 overflow-auto">
+                      {companyGenerated.map((it) => (
+                        <label key={it.email} className="flex items-start gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={!!companyDiscoveredSel[it.email]}
+                            onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                          />
+                          <div className="min-w-0">
+                            <div className="font-mono break-all">{it.email}</div>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
+                                {companyVerifyMap[it.email]?.status === "valid"
+                                  ? "✅ Valid"
+                                  : companyVerifyMap[it.email]?.status === "invalid"
+                                    ? "❌ Invalid"
+                                    : companyVerifyMap[it.email]?.status === "busy"
+                                      ? "⏳ Verifying…"
+                                      : companyVerifyMap[it.email]?.status === "error"
+                                        ? "⚠️ Error"
+                                        : "Not verified"}
+                              </span>
+                              {typeof companyVerifyMap[it.email]?.riskScore === "number" ? (
+                                <Pill tone={companyVerifyMap[it.email]?.riskScore >= 70 ? "danger" : companyVerifyMap[it.email]?.riskScore >= 40 ? "warning" : "success"}>
+                                  Risk {companyVerifyMap[it.email]?.riskScore}
+                                </Pill>
+                              ) : null}
+                              <Button
+                                variant="ghost"
+                                className="px-2 py-1 text-xs rounded-lg"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  verifyCompanyEmail(it.email);
+                                }}
+                                disabled={companyVerifyMap[it.email]?.status === "busy"}
+                              >
+                                {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
+                              </Button>
+                            </div>
+                            <div className="text-xs opacity-60 break-all mt-0.5">Source: generated pattern</div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
               {companyManualEmails.length ? (
                 <div className="mt-3">
                   <div className="text-xs font-medium mb-2">Manually added (verified)</div>
@@ -1598,6 +2205,11 @@ export function LeadsClient() {
                             <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
                               {companyVerifyMap[it.email]?.status === "valid" ? "✅ Valid" : companyVerifyMap[it.email]?.status === "busy" ? "⏳ Verifying…" : companyVerifyMap[it.email]?.status === "error" ? "⚠️ Error" : "Not verified"}
                             </span>
+                            {typeof companyVerifyMap[it.email]?.riskScore === "number" ? (
+                              <Pill tone={companyVerifyMap[it.email]?.riskScore >= 70 ? "danger" : companyVerifyMap[it.email]?.riskScore >= 40 ? "warning" : "success"}>
+                                Risk {companyVerifyMap[it.email]?.riskScore}
+                              </Pill>
+                            ) : null}
                             <Button
                               variant="ghost"
                               className="px-2 py-1 text-xs rounded-lg"
@@ -1648,6 +2260,11 @@ export function LeadsClient() {
                                       ? "⚠️ Error"
                                       : "Not verified"}
                             </span>
+                            {typeof companyVerifyMap[it.email]?.riskScore === "number" ? (
+                              <Pill tone={companyVerifyMap[it.email]?.riskScore >= 70 ? "danger" : companyVerifyMap[it.email]?.riskScore >= 40 ? "warning" : "success"}>
+                                Risk {companyVerifyMap[it.email]?.riskScore}
+                              </Pill>
+                            ) : null}
                             <Button
                               variant="ghost"
                               className="px-2 py-1 text-xs rounded-lg"
@@ -1666,6 +2283,16 @@ export function LeadsClient() {
                             {typeof it.confidence === "number" ? <span className="opacity-70"> · {(it.confidence * 100).toFixed(0)}%</span> : null}
                             {it.recommended ? <span className="ml-1">· ✅ ok for outreach</span> : <span className="ml-1">· 🚫 avoid outreach</span>}
                           </div>
+                          {companyVerifyMap[it.email]?.riskFlags ? (
+                            <div className="text-xs opacity-60 mt-0.5">
+                              Flags: {
+                                Object.entries(companyVerifyMap[it.email].riskFlags)
+                                  .filter(([, v]) => !!v)
+                                  .map(([k]) => String(k).replace(/([A-Z])/g, " $1").toLowerCase())
+                                  .slice(0, 6)
+                                  .join(", ") || "none"}
+                            </div>
+                          ) : null}
                           {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
                           {it.evidenceUrls?.length ? (
                             <div className="text-xs opacity-60 mt-0.5 break-all">
@@ -2054,6 +2681,86 @@ export function LeadsClient() {
           onToast={notify}
           onChanged={() => setRefreshKey((k) => k + 1)}
         />
+      ) : null}
+
+      {showLists ? (
+        <Modal
+          title="Lead lists"
+          onClose={() => {
+            setShowLists(false);
+            setNewListName("");
+          }}
+          footer={
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs opacity-70">Use lists to organize leads. Bulk action: “Move to list…”.</div>
+              <Button variant="ghost" onClick={() => setShowLists(false)}>
+                Close
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="glass p-3 space-y-2">
+              <div className="text-xs opacity-70">Create a list</div>
+              <div className="flex gap-2">
+                <Input value={newListName} onChange={(e) => setNewListName(e.target.value)} placeholder="e.g. US SaaS founders" />
+                <Button
+                  onClick={async () => {
+                    const name = String(newListName || "").trim();
+                    if (!name) {
+                      notify("❌ Enter a list name");
+                      return;
+                    }
+                    try {
+                      const r = await fetch("/api/leads/lists", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name }),
+                      });
+                      if (!r.ok) throw new Error(await r.text());
+                      notify("✅ List saved");
+                      setNewListName("");
+                      setRefreshKey((k) => k + 1);
+                    } catch (e: any) {
+                      notify(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                    }
+                  }}
+                >
+                  Create
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs opacity-70">Lists in this workspace</div>
+              {lists.length ? (
+                lists.map((l) => (
+                  <div key={l.id} className="rounded-2xl border border-black/10 dark:border-white/10 p-3 flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">{l.name}</div>
+                    <Button
+                      variant="danger"
+                      onClick={async () => {
+                        if (!confirm(`Delete list “${l.name}”? Leads will be unassigned from this list.`)) return;
+                        try {
+                          const r = await fetch(`/api/leads/lists?id=${encodeURIComponent(l.id)}`, { method: "DELETE" });
+                          if (!r.ok) throw new Error(await r.text());
+                          notify("✅ List deleted");
+                          setRefreshKey((k) => k + 1);
+                        } catch (e: any) {
+                          notify(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm opacity-70">No lists yet.</div>
+              )}
+            </div>
+          </div>
+        </Modal>
       ) : null}
 
       {showDuplicates ? (
@@ -2510,7 +3217,7 @@ function DuplicatesManager({ onClose, onToast, onChanged }: { onClose: () => voi
           <span className="text-xs opacity-60">Tip: keep website filled to improve detection.</span>
         </div>
 
-        {!loading && !groups.length ? <div className="text-sm opacity-70">No duplicates found (based on website host + name).</div> : null}
+        {!loading && !groups.length ? <div className="text-sm opacity-70">No duplicates found (email variants + domain/name + website/name).</div> : null}
 
         <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
           {groups.map((g) => {
@@ -2520,8 +3227,12 @@ function DuplicatesManager({ onClose, onToast, onChanged }: { onClose: () => voi
               <div key={g.key} className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div>
-                    <div className="font-medium">{g.host}</div>
-                    <div className="text-xs opacity-70">{g.name} • {leads.length} leads</div>
+                    <div className="font-medium">{g.title || g.host || "Duplicate group"}</div>
+                    <div className="text-xs opacity-70">
+                      <span className="mr-2"><Pill tone="info">{String(g.type || "match")}</Pill></span>
+                      {g.subtitle ? <span>{g.subtitle} • </span> : null}
+                      {leads.length} leads
+                    </div>
                   </div>
                   <Button
                     onClick={async () => {
@@ -2591,10 +3302,163 @@ function DuplicatesManager({ onClose, onToast, onChanged }: { onClose: () => voi
   );
 }
 
+function KanbanBoard({
+  items,
+  selected,
+  onToggleOne,
+  onOpen,
+  onMoveStage,
+}: {
+  items: LeadRow[];
+  selected: Record<string, boolean>;
+  onToggleOne: (id: string) => void;
+  onOpen: (id: string) => void;
+  onMoveStage: (id: string, stage: string) => void;
+}) {
+  const stages: Array<{ id: string; name: string }> = [
+    { id: "new", name: "New" },
+    { id: "enriched", name: "Enriched" },
+    { id: "verified", name: "Verified" },
+    { id: "ready", name: "Ready" },
+    { id: "contacted", name: "Contacted" },
+    { id: "replied", name: "Replied" },
+    { id: "interested", name: "Interested" },
+    { id: "not_fit", name: "Not fit" },
+  ];
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overStage, setOverStage] = useState<string | null>(null);
+
+  const byStage: Record<string, LeadRow[]> = {};
+  for (const s of stages) byStage[s.id] = [];
+  for (const it of items) {
+    const st = String(it.stage || "new").toLowerCase();
+    (byStage[st] || (byStage[st] = [])).push(it);
+  }
+
+  return (
+    <div className="w-full max-w-full overflow-x-auto pb-2">
+      <div className="flex gap-3 w-max pr-2">
+      {stages.map((s) => (
+        <div key={s.id} className="min-w-[260px] max-w-[260px]">
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-medium text-sm">{s.name}</div>
+            <div className="text-xs opacity-60">{(byStage[s.id] || []).length}</div>
+          </div>
+          <div
+            className={`glass p-2 rounded-2xl flex flex-col gap-2 min-h-[120px] ${overStage === s.id ? "ring-2 ring-black/20 dark:ring-white/20" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); setOverStage(s.id); }}
+            onDragLeave={() => { if (overStage === s.id) setOverStage(null); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = e.dataTransfer.getData("text/plain") || dragId;
+              setOverStage(null);
+              setDragId(null);
+              if (id && id !== "undefined") onMoveStage(id, s.id);
+            }}
+          >
+            {(byStage[s.id] || []).map((it) => (
+              <div
+                key={it.id}
+                draggable
+                onDragStart={(e) => {
+                  setDragId(it.id);
+                  try { e.dataTransfer.setData("text/plain", it.id); } catch {}
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragEnd={() => { setDragId(null); setOverStage(null); }}
+                className={`rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-black/20 p-2 ${dragId === it.id ? "opacity-60" : ""}`}
+              >
+                <div className="flex items-start gap-2">
+                  <input type="checkbox" className="mt-1" checked={!!selected[it.id]} onChange={() => onToggleOne(it.id)} />
+                  <div className="flex-1">
+                    <div className="font-medium text-sm truncate">{it.email}</div>
+                    <div className="text-xs opacity-70 truncate">{[it.firstName, it.lastName].filter(Boolean).join(" ") || "—"}</div>
+                    <div className="text-xs opacity-60 truncate">{it.company || "—"}</div>
+                    {it.nextTask ? (
+                      <div className="text-xs mt-1 opacity-70">⏰ {clip(it.nextTask.title, 24)}</div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-2 gap-2">
+                  <button
+                    className="text-xs px-2 py-1 rounded-xl border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10"
+                    onClick={() => onOpen(it.id)}
+                  >
+                    Open
+                  </button>
+                  <Select
+                    value={String(it.stage || "new").toLowerCase()}
+                    onChange={(e) => onMoveStage(it.id, e.target.value)}
+                    className="h-8 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-xs"
+                  >
+                    {stages.map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {x.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+            ))}
+            {(byStage[s.id] || []).length === 0 ? <div className="text-xs opacity-50 p-2">No leads</div> : null}
+          </div>
+        </div>
+      ))}
+      </div>
+    </div>
+  );
+}
+
 function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void; onToast: (m: string) => void }) {
-  const [tab, setTab] = useState<"overview" | "timeline" | "messages" | "campaigns">("overview");
+  const [tab, setTab] = useState<"overview" | "timeline" | "notes" | "tasks" | "messages" | "campaigns">("overview");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
+
+  const [noteKind, setNoteKind] = useState<"note" | "call" | "meeting">("note");
+  const [noteBody, setNoteBody] = useState<string>("");
+  const [noteBusy, setNoteBusy] = useState(false);
+
+  const [taskTitle, setTaskTitle] = useState<string>("");
+  const [taskDueDate, setTaskDueDate] = useState<string>(""); // YYYY-MM-DD
+  const [taskBusy, setTaskBusy] = useState(false);
+
+  async function refreshLead() {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/leads/${encodeURIComponent(id)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      setData(d.lead);
+    } catch (e: any) {
+      onToast(`❌ Failed to load lead: ${clip(String(e?.message || e), 140)}`);
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function isoFromDateInput(v: string): string | null {
+    const t = String(v || "").trim();
+    if (!t) return null;
+    const d = new Date(`${t}T09:00:00.000Z`);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+  }
+
+  function nextMondayISO(): string {
+    const now = new Date();
+    // JS: 0=Sun ... 1=Mon
+    const day = now.getUTCDay();
+    const diff = (8 - day) % 7 || 7; // days until next Monday
+    const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + diff, 9, 0, 0));
+    return target.toISOString();
+  }
+
+  function plusDaysISO(days: number): string {
+    const now = new Date();
+    const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + days, 9, 0, 0));
+    return target.toISOString();
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -2627,9 +3491,20 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
   const messages = Array.isArray(lead?.messages) ? lead.messages : [];
   const enrollments = Array.isArray(lead?.enrollments) ? lead.enrollments : [];
 
+  const notes = Array.isArray(lead?.notes) ? lead.notes : [];
+  const tasks = Array.isArray(lead?.tasks) ? lead.tasks : [];
+  const activities = Array.isArray(lead?.activities) ? lead.activities : [];
+
   const timeline = useMemo(() => {
-    const out: { at: string; type: string; text: string }[] = [];
+    const out: Array<{ at: string; type: string; text: string }> = [];
     if (lead?.createdAt) out.push({ at: String(lead.createdAt), type: "import", text: "Lead created/imported" });
+
+    // First-class activities logged by the system (status/stage changes, verify, notes, tasks, etc.)
+    for (const a of activities) {
+      out.push({ at: String(a.createdAt), type: String(a.type || "activity"), text: String(a.text || "") || String(a.type || "activity") });
+    }
+
+    // Campaign + message info (not always duplicated in activities)
     for (const e of enrollments) {
       out.push({ at: String(e.createdAt), type: "enroll", text: `Enrolled in ${e.campaign?.name || "campaign"} (${e.status})` });
       if (e.updatedAt && e.updatedAt !== e.createdAt) out.push({ at: String(e.updatedAt), type: "enroll", text: `Enrollment updated (step ${e.currentStep})` });
@@ -2639,9 +3514,10 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
       const subj = m.subject ? clip(String(m.subject), 64) : "(no subject)";
       out.push({ at: String(at), type: "message", text: `${m.status}: ${subj}` });
     }
+
     out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
     return out;
-  }, [lead, enrollments, messages]);
+  }, [lead, activities, enrollments, messages]);
 
   return (
     <div className="fixed inset-0 z-50">
@@ -2656,7 +3532,7 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
-          {(["overview", "timeline", "messages", "campaigns"] as const).map((t) => (
+          {(["overview", "tasks", "notes", "timeline", "messages", "campaigns"] as const).map((t) => (
             <button
               key={t}
               className={`px-3 py-1.5 rounded-xl text-sm border border-black/10 dark:border-white/10 ${tab === t ? "bg-black text-white dark:bg-white dark:text-black" : ""}`}
@@ -2675,12 +3551,21 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
             <div className="space-y-3">
               <div className="flex items-center gap-2 flex-wrap">
                 <Pill tone={toneForStatus(lead.status)}>{lead.status}</Pill>
+                <Badge>Stage: {lead.stage || "new"}</Badge>
                 <Badge>Created: {fmtDate(lead.createdAt)}</Badge>
               </div>
               <div className="grid grid-cols-1 gap-2">
                 <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
                   <div className="text-xs opacity-70">Website</div>
                   <div className="text-sm">{lead.website || "—"}</div>
+                </div>
+                <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
+                  <div className="text-xs opacity-70">Owner</div>
+                  <div className="text-sm">{lead.owner?.name || lead.owner?.email || "—"}</div>
+                </div>
+                <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
+                  <div className="text-xs opacity-70">List</div>
+                  <div className="text-sm">{lead.list?.name || "—"}</div>
                 </div>
                 <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
                   <div className="text-xs opacity-70">Tags</div>
@@ -2698,9 +3583,46 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
                       : "—"}
                   </div>
                 </div>
+                <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
+                  <div className="text-xs opacity-70">Last email sent</div>
+                  <div className="text-sm">
+                    {messages.find((m: any) => m.sentAt || m.createdAt)
+                      ? `${fmtDate((messages[0]?.sentAt || messages[0]?.createdAt) as any)} • ${clip(String(messages[0]?.subject || "(no subject)"), 64)}`
+                      : "—"}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
+                  <div className="text-xs opacity-70">Next task</div>
+                  <div className="text-sm">{tasks.find((t: any) => !t.completedAt) ? `${tasks.find((t: any) => !t.completedAt)?.title} • ${fmtDate(tasks.find((t: any) => !t.completedAt)?.dueAt)}` : "—"}</div>
+                </div>
               </div>
 
               <div className="flex gap-2 flex-wrap">
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    // quick task presets
+                    try {
+                      setTaskBusy(true);
+                      const r = await fetch(`/api/leads/${encodeURIComponent(id)}/tasks`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ title: "Follow up", dueAt: plusDaysISO(3) }),
+                      });
+                      if (!r.ok) throw new Error(await r.text());
+                      onToast("✅ Task added (Follow up in 3 days)");
+                      await refreshLead();
+                      setTab("tasks");
+                    } catch (e: any) {
+                      onToast(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                    } finally {
+                      setTaskBusy(false);
+                    }
+                  }}
+                  disabled={taskBusy}
+                >
+                  + Follow up (3 days)
+                </Button>
                 <Button
                   variant="danger"
                   onClick={async () => {
@@ -2724,6 +3646,221 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
                 <Button variant="ghost" onClick={() => { window.location.href = "/app/replies"; }}>
                   Go to Replies
                 </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && lead && tab === "notes" ? (
+            <div className="space-y-3">
+              <div className="glass p-3 space-y-2">
+                <div className="text-xs opacity-70">Add note / call log / meeting log</div>
+                <div className="grid grid-cols-1 gap-2">
+                  <Select value={noteKind} onChange={(e) => setNoteKind(e.target.value as any)} className="h-10">
+                    <option value="note">Note</option>
+                    <option value="call">Call log</option>
+                    <option value="meeting">Meeting</option>
+                  </Select>
+                  <TextArea value={noteBody} onChange={(e) => setNoteBody(e.target.value)} rows={3} placeholder="Write a quick note…" />
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={async () => {
+                      const body = String(noteBody || "").trim();
+                      if (!body) {
+                        onToast("❌ Note cannot be empty");
+                        return;
+                      }
+                      try {
+                        setNoteBusy(true);
+                        const r = await fetch(`/api/leads/${encodeURIComponent(id)}/notes`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ kind: noteKind, body }),
+                        });
+                        if (!r.ok) throw new Error(await r.text());
+                        setNoteBody("");
+                        onToast("✅ Note added");
+                        await refreshLead();
+                      } catch (e: any) {
+                        onToast(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                      } finally {
+                        setNoteBusy(false);
+                      }
+                    }}
+                    disabled={noteBusy}
+                  >
+                    Add
+                  </Button>
+                  <Button variant="ghost" onClick={() => setNoteBody("")} disabled={noteBusy}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {notes.length ? (
+                  notes.map((n: any) => (
+                    <div key={n.id} className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge>{n.kind}</Badge>
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs opacity-60">{fmtDate(n.createdAt)}</div>
+                          <Button
+                            variant="ghost"
+                            onClick={async () => {
+                              if (!confirm("Delete this note?")) return;
+                              try {
+                                const r = await fetch(`/api/leads/${encodeURIComponent(id)}/notes?noteId=${encodeURIComponent(n.id)}`, { method: "DELETE" });
+                                if (!r.ok) throw new Error(await r.text());
+                                onToast("✅ Deleted");
+                                await refreshLead();
+                              } catch (e: any) {
+                                onToast(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                              }
+                            }}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="text-sm mt-2 whitespace-pre-wrap">{n.body}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm opacity-70">No notes yet.</div>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && lead && tab === "tasks" ? (
+            <div className="space-y-3">
+              <div className="glass p-3 space-y-2">
+                <div className="text-xs opacity-70">Add a task / reminder</div>
+                <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="e.g. Follow up, Call, Send demo" />
+                <div className="grid grid-cols-1 gap-2">
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">Due date (optional)</div>
+                    <Input type="date" value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} />
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setTaskTitle("Follow up");
+                        setTaskDueDate(new Date(plusDaysISO(3)).toISOString().slice(0, 10));
+                      }}
+                    >
+                      Follow up in 3 days
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setTaskTitle("Call");
+                        setTaskDueDate(new Date(nextMondayISO()).toISOString().slice(0, 10));
+                      }}
+                    >
+                      Call on Monday
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={async () => {
+                      const title = String(taskTitle || "").trim();
+                      if (!title) {
+                        onToast("❌ Task title is required");
+                        return;
+                      }
+                      try {
+                        setTaskBusy(true);
+                        const dueAt = isoFromDateInput(taskDueDate);
+                        const r = await fetch(`/api/leads/${encodeURIComponent(id)}/tasks`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ title, dueAt }),
+                        });
+                        if (!r.ok) throw new Error(await r.text());
+                        setTaskTitle("");
+                        setTaskDueDate("");
+                        onToast("✅ Task added");
+                        await refreshLead();
+                      } catch (e: any) {
+                        onToast(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                      } finally {
+                        setTaskBusy(false);
+                      }
+                    }}
+                    disabled={taskBusy}
+                  >
+                    Add task
+                  </Button>
+                  <Button variant="ghost" onClick={() => { setTaskTitle(""); setTaskDueDate(""); }} disabled={taskBusy}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {tasks.length ? (
+                  tasks.map((t: any) => {
+                    const isDone = !!t.completedAt;
+                    const isOverdue = !isDone && t.dueAt && new Date(t.dueAt).getTime() < Date.now();
+                    return (
+                      <div key={t.id} className="rounded-2xl border border-black/10 dark:border-white/10 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-sm font-medium">
+                              {t.title} {isOverdue ? <Badge>Overdue</Badge> : null} {isDone ? <Badge>Done</Badge> : null}
+                            </div>
+                            <div className="text-xs opacity-70">Due: {t.dueAt ? fmtDate(t.dueAt) : "—"} • Created: {fmtDate(t.createdAt)}</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {!isDone ? (
+                              <Button
+                                variant="ghost"
+                                onClick={async () => {
+                                  try {
+                                    const r = await fetch(`/api/leads/${encodeURIComponent(id)}/tasks`, {
+                                      method: "PATCH",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ taskId: t.id, completed: true }),
+                                    });
+                                    if (!r.ok) throw new Error(await r.text());
+                                    onToast("✅ Completed");
+                                    await refreshLead();
+                                  } catch (e: any) {
+                                    onToast(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                                  }
+                                }}
+                              >
+                                Mark done
+                              </Button>
+                            ) : null}
+                            <Button
+                              variant="ghost"
+                              onClick={async () => {
+                                if (!confirm("Delete this task?")) return;
+                                try {
+                                  const r = await fetch(`/api/leads/${encodeURIComponent(id)}/tasks?taskId=${encodeURIComponent(t.id)}`, { method: "DELETE" });
+                                  if (!r.ok) throw new Error(await r.text());
+                                  onToast("✅ Deleted");
+                                  await refreshLead();
+                                } catch (e: any) {
+                                  onToast(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
+                                }
+                              }}
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-sm opacity-70">No tasks yet.</div>
+                )}
               </div>
             </div>
           ) : null}

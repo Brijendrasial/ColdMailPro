@@ -4,6 +4,14 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { PingEmail } from "ping-email";
+import {
+  emailDomain,
+  hasMxRecord,
+  isDisposable,
+  isFreeProvider,
+  isRoleBased,
+  riskScore,
+} from "@/lib/email-quality";
 
 export const runtime = "nodejs";
 
@@ -38,6 +46,39 @@ export async function POST(req: NextRequest) {
 
   const body = parsed.data;
   const email = body.email.trim().toLowerCase();
+
+  // Global DNC / suppression safety: do not treat suppressed emails as valid.
+  const suppressed = await prisma.suppression.findUnique({
+    where: { workspaceId_email: { workspaceId: s.wid, email } },
+    select: { id: true, reason: true },
+  });
+
+  const dom = emailDomain(email);
+  const mxOk = dom ? await hasMxRecord(dom) : false;
+  const baseFlags = {
+    suppressed: !!suppressed,
+    noMx: !mxOk,
+    freeProvider: isFreeProvider(dom),
+    roleBased: isRoleBased(email),
+    disposable: isDisposable(dom),
+  } as any;
+
+  if (suppressed) {
+    return NextResponse.json({
+      ok: true,
+      email,
+      valid: false,
+      success: true,
+      message: `Suppressed (DNC) - ${suppressed.reason}`,
+      mailboxConfirmed: false,
+      risk: {
+        score: riskScore({ ...baseFlags, notVerified: false }, false),
+        flags: baseFlags,
+        domain: dom,
+        mx: mxOk,
+      },
+    });
+  }
 
   if (!env.PING_EMAIL_ENABLED) {
     return NextResponse.json(
@@ -96,6 +137,20 @@ export async function POST(req: NextRequest) {
     const message = String(res?.message || "").trim() || (valid ? "OK" : "Invalid email");
     const mailboxConfirmed = message === "Valid email";
 
+    // Best-effort catch-all signal from ping-email output.
+    const catchAll =
+      !!(res as any)?.catchAll ||
+      !!(res as any)?.isCatchAll ||
+      /catch[ -]?all/i.test(String((res as any)?.message || "")) ||
+      /catch[ -]?all/i.test(String((res as any)?.details || ""));
+
+    const flags = {
+      ...baseFlags,
+      catchAll: !!catchAll,
+      notVerified: !valid,
+    } as any;
+    const score = riskScore(flags, valid);
+
     // If caller requires mailbox confirmation, treat anything other than "Valid email" as invalid.
     if (body.requireMailbox && !mailboxConfirmed) {
       return NextResponse.json({
@@ -105,6 +160,7 @@ export async function POST(req: NextRequest) {
         success: !!res?.success,
         message,
         mailboxConfirmed,
+        risk: { score, flags, domain: dom, mx: mxOk },
       });
     }
 
@@ -115,6 +171,7 @@ export async function POST(req: NextRequest) {
       success: !!res?.success,
       message,
       mailboxConfirmed,
+      risk: { score, flags, domain: dom, mx: mxOk },
     });
   } catch (e: any) {
     return NextResponse.json(

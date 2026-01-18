@@ -10,6 +10,23 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   const lead = await prisma.lead.findFirst({
     where: { id, workspaceId: s.wid },
     include: {
+      owner: { select: { id: true, name: true, email: true } },
+      list: { select: { id: true, name: true } },
+      notes: {
+        select: { id: true, kind: true, body: true, createdAt: true, authorUserId: true },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      },
+      tasks: {
+        select: { id: true, title: true, dueAt: true, completedAt: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      },
+      activities: {
+        select: { id: true, type: true, text: true, meta: true, createdAt: true, actorUserId: true },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      },
       enrollments: {
         include: { campaign: { select: { id: true, name: true, status: true } } },
         orderBy: { updatedAt: "desc" },
