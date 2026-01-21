@@ -1,0 +1,51 @@
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+dist/
+
+# build output (worker)
+worker-dist/
+
+# env files
+.env
+.env.*
+!.env.example
+
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# recordings (keep screenshots committed)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# local secrets / keys
+*.pem
+*.key
+*.p12
+*.crt
+
+# cache
+.cache/
+.tmp/
+tmp/
