@@ -6,9 +6,10 @@ import { decrypt } from "@/lib/crypto";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { startOfLocalDayUtc, warmupTargetForToday } from "@/lib/warmupTime";
-import { aiClassifyAndDraftReply, aiExtractMeetingTimeFromReply } from "@/lib/ai";
+import { aiClassifyAndDraftReply, aiExtractMeetingTimeFromReply, aiSuggestAutofix } from "@/lib/ai";
 import { signTrackingClick } from "@/lib/tracking";
 import { appLogAsync } from "@/lib/app-log";
+import { upsertOpenIncident } from "@/lib/aiops";
 import { renderTemplate, stripHtml } from "@/lib/template";
 import { sendEmail } from "@/lib/mailer";
 import { createGoogleMeetEvent } from "@/lib/google-calendar";
@@ -897,6 +898,103 @@ function sudoWrap(cmd: string): string[] {
   return ["sudo", "-n", "--preserve-env=CF_API_TOKEN,CF_ENV_PATH,MAILSTACK_ACME_EMAIL", cmd];
 }
 
+// --------------------
+// AutoFix (safe auto-apply, risky suggest-only)
+// --------------------
+type AutoFixPlan = { kind: "safe" | "risky"; summary: string; commands: string[] };
+
+function matchSafeAutofix(jobType: string, err: string): AutoFixPlan | null {
+  const e = String(err || "");
+  // Dovecot Maildir blocked by SELinux labels
+  if ((/ACL\/MAC wrong/i.test(e) || /SELinux/i.test(e) || /opendir\(.+Maildir\) failed: Permission denied/i.test(e)) && /\/var\/vmail\//.test(e)) {
+    return {
+      kind: "safe",
+      summary: "Fix SELinux labels/permissions for /var/vmail Maildir and restart dovecot",
+      commands: [
+        `dnf -y install policycoreutils-python-utils || true`,
+        `semanage fcontext -a -t mail_spool_t "/var/vmail(/.*)?" || true`,
+        `restorecon -Rv /var/vmail || true`,
+        `chown -R vmail:vmail /var/vmail || true`,
+        `systemctl restart dovecot || true`,
+      ],
+    };
+  }
+
+  // Exim map/perms/SELinux issues
+  if (/\/etc\/exim\/maps/i.test(e) && /Permission denied|denied/i.test(e)) {
+    return {
+      kind: "safe",
+      summary: "Fix /etc/exim/maps perms + SELinux contexts and restart exim",
+      commands: [
+        `mkdir -p /etc/exim/maps || true`,
+        `chown -R root:root /etc/exim/maps || true`,
+        `chmod 755 /etc/exim/maps || true`,
+        `chmod 644 /etc/exim/maps/*.map /etc/exim/maps/*.list 2>/dev/null || true`,
+        `restorecon -Rv /etc/exim /etc/exim/maps || true`,
+        `systemctl restart exim || true`,
+      ],
+    };
+  }
+
+  // Exim DB lookup blocked under SELinux (common: "condition check lookup defer")
+  if (/condition check lookup defer/i.test(e) || /searchtype mysql not initially found/i.test(e)) {
+    return {
+      kind: "safe",
+      summary: "Ensure Exim can connect to DB under SELinux and restart exim",
+      commands: [
+        `setsebool -P exim_can_connect_db on || true`,
+        `restorecon -Rv /etc/exim /etc/exim/maps || true`,
+        `systemctl restart exim || true`,
+      ],
+    };
+  }
+
+  return null;
+}
+
+async function applySafeAutofix(jobId: string, plan: AutoFixPlan): Promise<void> {
+  const [runner, ...prefixArgs] = sudoWrap("bash");
+  for (const c of plan.commands) {
+    await runCmd(jobId, runner, [...prefixArgs, "-lc", c], { cwd: "/root" });
+  }
+}
+
+async function maybeAutofixAndRetry(job: any, payload: any, err: any): Promise<boolean> {
+  if (!env.AUTOFIX_ENABLED || !env.AUTOFIX_AUTO_APPLY_SAFE) return false;
+  const attempts = Number(job?.attempts || 0);
+  if (attempts >= env.AUTOFIX_MAX_SAFE_ATTEMPTS_PER_JOB) return false;
+
+  const plan = matchSafeAutofix(String(job.type), String(err?.message || err));
+  if (!plan) return false;
+
+  await logJob(job.id, `🔧 AutoFix (safe): ${plan.summary}`);
+  try {
+    await applySafeAutofix(job.id, plan);
+    await logJob(job.id, `✅ AutoFix applied. Retrying job once...`);
+    return true;
+  } catch (e: any) {
+    await logJob(job.id, `⚠️  AutoFix failed: ${String(e?.message || e)}`);
+    return false;
+  }
+}
+
+async function maybeLogRiskySuggestion(job: any, payload: any, err: any) {
+  if (!env.AUTOFIX_ENABLED || !env.AUTOFIX_AI_SUGGESTIONS) return;
+  const suggestion = await aiSuggestAutofix({
+    jobType: String(job.type),
+    error: String(err?.message || err),
+    context: (() => {
+      try { return JSON.stringify({ jobType: job.type, payload }, null, 2).slice(0, 6000); } catch { return undefined; }
+    })(),
+  });
+  if (!suggestion) return;
+  // Never auto-apply AI suggestions unless matched by our safe signatures.
+  await logJob(job.id, `🧠 AutoFix suggestion (${suggestion.risk}): ${suggestion.summary}`);
+  for (const a of suggestion.suggestedActions || []) {
+    await logJob(job.id, `   • ${a}`);
+  }
+}
+
 function shQuote(s: string): string {
   // Safe single-quote for bash -lc
   return `'${String(s).replace(/'/g, `'"'"'`)}'`;
@@ -1486,15 +1584,17 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     const deleteDns = Boolean(payload?.deleteDns);
 
     // 1) Optional: remove Cloudflare DNS records created by Mailstack
+    // Use server-side mailstack-addon.sh so we delete the *exact* records created (including dynamic DKIM selectors).
     if (deleteDns) {
       const cfg = await prisma.mailstackConfig.findUnique({ where: { workspaceId: t.workspaceId } });
       if (!cfg?.cloudflareTokenEnc) throw new Error("Cloudflare token not set in Mailstack settings");
       const token = decrypt(cfg.cloudflareTokenEnc).trim();
       if (!token) throw new Error("Cloudflare token decrypt failed");
 
-      for (const d of domains) {
-        await cloudflareDeleteMailstackRecords(jobId, token, d);
-      }
+      const [runner, ...prefixArgs] = sudoWrap(addon);
+      const envWithToken = { ...wsEnv, CF_API_TOKEN: token };
+      await runCmd(jobId, runner, [...prefixArgs, "tenant-purge-dns", "--tenant", t.name], { cwd: "/root", env: envWithToken });
+      await logJob(jobId, "✅ Cloudflare DNS purge completed");
     }
 
     // 2) Suspend tenant (best-effort), then remove tenant folder and rebuild maps
@@ -1649,6 +1749,51 @@ async function lockNextJob() {
   if (locked.count !== 1) return null;
 
   return job;
+}
+
+
+async function executeJob(job: any, payload: any) {
+  if (job.type === "schedule_campaign") {
+    await handleScheduleCampaign(payload);
+  } else if (job.type === "send_next_step") {
+    await handleSendNextStep(payload);
+  } else if (job.type === "sync_imap") {
+    await handleSyncImap(payload);
+  } else if (job.type === "mailbox_healthcheck") {
+    await handleMailboxHealthcheck(job.id, payload);
+  } else if (job.type === "mailbox_test_send") {
+    await handleMailboxTestSend(job.id, payload);
+  } else if (job.type === "domain_dns_check") {
+    await handleDomainDnsCheck(job.id, payload);
+  } else if (job.type === "warmup_tick") {
+    await handleWarmupTick(job.id, payload);
+  } else if (job.type === "warmup_reply") {
+    await handleWarmupReply(job.id, payload);
+  } else if (job.type === "warmup_followup") {
+    await handleWarmupFollowup(job.id, payload);
+  } else if (job.type === "warmup_seed_check") {
+    await handleWarmupSeedCheck(job.id, payload);
+  } else if (job.type === "warmup_mailbox_check") {
+    await handleWarmupMailboxCheck(job.id, payload);
+  } else if (job.type === "warmup_seed_reply") {
+    await handleWarmupSeedReply(job.id, payload);
+  } else if (job.type === "warmup_seed_rescue") {
+    await handleWarmupSeedRescue(job.id, payload);
+  } else if (job.type.startsWith("mailstack:") || job.type === "mailstack:init-cloudflare") {
+    await handleMailstackJob(job.id, job.type, payload);
+
+    // Keep tenant last-job status in sync.
+    // NOTE: tenant-reset deletes the tenant row; don't try to update it afterwards.
+    if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
+      await prisma.mailstackTenant
+        .updateMany({ where: { id: String(payload.tenantId) }, data: { lastJobStatus: "done" } })
+        .catch(() => {});
+    }
+  } else if (job.type === "aiops_apply_incident") {
+    await handleAiopsApplyIncident(job.id, payload);
+  } else {
+    // unknown job type
+  }
 }
 
 async function handleScheduleCampaign(payload: any) {
@@ -3542,69 +3687,132 @@ async function main() {
     let payload: any = null;
 
     try {
-      payload = JSON.parse(job.payload || "{}");
-      if (job.type === "schedule_campaign") {
-        await handleScheduleCampaign(payload);
-      } else if (job.type === "send_next_step") {
-        await handleSendNextStep(payload);
-      } else if (job.type === "sync_imap") {
-        await handleSyncImap(payload);
-      } else if (job.type === "mailbox_healthcheck") {
-        await handleMailboxHealthcheck(job.id, payload);
-      } else if (job.type === "mailbox_test_send") {
-        await handleMailboxTestSend(job.id, payload);
-      } else if (job.type === "domain_dns_check") {
-        await handleDomainDnsCheck(job.id, payload);
-      } else if (job.type === "warmup_tick") {
-        await handleWarmupTick(job.id, payload);
-      } else if (job.type === "warmup_reply") {
-        await handleWarmupReply(job.id, payload);
-      } else if (job.type === "warmup_followup") {
-        await handleWarmupFollowup(job.id, payload);
-      } else if (job.type === "warmup_seed_check") {
-        await handleWarmupSeedCheck(job.id, payload);
-      } else if (job.type === "warmup_mailbox_check") {
-        await handleWarmupMailboxCheck(job.id, payload);
-      } else if (job.type === "warmup_seed_reply") {
-        await handleWarmupSeedReply(job.id, payload);
-      } else if (job.type === "warmup_seed_rescue") {
-        await handleWarmupSeedRescue(job.id, payload);
-      } else if (job.type.startsWith("mailstack:") || job.type === "mailstack:init-cloudflare") {
-        await handleMailstackJob(job.id, job.type, payload);
-
-        // Keep tenant last-job status in sync.
-        // NOTE: tenant-reset deletes the tenant row; don't try to update it afterwards.
-        if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
-          await prisma.mailstackTenant
-            .updateMany({ where: { id: String(payload.tenantId) }, data: { lastJobStatus: "done" } })
-            .catch(() => {});
-        }
-      } else {
-        // unknown
-      }
+            payload = JSON.parse(job.payload || "{}");
+      await executeJob(job, payload);
 
       await prisma.job.update({ where: { id: job.id }, data: { status: "done" } });
-    } catch (e: any) {
-      await prisma.job.update({
-        where: { id: job.id },
-        data: {
-          status: "failed",
-          attempts: { increment: 1 },
-          lastError: String(e?.message || e),
-        },
-      }).catch(()=>{});
+    
+} catch (e: any) {
+  // Risky: AI suggestions only (never auto-applied). Safe: deterministic fixes auto-applied.
+  await maybeLogRiskySuggestion(job, payload, e).catch(() => {});
+  const shouldRetry = await maybeAutofixAndRetry(job, payload, e);
 
-      await logJob(job.id, `❌ FAILED: ${String(e?.message || e)}`);
-
+  if (shouldRetry) {
+    try {
+      await executeJob(job, payload);
+      await prisma.job.update({ where: { id: job.id }, data: { status: "done" } }).catch(() => {});
+      await logJob(job.id, `✅ Job succeeded after AutoFix retry.`);
       if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
         await prisma.mailstackTenant
-          .updateMany({
-            where: { id: String(payload.tenantId) },
-            data: { lastJobStatus: "failed" },
-          })
+          .updateMany({ where: { id: String(payload.tenantId) }, data: { lastJobStatus: "done" } })
           .catch(() => {});
       }
+      continue;
+    } catch (e2: any) {
+      await logJob(job.id, `❌ Retry after AutoFix failed: ${String(e2?.message || e2)}`);
+      // fall through and mark job failed below (increment attempts)
+      e = e2;
     }
+  }
+
+  
+
+// --------------------
+// AIOps: record incident (dedupe by signature)
+// --------------------
+if (env.AIOPS_ENABLED) {
+  const wsId = payload?.workspaceId ? String(payload.workspaceId) : null;
+  const errText = String(e?.message || e);
+  const jobType = String(job.type || "unknown");
+  const safePlan = matchSafeAutofix(jobType, errText);
+
+  // pull last 20 job logs for context
+  const recentLines = await prisma.jobLog.findMany({
+    where: { jobId: job.id },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { line: true, createdAt: true },
+  }).catch(() => []);
+
+  const evidence = {
+    job: { id: job.id, type: jobType, runAt: job.runAt, attempts: job.attempts },
+    error: errText,
+    payload: (() => { try { return payload; } catch { return undefined; } })(),
+    recentJobLogs: (recentLines || []).reverse(),
+  };
+
+  const suggestedFixes: any = { actions: [] as any[] };
+  if (safePlan) {
+    suggestedFixes.actions.push(...(safePlan.commands || []).map((cmd) => ({
+      kind: "safe",
+      actionType: "shell",
+      command: cmd,
+      args: {},
+    })));
+  }
+
+  // Add AI suggestion (suggest-only) into incident
+  if (env.AIOPS_AI_ANALYSIS) {
+    const sug = await aiSuggestAutofix({
+      jobType,
+      error: errText,
+      context: (() => {
+        try {
+          return JSON.stringify({ payload, recentJobLogs: (recentLines || []).map((x: any) => x.line) }, null, 2).slice(0, 8000);
+        } catch {
+          return undefined;
+        }
+      })(),
+    }).catch(() => null as any);
+
+    if (sug) {
+      (suggestedFixes as any).ai = sug;
+      for (const a of sug.suggestedActions || []) {
+        (suggestedFixes.actions as any[]).push({
+          kind: String(sug.risk || "risky") === "safe" ? "safe" : "risky",
+          actionType: "suggestion",
+          command: String(a),
+          args: {},
+        });
+      }
+    }
+  }
+
+  await upsertOpenIncident({
+    workspaceId: wsId,
+    severity: "error",
+    source: "worker",
+    signatureParts: [jobType, errText],
+    summary: `Job failed: ${jobType} — ${errText}`.slice(0, 1000),
+    evidence,
+    suggestedFixes,
+  }).catch(() => {});
+}
+
+await prisma.job
+    .update({
+      where: { id: job.id },
+      data: {
+        status: "failed",
+        attempts: { increment: 1 },
+        lastError: String(e?.message || e),
+      },
+    })
+    .catch(() => {});
+
+  await logJob(job.id, `❌ FAILED: ${String(e?.message || e)}`);
+
+  if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
+    await prisma.mailstackTenant
+      .updateMany({
+        where: { id: String(payload.tenantId) },
+        data: { lastJobStatus: "failed" },
+      })
+      .catch(() => {});
+  }
+}
+
+  }
 
   }
 }

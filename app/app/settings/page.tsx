@@ -10,6 +10,8 @@ import DeliverabilityCard from "./DeliverabilityCard";
 import WebhooksCard from "./WebhooksCard";
 import TeamCard from "./TeamCard";
 import AuditLogCard from "./AuditLogCard";
+import AutoFixCard from "./AutoFixCard";
+import IncidentsCard from "./IncidentsCard";
 import WorkspacesCard from "./WorkspacesCard";
 import { countRecoveryCodes } from "@/lib/twofa";
 
@@ -79,6 +81,7 @@ export default async function Settings({
     { key: "workspaces", label: "Workspaces", icon: "🏢" },
     { key: "team", label: "Team", icon: "👥" },
     { key: "audit", label: "Audit log", icon: "🧾" },
+    { key: "system", label: "System", icon: "🛠️" },
     { key: "integrations", label: "Integrations", icon: "🔗" },
     { key: "developer", label: "Developer", icon: "🧩" },
     { key: "danger", label: "Danger Zone", icon: "🧨" },
@@ -225,6 +228,13 @@ export default async function Settings({
           {tab === "integrations" ? <WebhooksCard /> : null}
 
           {tab === "developer" ? <ApiKeysCard initialKeys={keys as any} /> : null}
+
+          {tab === "system" ? (
+            <div className="grid gap-4">
+              <IncidentsCard />
+              <AutoFixCard />
+            </div>
+          ) : null}
 
           {tab === "danger" ? (
             <Card title="Danger zone" subtitle="High impact actions." right={<Pill tone="danger">Danger</Pill>}>
