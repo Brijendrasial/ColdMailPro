@@ -1,5 +1,15 @@
 # ColdMail Pro
 
+**Version:** v1.75
+
+## What's new in v1.75
+- **AIOps-managed services**: system-level health checks + safe auto-remediation for Exim, Dovecot, MariaDB, ColdMail app, and worker via `coldmail-aiops.timer`.
+- **AutoFix**: safe fixes auto-applied; risky fixes are AI suggestions only (never executed automatically).
+- **Incidents UI**: Settings → System shows open incidents + Apply Safe Fixes action.
+- **AlmaLinux 9 SELinux hardening**: `/var/vmail` relabel + Exim DB boolean + Exim maps restorecon.
+- **Tenant delete DNS cleanup**: optional Cloudflare DNS purge on tenant reset/delete.
+
+
 Self-hosted **cold email + warmup** app built with **Next.js 14**, **Prisma**, and **MariaDB**.
 
 > Not affiliated with Instantly.ai or Mailgun. “Instantly-style” is used as a product description only.
@@ -404,3 +414,100 @@ New: **Warmup Control Center**
 - Bulk editor to update ramp + window settings and **copy settings from** a known-good mailbox
 - **Inline “Copy profile”** action on a row to set it as the copy source
 - **Presets**: apply built-in presets (e.g. “Gmail safe ramp”) or save your own presets locally (per-browser)
+
+
+
+## AutoFix (self-healing)
+
+The worker includes an optional **AutoFix** layer that can automatically apply **safe** fixes when common
+infrastructure errors are detected (SELinux labels, Exim map permissions, Exim DB lookup SELinux boolean),
+and can generate **suggestions** (AI) for risky/unknown failures.
+
+Environment variables:
+- `AUTOFIX_ENABLED` (default: `true`)
+- `AUTOFIX_AUTO_APPLY_SAFE` (default: `true`)
+- `AUTOFIX_AI_SUGGESTIONS` (default: `true`) – requires `AI_API_KEY`
+- `AUTOFIX_MAX_SAFE_ATTEMPTS_PER_JOB` (default: `1`)
+
+Safe fixes are applied via a strict allowlist and executed through the existing provisioning runner (sudo-wrapped).
+AI suggestions are logged to the JobLog but **never applied automatically**.
+
+## Deploy / Upgrade
+### 1) Pull latest code + install deps
+```bash
+git pull
+npm ci
+```
+
+### 2) Prisma migrations + regenerate client
+```bash
+npx prisma migrate deploy
+npx prisma generate
+```
+
+### 3) Restart app + worker
+Use whatever you run in production (systemd / pm2 / docker). Example:
+```bash
+systemctl restart coldmail-app coldmail-worker
+```
+
+## AIOps Agent (systemd)
+ColdMail includes a **system-level AIOps agent** that monitors core services installed/managed by the stack and performs **safe auto-recovery**.
+
+**Monitored services (default):**
+- `exim`
+- `dovecot`
+- `mariadb`
+- `coldmail-app`
+- `coldmail-worker`
+
+**Installed units:**
+- `/etc/systemd/system/coldmail-aiops.service`
+- `/etc/systemd/system/coldmail-aiops.timer`
+
+The timer runs every minute.
+
+### Install / enable the AIOps agent
+If you run the installer (`scripts/mailstack.sh`) it enables the timer automatically.
+For existing servers:
+
+```bash
+cp -f scripts/systemd/coldmail-aiops.service /etc/systemd/system/coldmail-aiops.service
+cp -f scripts/systemd/coldmail-aiops.timer /etc/systemd/system/coldmail-aiops.timer
+systemctl daemon-reload
+systemctl enable --now coldmail-aiops.timer
+```
+
+### SELinux note (AlmaLinux 9)
+systemd may refuse to execute scripts from `/root` (`admin_home_t`). The installer copies the agent to:
+- `/usr/local/bin/coldmail-aiops-agent`
+
+You can verify:
+```bash
+ls -lZ /usr/local/bin/coldmail-aiops-agent
+systemctl status coldmail-aiops.timer --no-pager -l
+```
+
+### Logs
+```bash
+tail -f /var/log/coldmail-aiops.log
+```
+
+## AutoFix + Incidents
+- **Safe fixes** are applied automatically by the worker when a job fails (e.g., SELinux contexts, exim maps perms, restart services).
+- **Risky fixes** are **AI suggestions only** and are never executed automatically.
+
+UI:
+- Go to **Settings → System** to see:
+  - **Incidents** (open issues detected) + “Apply safe fixes”
+  - **AutoFix activity** (safe applied + AI suggested)
+
+Environment flags:
+```env
+AUTOFIX_ENABLED=true
+AUTOFIX_AUTO_APPLY_SAFE=true
+AUTOFIX_AI_SUGGESTIONS=true
+AUTOFIX_MAX_SAFE_ATTEMPTS_PER_JOB=1
+AIOPS_ENABLED=true
+AIOPS_AI_ANALYSIS=true
+```
