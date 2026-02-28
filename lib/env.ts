@@ -115,6 +115,13 @@ const schema = z.object({
 
   // AI web search (AI finds emails like ChatGPT browsing)
   AI_WEBSEARCH_ENABLED: z.coerce.boolean().default(false),
+
+
+// AutoFix (worker self-healing)
+AUTOFIX_ENABLED: z.coerce.boolean().default(true),
+AUTOFIX_AUTO_APPLY_SAFE: z.coerce.boolean().default(true),
+AUTOFIX_AI_SUGGESTIONS: z.coerce.boolean().default(true),
+AUTOFIX_MAX_SAFE_ATTEMPTS_PER_JOB: z.coerce.number().int().min(0).max(5).default(1),
   AI_WEBSEARCH_MODEL: z.string().default("gpt-5"),
   AI_WEBSEARCH_MAX_TOOL_CALLS: z.coerce.number().int().positive().default(3),
 

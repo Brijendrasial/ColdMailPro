@@ -859,3 +859,47 @@ Output MUST be valid JSON (no markdown) with exactly this shape:
   return { hasTime: true, confidence, timezone, startIso, endIso, rationale };
 }
 
+
+
+
+export async function aiSuggestAutofix(args: {
+  jobType: string;
+  error: string;
+  context?: string;
+}): Promise<{ summary: string; risk: "safe" | "risky"; suggestedActions: string[] } | null> {
+  if (!env.AI_API_KEY) return null;
+  const system = [
+    "You are an expert email infrastructure SRE helping operate an AlmaLinux 9 mail stack (Exim + Dovecot) controlled by an app.",
+    "Your job: suggest a fix plan for a failure. Be conservative and avoid destructive actions.",
+    "Return STRICT JSON with keys: summary (string), risk ('safe'|'risky'), suggestedActions (array of strings).",
+    "Only suggest actions from this allowed set:",
+    "- restorecon -Rv <path>",
+    "- semanage fcontext -a -t <type> '<path_regex>'",
+    "- setsebool -P <boolean> on|off",
+    "- systemctl restart|reload <service>",
+    "- chown/chmod on known paths: /var/vmail, /etc/exim, /etc/exim/maps, /etc/mailstack",
+    "- run /root/coldmail-pro/scripts/mailstack.sh or mailstack-addon.sh with a specific subcommand",
+    "If the fix could delete data or DNS, set risk='risky' and still suggest it.",
+  ].join("\n");
+
+  const user = [
+    `Job type: ${args.jobType}`,
+    `Error: ${args.error}`,
+    args.context ? `Context:\n${args.context}` : "",
+  ].filter(Boolean).join("\n\n");
+
+  try {
+    const res = await aiChatJson<{ summary: string; risk: "safe" | "risky"; suggestedActions: string[] }>([
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ]);
+    if (!res?.summary || !res?.risk || !Array.isArray(res?.suggestedActions)) return null;
+    return {
+      summary: String(res.summary),
+      risk: res.risk === "safe" ? "safe" : "risky",
+      suggestedActions: res.suggestedActions.map((s) => String(s)).slice(0, 8),
+    };
+  } catch {
+    return null;
+  }
+}

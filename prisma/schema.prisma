@@ -102,7 +102,10 @@ model Workspace {
   warmupMessages WarmupMessage[]
 
 
-  // Unified App logs
+  // AIOps incidents
+  incidents     Incident[]
+
+    // Unified App logs
   appLogs      AppLog[]
 }
 
@@ -1076,4 +1079,50 @@ model UserSession {
 
   @@index([userId, workspaceId])
   @@index([revokedAt])
+}
+
+
+// --------------------
+// AIOps Incidents (AI suggestions + optional safe auto-apply)
+// --------------------
+model Incident {
+  id               String   @id @default(uuid())
+  workspaceId       String?
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  severity         String   // info | warn | error | critical
+  source           String   // worker | api | exim | dovecot | system | cloudflare | dns | other
+  signature        String   // stable dedupe key
+  summary          String   @db.LongText
+  status           String   @default("open") // open | applied | closed | ignored
+
+  evidenceJson     Json?
+  suggestedFixesJson Json?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  actions          IncidentAction[]
+
+  @@index([workspaceId, createdAt])
+  @@index([signature, status])
+}
+
+model IncidentAction {
+  id            String   @id @default(uuid())
+  incidentId    String
+  incident      Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  kind          String   // safe | risky
+  actionType    String   // restart_service | restorecon | setsebool | run_script | chmod | chown | ...
+  argsJson      Json?
+  commandPreview String? @db.LongText
+
+  appliedAt     DateTime?
+  outcome       String?  // success | failed | skipped
+  logs          String?  @db.LongText
+
+  createdAt     DateTime @default(now())
+
+  @@index([incidentId, createdAt])
 }

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run ColdMail AIOps Agent every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=10
+Persistent=true
+
+[Install]
+WantedBy=timers.target

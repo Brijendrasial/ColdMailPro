@@ -1,4 +1,58 @@
 #!/usr/bin/env bash
+
+install_aiops_agent_systemd() {
+  # Install & enable AIOps agent (system-level monitoring + safe remediation)
+  if [[ -f "${SCRIPT_DIR}/systemd/coldmail-aiops.service" ]]; then
+    cp -f "${SCRIPT_DIR}/systemd/coldmail-aiops.service" /etc/systemd/system/coldmail-aiops.service || true
+    cp -f "${SCRIPT_DIR}/systemd/coldmail-aiops.timer" /etc/systemd/system/coldmail-aiops.timer || true
+    chmod 644 /etc/systemd/system/coldmail-aiops.service /etc/systemd/system/coldmail-aiops.timer || true
+    systemctl daemon-reload || true
+    systemctl enable --now coldmail-aiops.timer || true
+
+    # Install agent into /usr/local/bin (avoids SELinux admin_home_t execution blocks)
+    if [[ -f "${SCRIPT_DIR}/aiops-agent.sh" ]]; then
+      cp -f "${SCRIPT_DIR}/aiops-agent.sh" /usr/local/bin/coldmail-aiops-agent || true
+      chmod 755 /usr/local/bin/coldmail-aiops-agent || true
+      chown root:root /usr/local/bin/coldmail-aiops-agent || true
+      if command -v restorecon >/dev/null 2>&1; then
+        restorecon -v /usr/local/bin/coldmail-aiops-agent >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
+
+ensure_selinux_vmail_context() {
+  # AlmaLinux/RHEL 9 SELinux safe labeling for Maildir under /var/vmail
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+    if ! command -v semanage >/dev/null 2>&1; then
+      if command -v dnf >/dev/null 2>&1; then
+        dnf -y install policycoreutils-python-utils >/dev/null 2>&1 || true
+      else
+        yum -y install policycoreutils-python >/dev/null 2>&1 || true
+      fi
+    fi
+
+    if command -v semanage >/dev/null 2>&1; then
+      semanage fcontext -a -t mail_spool_t "/var/vmail(/.*)?" 2>/dev/null || true
+    fi
+
+    restorecon -Rv /var/vmail >/dev/null 2>&1 || true
+  fi
+}
+
+ensure_selinux_exim_db_access(){
+  # Allow Exim to perform DB lookups under SELinux enforcing (Alma/RHEL 9)
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+    if command -v getsebool >/dev/null 2>&1; then
+      if getsebool exim_can_connect_db >/dev/null 2>&1; then
+        setsebool -P exim_can_connect_db on >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
+
 set -Eeuo pipefail
 
 # ==========================================================
@@ -1011,4 +1065,5 @@ case "${ACTION}" in
 esac
 
 
-
+# Enable AIOps monitoring
+install_aiops_agent_systemd

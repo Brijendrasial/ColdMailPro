@@ -1,4 +1,50 @@
 #!/usr/bin/env bash
+
+ensure_selinux_vmail_context() {
+  # AlmaLinux/RHEL 9 SELinux safe labeling for Maildir under /var/vmail
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+    if ! command -v semanage >/dev/null 2>&1; then
+      if command -v dnf >/dev/null 2>&1; then
+        dnf -y install policycoreutils-python-utils >/dev/null 2>&1 || true
+      else
+        yum -y install policycoreutils-python >/dev/null 2>&1 || true
+      fi
+    fi
+
+    if command -v semanage >/dev/null 2>&1; then
+      semanage fcontext -a -t mail_spool_t "/var/vmail(/.*)?" 2>/dev/null || true
+    fi
+
+    restorecon -Rv /var/vmail >/dev/null 2>&1 || true
+  fi
+}
+
+ensure_selinux_exim_db_access(){
+  # Allow Exim to perform DB lookups under SELinux enforcing (Alma/RHEL 9)
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+    if command -v getsebool >/dev/null 2>&1; then
+      if getsebool exim_can_connect_db >/dev/null 2>&1; then
+        setsebool -P exim_can_connect_db on >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
+
+fix_exim_maps_context_and_perms(){
+  # Ensure Exim can read map files under SELinux enforcing (Alma/RHEL 9)
+  mkdir -p /etc/exim/maps 2>/dev/null || true
+  chown -R root:root /etc/exim/maps 2>/dev/null || true
+  chmod 755 /etc/exim/maps 2>/dev/null || true
+  chmod 644 /etc/exim/maps/*.map /etc/exim/maps/*.list 2>/dev/null || true
+
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+    restorecon -Rv /etc/exim >/dev/null 2>&1 || true
+    restorecon -Rv /etc/exim/maps >/dev/null 2>&1 || true
+  fi
+}
+
+
 set -Eeuo pipefail
 
 # =========================
@@ -753,6 +799,7 @@ exim_fix(){
   backup_exim
 
   ensure_deps
+ensure_selinux_exim_db_access
   rebuild_dkim_map
   rebuild_dkim_selector_map
   rebuild_local_domains
@@ -1266,6 +1313,65 @@ cmd_tenant_unsuspend(){
   systemctl restart exim >/dev/null 2>&1 || true
 }
 
+cmd_tenant_purge_dns(){
+  local tenant="" create_zones=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tenant) tenant="${2:-}"; shift 2;;
+      *) die "Unknown arg: $1";;
+    esac
+  done
+  [[ -n "$tenant" ]] || die "tenant-purge-dns requires --tenant"
+
+  ensure_deps
+
+ensure_selinux_exim_db_access
+  local tdir="${TENANTS_DIR}/${tenant}"
+  local tconf="${tdir}/tenant.conf"
+  [[ -f "$tconf" ]] || die "Tenant not found on server: ${tconf}"
+  # shellcheck disable=SC1090
+  source "$tconf"
+  [[ -f "${DOMAINS_FILE:-}" ]] || die "DOMAINS_FILE missing in ${tconf}"
+
+  # Best-effort: if Cloudflare isn't configured, just skip
+  if ! cf_has_creds; then
+    warn "Cloudflare creds not configured. Nothing to purge."
+    return 0
+  fi
+
+  local dom zone mailhost sel_active sel_pending dkim_name dmarc_name c
+  while read -r dom; do
+    dom="$(echo "$dom" | trim | tr '[:upper:]' '[:lower:]' | sed 's/\.$//')"
+    [[ -n "$dom" ]] || continue
+    is_domain "$dom" || { warn "Skip invalid domain: $dom"; continue; }
+
+    zone="$(cf_zone_id "$dom")"
+    if [[ -z "$zone" ]]; then
+      warn "Zone not found for ${dom}. Skipping DNS purge (manual DNS mode)."
+      continue
+    fi
+
+    mailhost="mail.${dom}"
+    sel_active="$(dkim_selector_active_for_domain "$tdir" "$dom")"
+    sel_pending="$(dkim_selector_pending_for_domain "$tdir" "$dom")"
+    dkim_name="${sel_active}._domainkey.${dom}"
+    dmarc_name="_dmarc.${dom}"
+
+    c="$(cf_flush_records "$zone" "A"   "$mailhost" 0)";   [[ "$c" != "0" ]] && log "Purged A ${mailhost} (count=${c})"
+    c="$(cf_flush_records "$zone" "MX"  "$dom" 0)";        [[ "$c" != "0" ]] && log "Purged MX ${dom} (count=${c})"
+    c="$(cf_flush_records "$zone" "TXT" "$dom" 1)";        [[ "$c" != "0" ]] && log "Purged SPF TXT at ${dom} (count=${c})"
+    c="$(cf_flush_records "$zone" "TXT" "$dkim_name" 0)";  [[ "$c" != "0" ]] && log "Purged TXT ${dkim_name} (count=${c})"
+    if [[ -n "$sel_pending" && "$sel_pending" != "$sel_active" ]]; then
+      local p_name="${sel_pending}._domainkey.${dom}"
+      c="$(cf_flush_records "$zone" "TXT" "$p_name" 0)";  [[ "$c" != "0" ]] && log "Purged TXT ${p_name} (count=${c})"
+    fi
+    c="$(cf_flush_records "$zone" "TXT" "$dmarc_name" 0)"; [[ "$c" != "0" ]] && log "Purged TXT ${dmarc_name} (count=${c})"
+  done < <(read_list_file "$DOMAINS_FILE")
+
+  log "DNS purge complete for tenant: ${tenant}"
+}
+
+
 
 
 # -------------------------
@@ -1337,6 +1443,7 @@ cmd_dkim_rotate(){
 
   ensure_deps
 
+ensure_selinux_exim_db_access
   # Rotate (replace) the key for the ACTIVE selector
   local sel_active
   sel_active="$(dkim_selector_active_for_domain "$tdir" "$dom")"
@@ -1435,6 +1542,7 @@ cmd_dkim_stage(){
 
   ensure_deps
 
+ensure_selinux_exim_db_access
   local sel_active sel_pending
   sel_active="$(dkim_selector_active_for_domain "$tdir" "$dom")"
   sel_pending="$(dkim_selector_pending_for_domain "$tdir" "$dom")"
@@ -1499,6 +1607,7 @@ cmd_dkim_activate(){
 
   ensure_deps
 
+ensure_selinux_exim_db_access
   local sel_pending
   sel_pending="$(dkim_selector_pending_for_domain "$tdir" "$dom")"
   [[ -n "$sel_pending" ]] || die "No staged DKIM selector found for ${dom}. Run dkim-stage first."
@@ -1559,6 +1668,7 @@ cmd_tenant_setup(){
   done
 
   ensure_deps
+ensure_selinux_exim_db_access
   tenant_save "$tenant" "$domains" "$ips" "$users" "$server_ip" "$helo_tpl" "$dmarc_p" "$dmarc_rua"
 
   # DNS sync first (creates DKIM + records)
@@ -1605,6 +1715,7 @@ cmd_tenant_prepare(){
   done
 
   ensure_deps
+ensure_selinux_exim_db_access
   tenant_save "$tenant" "$domains" "$ips" "$users" "$server_ip" "$helo_tpl" "$dmarc_p" "$dmarc_rua"
 
   # Generate manual DNS file (ensures DKIM keys exist).
@@ -1633,25 +1744,30 @@ cmd_dns_sync(){
   done
   [[ -n "$tenant" ]] || die "dns-sync requires --tenant"
   ensure_deps
+ensure_selinux_exim_db_access
   dns_sync_tenant "$tenant" "$create_zones"
   "$ROTATOR" all >/dev/null || true
 }
 
 cmd_exim_fix(){
   ensure_deps
+ensure_selinux_exim_db_access
   install_rotator
   exim_fix
   "$ROTATOR" all >/dev/null || true
 }
 
 cmd_exim_rebuild(){
+  ensure_selinux_exim_db_access
   ensure_deps
+ensure_selinux_exim_db_access
   rebuild_dkim_map
   rebuild_local_domains
   install_rotator
   "$ROTATOR" all || true
   exim_validate || die "Exim validation failed after rebuild"
-  systemctl restart exim || true
+    fix_exim_maps_context_and_perms
+systemctl restart exim || true
   log "Rebuild complete."
 }
 
@@ -1690,6 +1806,7 @@ cmd_tenant_remove_domain(){
 
   ensure_deps
 
+ensure_selinux_exim_db_access
   local tdir="${TENANTS_DIR}/${tenant}"
   local domains_file="${tdir}/domains.txt"
   [[ -d "$tdir" ]] || die "Tenant not found on server: ${tdir}"
@@ -1734,6 +1851,7 @@ CF_CREDS_FILE="/etc/letsencrypt/cloudflare.ini"
 
 ensure_certbot_cloudflare(){
   ensure_deps
+ensure_selinux_exim_db_access
   require_cmd certbot
   # Cloudflare DNS plugin for certbot (EPEL)
   # Package name on AlmaLinux/RHEL: python3-certbot-dns-cloudflare
@@ -1871,6 +1989,7 @@ cmd_tls_issue(){
 
   ensure_deps
 
+ensure_selinux_exim_db_access
 if ! cf_ready; then
   warn "Cloudflare not initialized (no token). TLS issuance requires Cloudflare DNS-01 in this build. Skipping."
   return 0
@@ -1930,7 +2049,4 @@ case "$ACTION" in
   ""|-h|--help|help) usage;;
   *) die "Unknown command: $ACTION (try: $0 --help)";;
 esac
-
-
-
 
