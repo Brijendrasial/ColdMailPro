@@ -38,18 +38,26 @@ export async function upsertOpenIncident(args: {
       signature,
       workspaceId: args.workspaceId || null,
     },
-    select: { id: true },
+    select: { id: true, occurrenceCount: true },
   });
   if (existing?.id) {
-    // Attach evidence update best-effort
+    const nextCount = Number(existing.occurrenceCount || 1) + 1;
+    const escalatedSeverity: IncidentSeverity = nextCount >= 5
+      ? "critical"
+      : nextCount >= 3 && args.severity !== "critical"
+      ? "error"
+      : args.severity;
     await prisma.incident.update({
       where: { id: existing.id },
       data: {
-        severity: args.severity,
+        severity: escalatedSeverity,
         source: args.source,
         summary: args.summary,
         evidenceJson: args.evidence ?? undefined,
         suggestedFixesJson: args.suggestedFixes ?? undefined,
+        occurrenceCount: { increment: 1 },
+        lastSeenAt: new Date(),
+        needsHumanReview: nextCount >= 3,
       },
     }).catch(() => {});
     return existing.id;
@@ -65,6 +73,10 @@ export async function upsertOpenIncident(args: {
       status: "open",
       evidenceJson: args.evidence ?? undefined,
       suggestedFixesJson: args.suggestedFixes ?? undefined,
+      occurrenceCount: 1,
+      firstSeenAt: new Date(),
+      lastSeenAt: new Date(),
+      needsHumanReview: false,
     },
     select: { id: true },
   });
