@@ -1099,6 +1099,11 @@ model Incident {
   evidenceJson     Json?
   suggestedFixesJson Json?
 
+  occurrenceCount  Int      @default(1)
+  firstSeenAt      DateTime @default(now())
+  lastSeenAt       DateTime @default(now())
+  needsHumanReview Boolean  @default(false)
+
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

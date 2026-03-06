@@ -511,3 +511,12 @@ AUTOFIX_MAX_SAFE_ATTEMPTS_PER_JOB=1
 AIOPS_ENABLED=true
 AIOPS_AI_ANALYSIS=true
 ```
+
+---
+
+## Hotfix: AIOps Incident DB logging (v1.75-fixed4)
+
+- AIOps agent now **logs why incident DB writes are skipped or fail** (missing `.env`, missing `DATABASE_URL`, missing mysql client, table not found, mysql errors).
+- Incident insert now uses **non-interactive mysql auth** (`MYSQL_PWD`) and is tolerant to table name variants: `Incident` / `incidents` / `incident`.
+
+If the UI still shows no incidents, check `/var/log/coldmail-aiops.log` for `[DB] ...` lines to see the exact reason.
