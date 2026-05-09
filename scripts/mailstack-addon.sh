@@ -1405,6 +1405,11 @@ Usage:
   $0 tls-auto-run
   $0 tls-sync-renewed
 
+  $0 server-update      # update OS/server packages, then restart MailStack services
+  $0 roundcube-update [--channel stable|package|custom] [--version 1.6.15]
+                       # update Roundcube using upstream stable/custom build or OS package, migrate DB, repair web route, restart services
+  $0 roundcube-webfix    # repair Nginx/PHP-FPM Roundcube web route so /roundcube/ opens login
+
 Notes:
 - A record mail.<domain> uses ONLY --server-ip
 - SPF uses ALL IPs from --ips
@@ -1869,6 +1874,374 @@ restart_mail_services(){
   systemctl restart exim >/dev/null 2>&1 || systemctl reload exim >/dev/null 2>&1 || true
 }
 
+# -------------------------
+# Server / Roundcube maintenance
+# -------------------------
+ROUNDCUBE_ETC_DIR="/etc/roundcubemail"
+ROUNDCUBE_WEB_DIR="/usr/share/roundcubemail"
+ROUNDCUBE_WEB_CONFIG_DIR="/usr/share/roundcubemail/config"
+ROUNDCUBE_CONF="${ROUNDCUBE_ETC_DIR}/config.inc.php"
+NGINX_ROUNDCUBE_CONF="/etc/nginx/conf.d/mailstack-roundcube.conf"
+
+service_exists(){ systemctl list-unit-files "${1}.service" >/dev/null 2>&1 || systemctl status "$1" >/dev/null 2>&1; }
+restart_if_present(){
+  local svc="$1"
+  if service_exists "$svc"; then
+    log "Restarting ${svc}..."
+    systemctl restart "$svc" >/dev/null 2>&1 || systemctl reload "$svc" >/dev/null 2>&1 || warn "Could not restart/reload ${svc}"
+  fi
+}
+
+wait_for_database_restart(){
+  if command -v mysqladmin >/dev/null 2>&1; then
+    log "Waiting for database service to accept connections again..."
+    local i
+    for i in {1..45}; do
+      mysqladmin ping --silent >/dev/null 2>&1 && return 0
+      sleep 1
+    done
+    warn "Database did not answer mysqladmin ping within 45 seconds; continuing because services may still be starting."
+  else
+    sleep 3
+  fi
+}
+
+restart_mailstack_software(){
+  # Restart services commonly installed/touched by mailstack.sh.
+  # Database restarts happen LAST because the web worker uses Prisma/DB for live job status.
+  # worker/worker.ts now reconnects Prisma after this, avoiding false failures like
+  # "Invalid prisma.job.update() invocation: Server has closed the connection".
+  local frontend_services=(exim dovecot nginx php-fpm postfix redis)
+  local database_services=(mariadb mysql)
+
+  for svc in "${frontend_services[@]}"; do
+    restart_if_present "$svc"
+  done
+
+  # Keep the existing focused helper too, in case service names differ on a distro.
+  restart_mail_services
+
+  for svc in "${database_services[@]}"; do
+    if service_exists "$svc"; then
+      restart_if_present "$svc"
+      wait_for_database_restart
+      break
+    fi
+  done
+}
+
+cmd_server_update(){
+  log "Updating OS packages and MailStack-managed server software..."
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -y makecache || true
+    dnf -y upgrade
+  elif command -v yum >/dev/null 2>&1; then
+    yum -y makecache || true
+    yum -y update
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade
+  else
+    die "No supported package manager found (dnf/yum/apt-get)"
+  fi
+
+  # Re-apply Mailstack hardening/fixes where safe, then restart the stack.
+  ensure_selinux_exim_db_access || true
+  fix_exim_maps_context_and_perms || true
+  restart_mailstack_software
+  log "Server software update complete. MailStack services restarted."
+}
+
+
+fix_roundcube_config_layout(){
+  log "Restoring MailStack Roundcube config layout + permissions..."
+  mkdir -p "${ROUNDCUBE_ETC_DIR}"
+  if [[ -d "${ROUNDCUBE_WEB_DIR}" ]]; then
+    rm -rf "${ROUNDCUBE_WEB_CONFIG_DIR}"
+    ln -s "${ROUNDCUBE_ETC_DIR}" "${ROUNDCUBE_WEB_CONFIG_DIR}" 2>/dev/null || true
+  fi
+  if getent group nginx >/dev/null 2>&1; then
+    chgrp -R nginx "${ROUNDCUBE_ETC_DIR}" 2>/dev/null || true
+  elif getent group www-data >/dev/null 2>&1; then
+    chgrp -R www-data "${ROUNDCUBE_ETC_DIR}" 2>/dev/null || true
+  fi
+  chmod 0750 "${ROUNDCUBE_ETC_DIR}" 2>/dev/null || true
+  chmod 0640 "${ROUNDCUBE_ETC_DIR}"/*.php "${ROUNDCUBE_ETC_DIR}"/*.inc.php 2>/dev/null || true
+  restorecon -Rv "${ROUNDCUBE_ETC_DIR}" >/dev/null 2>&1 || true
+}
+
+roundcube_update_db(){
+  if [[ -x "${ROUNDCUBE_WEB_DIR}/bin/update.sh" ]]; then
+    log "Running Roundcube database/config updater..."
+    (cd "${ROUNDCUBE_WEB_DIR}" && php bin/update.sh --version=latest) || warn "Roundcube bin/update.sh reported a warning/failure; check output above."
+  elif [[ -f "${ROUNDCUBE_WEB_DIR}/bin/update.sh" ]]; then
+    log "Running Roundcube database/config updater..."
+    (cd "${ROUNDCUBE_WEB_DIR}" && php bin/update.sh --version=latest) || warn "Roundcube bin/update.sh reported a warning/failure; check output above."
+  else
+    warn "Roundcube updater not found at ${ROUNDCUBE_WEB_DIR}/bin/update.sh; package update still completed."
+  fi
+}
+
+roundcube_docroot(){
+  if [[ -f "${ROUNDCUBE_WEB_DIR}/index.php" ]]; then
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}"
+  elif [[ -f "${ROUNDCUBE_WEB_DIR}/public_html/index.php" ]]; then
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}/public_html"
+  elif [[ -f "${ROUNDCUBE_WEB_DIR}/public/index.php" ]]; then
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}/public"
+  else
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}"
+  fi
+}
+
+php_fpm_upstream(){
+  # Return a value that can be used directly by fastcgi_pass.
+  # Supports both Unix sockets and TCP PHP-FPM listeners.
+  local sock
+  for sock in /run/php-fpm/www.sock /var/run/php-fpm/www.sock /run/php/php-fpm.sock /run/php/php8.3-fpm.sock /run/php/php8.2-fpm.sock /run/php/php8.1-fpm.sock /run/php/php8.0-fpm.sock /run/php/php7.4-fpm.sock; do
+    if [[ -S "$sock" ]]; then
+      printf 'unix:%s\n' "$sock"
+      return 0
+    fi
+  done
+
+  sock="$(find /run/php /run/php-fpm /var/run/php-fpm -maxdepth 1 -type s \( -name '*fpm*.sock' -o -name 'www.sock' \) 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$sock" ]]; then
+    printf 'unix:%s\n' "$sock"
+    return 0
+  fi
+
+  # If PHP-FPM is configured for TCP instead of a socket, use that.
+  if ss -ltn 2>/dev/null | grep -qE ':[[:space:]]*9000|:9000[[:space:]]'; then
+    printf '127.0.0.1:9000\n'
+    return 0
+  fi
+
+  # Alma/RHEL MailStack default. The socket may not exist until php-fpm is restarted.
+  printf 'unix:/run/php-fpm/www.sock\n'
+}
+
+server_names_for_roundcube(){
+  local names="_ localhost 127.0.0.1"
+  local hn fqdn ips
+  hn="$(hostname 2>/dev/null || true)"
+  fqdn="$(hostname -f 2>/dev/null || true)"
+  ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | tr '\n' ' ' || true)"
+  [[ -n "$hn" ]] && names="$names $hn"
+  [[ -n "$fqdn" ]] && names="$names $fqdn"
+  [[ -n "$ips" ]] && names="$names $ips"
+  printf '%s\n' "$names"
+}
+
+write_roundcube_nginx_dropin(){
+  local docroot upstream names
+  docroot="$(roundcube_docroot)"
+  upstream="$(php_fpm_upstream)"
+  names="$(server_names_for_roundcube)"
+
+  log "Writing dedicated Roundcube Nginx route at ${NGINX_ROUNDCUBE_CONF}..."
+  log "Roundcube document root: ${docroot}"
+  log "PHP-FPM upstream: ${upstream}"
+  cat > "${NGINX_ROUNDCUBE_CONF}" <<EOF_RC_NGINX
+# Managed by MailStack. Keeps http://SERVER/roundcube/ working after Roundcube package updates.
+server {
+  listen 80;
+  server_name ${names};
+
+  location = /roundcube { return 301 /roundcube/; }
+
+  # Do NOT use ^~ here. A ^~ prefix would stop Nginx from evaluating
+  # the PHP regex location below, causing index.php to download as a file.
+  location /roundcube/ {
+    alias ${docroot}/;
+    index index.php;
+    try_files \$uri \$uri/ /roundcube/index.php?\$query_string;
+  }
+
+  location ~ ^/roundcube/(.+\.php)(/.*)?\$ {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME ${docroot}/\$1;
+    fastcgi_param DOCUMENT_ROOT ${docroot};
+    fastcgi_param PATH_INFO \$2;
+    fastcgi_param HTTPS \$https if_not_empty;
+    fastcgi_param REQUEST_SCHEME \$scheme;
+    fastcgi_param SERVER_PORT \$server_port;
+    fastcgi_pass ${upstream};
+    fastcgi_read_timeout 180;
+    fastcgi_connect_timeout 30;
+    fastcgi_send_timeout 180;
+  }
+
+  location ~ ^/roundcube/(README|INSTALL|LICENSE|CHANGELOG|UPGRADING|composer\.|package\.json|\.git) { deny all; }
+  location ~ ^/roundcube/(config|temp|logs|SQL|bin)/ { deny all; }
+}
+EOF_RC_NGINX
+}
+
+cmd_roundcube_webfix(){
+  log "Repairing Roundcube web route so /roundcube/ opens the login UI..."
+  fix_roundcube_config_layout || true
+  write_roundcube_nginx_dropin
+
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t
+  fi
+
+  restart_if_present php-fpm
+  restart_if_present nginx
+  log "Roundcube web route repaired. If the browser downloaded a PHP file before, clear that download tab and reopen http://SERVER_IP/roundcube/."
+}
+
+roundcube_current_version(){
+  if [[ -f "${ROUNDCUBE_WEB_DIR}/program/include/iniset.php" ]]; then
+    grep -E "define\('RCMAIL_VERSION'|RCMAIL_VERSION" "${ROUNDCUBE_WEB_DIR}/program/include/iniset.php" 2>/dev/null | grep -Eo "[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9.]+)?" | head -n 1 || true
+  fi
+}
+
+roundcube_latest_stable_version(){
+  local tag page
+  if command -v curl >/dev/null 2>&1; then
+    tag="$(curl -fsSL https://api.github.com/repos/roundcube/roundcubemail/releases/latest 2>/dev/null | grep -E '"tag_name"' | head -n 1 | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+    tag="${tag#v}"
+    if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9.]+)?$ ]]; then
+      printf '%s\n' "$tag"
+      return 0
+    fi
+
+    page="$(curl -fsSL https://roundcube.net/download/ 2>/dev/null || true)"
+    tag="$(printf '%s' "$page" | grep -Eio 'Stable version[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+    if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      printf '%s\n' "$tag"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+ensure_roundcube_download_tools(){
+  local need=()
+  command -v curl >/dev/null 2>&1 || need+=(curl)
+  command -v tar >/dev/null 2>&1 || need+=(tar)
+  command -v rsync >/dev/null 2>&1 || need+=(rsync)
+  if (( ${#need[@]} )); then
+    log "Installing download/sync tools: ${need[*]}"
+    if command -v dnf >/dev/null 2>&1; then
+      dnf -y install "${need[@]}"
+    elif command -v yum >/dev/null 2>&1; then
+      yum -y install "${need[@]}"
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get -y install "${need[@]}"
+    else
+      die "No supported package manager found to install ${need[*]}"
+    fi
+  fi
+}
+
+install_roundcube_os_package(){
+  log "Updating Roundcube from the OS package repository..."
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -y makecache || true
+    dnf -y upgrade roundcubemail || dnf -y install roundcubemail
+  elif command -v yum >/dev/null 2>&1; then
+    yum -y makecache || true
+    yum -y update roundcubemail || yum -y install roundcubemail
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get -y install --only-upgrade roundcube roundcube-core || DEBIAN_FRONTEND=noninteractive apt-get -y install roundcube roundcube-core
+  else
+    die "No supported package manager found (dnf/yum/apt-get)"
+  fi
+}
+
+install_roundcube_upstream_version(){
+  local version="$1"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9.]+)?$ ]] || die "Invalid Roundcube version '${version}'. Expected something like 1.6.15"
+
+  ensure_roundcube_download_tools
+  local url tmp archive extracted backup current
+  url="https://github.com/roundcube/roundcubemail/releases/download/${version}/roundcubemail-${version}-complete.tar.gz"
+  tmp="$(mktemp -d /tmp/mailstack-roundcube.XXXXXX)"
+  archive="${tmp}/roundcubemail-${version}-complete.tar.gz"
+  backup="/usr/share/roundcubemail.backup.$(date +%Y%m%d%H%M%S)"
+  current="$(roundcube_current_version || true)"
+
+  log "Installing Roundcube upstream build ${version}..."
+  [[ -n "$current" ]] && log "Current Roundcube version detected: ${current}"
+  log "Download: ${url}"
+  curl -fL --retry 3 --connect-timeout 20 -o "$archive" "$url"
+  tar -tzf "$archive" >/dev/null
+  tar -xzf "$archive" -C "$tmp"
+  extracted="$(find "$tmp" -maxdepth 1 -type d -name 'roundcubemail-*' | head -n 1)"
+  [[ -n "$extracted" && -f "$extracted/index.php" ]] || die "Downloaded Roundcube archive did not contain index.php"
+
+  mkdir -p "${ROUNDCUBE_WEB_DIR}"
+  if [[ -e "${ROUNDCUBE_WEB_DIR}/index.php" || -d "${ROUNDCUBE_WEB_DIR}/program" ]]; then
+    log "Backing up current Roundcube code to ${backup}"
+    cp -a "${ROUNDCUBE_WEB_DIR}" "$backup"
+  fi
+
+  log "Syncing Roundcube ${version} files into ${ROUNDCUBE_WEB_DIR}"
+  rsync -a --delete \
+    --exclude '/config/' \
+    --exclude '/logs/' \
+    --exclude '/temp/' \
+    "$extracted/" "${ROUNDCUBE_WEB_DIR}/"
+
+  mkdir -p "${ROUNDCUBE_WEB_DIR}/logs" "${ROUNDCUBE_WEB_DIR}/temp"
+  if getent user nginx >/dev/null 2>&1; then
+    chown -R nginx:nginx "${ROUNDCUBE_WEB_DIR}/logs" "${ROUNDCUBE_WEB_DIR}/temp" 2>/dev/null || true
+  elif getent user www-data >/dev/null 2>&1; then
+    chown -R www-data:www-data "${ROUNDCUBE_WEB_DIR}/logs" "${ROUNDCUBE_WEB_DIR}/temp" 2>/dev/null || true
+  elif getent user apache >/dev/null 2>&1; then
+    chown -R apache:apache "${ROUNDCUBE_WEB_DIR}/logs" "${ROUNDCUBE_WEB_DIR}/temp" 2>/dev/null || true
+  fi
+  chmod 0770 "${ROUNDCUBE_WEB_DIR}/logs" "${ROUNDCUBE_WEB_DIR}/temp" 2>/dev/null || true
+  restorecon -Rv "${ROUNDCUBE_WEB_DIR}" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+
+cmd_roundcube_update(){
+  local channel="stable" version=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --channel) channel="${2:-stable}"; shift 2;;
+      --version) version="${2:-}"; shift 2;;
+      --package) channel="package"; shift;;
+      --stable) channel="stable"; shift;;
+      --custom) channel="custom"; version="${2:-}"; shift 2;;
+      *) die "Unknown roundcube-update option: $1";;
+    esac
+  done
+
+  case "$channel" in
+    package)
+      install_roundcube_os_package
+      ;;
+    stable)
+      version="$(roundcube_latest_stable_version || true)"
+      [[ -n "$version" ]] || die "Could not detect latest Roundcube stable version. Try --channel custom --version 1.6.15"
+      log "Latest upstream Roundcube stable detected: ${version}"
+      install_roundcube_upstream_version "$version"
+      ;;
+    custom)
+      [[ -n "$version" ]] || die "Custom Roundcube update requires --version, for example --version 1.6.15"
+      install_roundcube_upstream_version "$version"
+      ;;
+    *)
+      die "Unknown Roundcube channel '${channel}'. Use stable, package, or custom."
+      ;;
+  esac
+
+  # Mailstack installs Roundcube with /usr/share/roundcubemail/config -> /etc/roundcubemail.
+  # Package/manual updates can replace this layout, so restore it and run migrations.
+  fix_roundcube_config_layout || true
+  roundcube_update_db || true
+  cmd_roundcube_webfix || true
+  restart_mailstack_software
+  log "Roundcube update complete. Selected channel: ${channel}. Web/PHP and mail services restarted."
+}
+
 ensure_certbot_cloudflare(){
   ensure_deps
 ensure_selinux_exim_db_access
@@ -2221,6 +2594,9 @@ case "$ACTION" in
   tls-auto-install) cmd_tls_auto_install;;
   tls-auto-run) cmd_tls_auto_run;;
   tls-sync-renewed) sync_existing_tenant_certs; restart_mail_services;;
+  server-update) cmd_server_update;;
+  roundcube-update) cmd_roundcube_update "$@";;
+  roundcube-webfix) cmd_roundcube_webfix;;
   ""|-h|--help|help) usage;;
   *) die "Unknown command: $ACTION (try: $0 --help)";;
 esac

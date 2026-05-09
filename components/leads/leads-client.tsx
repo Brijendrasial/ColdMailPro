@@ -233,11 +233,31 @@ export function LeadsClient() {
   const [companyVerifyMap, setCompanyVerifyMap] = useState<Record<string, CompanyVerifyState>>({});
   // Only company-domain inboxes are importable (import endpoint filters by domain anyway).
   // Keep "other" emails selectable for reference/copy, but don't treat them as import candidates.
+  const companyAllImportableEmails = useMemo(
+    () => [...companyDiscovered, ...companySuggested, ...companyManualEmails, ...companyGenerated],
+    [companyDiscovered, companySuggested, companyManualEmails, companyGenerated]
+  );
+
   const discoveredSelected = useMemo(
-    () => [...companyDiscovered, ...companySuggested, ...companyManualEmails, ...companyGenerated]
+    () => companyAllImportableEmails
       .filter((x) => !!companyDiscoveredSel[x.email])
       .map((x) => x.email),
-    [companyDiscovered, companySuggested, companyManualEmails, companyGenerated, companyDiscoveredSel]
+    [companyAllImportableEmails, companyDiscoveredSel]
+  );
+
+  const discoveredValidSelected = useMemo(
+    () => discoveredSelected.filter((e) => companyVerifyMap[e]?.status === "valid"),
+    [discoveredSelected, companyVerifyMap]
+  );
+
+  const discoveredInvalidSelected = useMemo(
+    () => discoveredSelected.filter((e) => ["invalid", "error"].includes(String(companyVerifyMap[e]?.status || ""))),
+    [discoveredSelected, companyVerifyMap]
+  );
+
+  const discoveredPendingSelected = useMemo(
+    () => discoveredSelected.filter((e) => !companyVerifyMap[e] || companyVerifyMap[e]?.status === "busy"),
+    [discoveredSelected, companyVerifyMap]
   );
 
   const discoveredNotVerified = useMemo(
@@ -245,7 +265,22 @@ export function LeadsClient() {
     [discoveredSelected, companyVerifyMap]
   );
 
-  const canImportDiscovered = discoveredSelected.length > 0 && discoveredNotVerified.length === 0 && !companyImportBusy;
+  const companyEmailStats = useMemo(() => {
+    const emails = companyAllImportableEmails.map((x) => x.email);
+    return {
+      total: emails.length,
+      selected: discoveredSelected.length,
+      validSelected: discoveredValidSelected.length,
+      invalidSelected: discoveredInvalidSelected.length,
+      pendingSelected: discoveredPendingSelected.length,
+      published: companyDiscovered.length,
+      suggested: companySuggested.length,
+      manual: companyManualEmails.length,
+      generated: companyGenerated.length,
+    };
+  }, [companyAllImportableEmails, discoveredSelected.length, discoveredValidSelected.length, discoveredInvalidSelected.length, discoveredPendingSelected.length, companyDiscovered.length, companySuggested.length, companyManualEmails.length, companyGenerated.length]);
+
+  const canImportDiscovered = discoveredValidSelected.length > 0 && !companyImportBusy;
 
   const companyManualNorm = useMemo(() => String(companyManualEmail || "").trim().toLowerCase(), [companyManualEmail]);
 
@@ -928,15 +963,19 @@ export function LeadsClient() {
       notify("⚠️ Enter a website URL first");
       return;
     }
-    const emails = discoveredSelected;
-    if (!emails.length) {
+    const emails = discoveredValidSelected;
+    if (!discoveredSelected.length) {
       notify("⚠️ Select at least one email to import");
       return;
     }
 
-    if (discoveredNotVerified.length) {
-      notify(`⚠️ Verify selected emails first (${discoveredNotVerified.length} pending/invalid)`);
+    if (!emails.length) {
+      notify("⚠️ No verified-valid selected emails to import yet. Click Verify selected first.");
       return;
+    }
+
+    if (discoveredNotVerified.length) {
+      notify(`ℹ️ Importing ${emails.length} valid email${emails.length === 1 ? "" : "s"}; skipping ${discoveredNotVerified.length} pending/failed selected item${discoveredNotVerified.length === 1 ? "" : "s"}.`);
     }
 
     setCompanyImportBusy(true);
@@ -952,7 +991,12 @@ export function LeadsClient() {
       const skipped = Number(j.skipped || 0);
       const skippedSuppressed = Number(j.skippedSuppressed || 0);
       const enriched = Number(j.enriched || 0);
-      notify(`✅ Imported ${created} leads (skipped ${skipped} duplicates${skippedSuppressed ? `, ${skippedSuppressed} suppressed` : ""}) · enriched ${enriched}`);
+      notify(`✅ Imported ${created} valid lead${created === 1 ? "" : "s"} (skipped ${skipped} duplicates${skippedSuppressed ? `, ${skippedSuppressed} suppressed` : ""}) · enriched ${enriched}`);
+      setCompanyDiscoveredSel((m) => {
+        const next = { ...m };
+        for (const e of emails) delete next[e];
+        return next;
+      });
       setRefreshKey((k) => k + 1);
     } catch (e: any) {
       notify(`❌ Import failed: ${clip(String(e?.message || e), 140)}`);
@@ -2020,190 +2064,225 @@ export function LeadsClient() {
       {showCompanyEnrich ? (
         <Modal
           title="✨ Enrich all leads by company website"
+          wide
           onClose={() => {
             setShowCompanyEnrich(false);
             setCompanyEnrichBusy(false);
           }}
           footer={
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="text-xs opacity-70">
-                1) Discover inboxes on the website  2) Verify with ping-email  3) Import as leads.
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="text-xs text-slate-500">
+                Verify first. Import now automatically uses only ✅ valid selected emails and skips failed/pending ones.
               </div>
-              <div className="flex items-center gap-2">
-                <Button variant="ghost" onClick={() => setShowCompanyEnrich(false)}>
-                  Close
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button variant="ghost" onClick={() => setShowCompanyEnrich(false)}>Close</Button>
+                <Button
+                  variant="ghost"
+                  onClick={runCompanyEnrich}
+                  disabled={companyDiscoverBusy || companyImportBusy || companyEnrichBusy || !String(companyWebsiteUrl || "").trim()}
+                  title="Optional: fill missing fields for existing leads whose email domain matches this website"
+                >
+                  {companyEnrichBusy ? "Enriching…" : "Enrich matching leads"}
                 </Button>
-                <Button variant="primary" onClick={runCompanyDiscover} disabled={companyDiscoverBusy || !String(companyWebsiteUrl || "").trim()}>
-                  {companyDiscoverBusy ? "Running…" : "Run enrich"}
+                <Button
+                  variant="primary"
+                  onClick={importDiscoveredEmails}
+                  disabled={!canImportDiscovered}
+                  title={discoveredNotVerified.length ? "Imports only verified-valid selected emails. Failed/pending selected emails are skipped automatically." : "Import verified-valid selected emails"}
+                >
+                  {companyImportBusy ? "Importing…" : `Import valid (${discoveredValidSelected.length})`}
                 </Button>
               </div>
             </div>
           }
         >
-          <div className="space-y-3">
-            <div className="text-xs opacity-70">
-              Paste a company website (e.g. <span className="font-mono">https://acme.com</span>). Click <span className="font-medium">Run enrich</span> to discover inboxes,
-              then select the ones you want, verify via ping-email, and import as leads.
-            </div>
-
-            <div>
-              <div className="text-xs opacity-70 mb-1">Company website URL</div>
-              <Input value={companyWebsiteUrl} onChange={(e) => setCompanyWebsiteUrl(e.target.value)} placeholder="https://example.com" />
-            </div>
-
-            <div className="glass p-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="space-y-5">
+            <div className="rounded-3xl border border-slate-200/80 bg-gradient-to-br from-violet-50 via-white to-sky-50 p-4 sm:p-5">
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-4 items-end">
                 <div>
-                  <div className="text-sm font-medium">Find emails on the website (then let AI explain them)</div>
-                  <div className="text-xs opacity-70">
-                    We fetch a few public pages (homepage/contact/etc.), extract company-domain emails, then AI labels what each inbox is for.
+                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Company website</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Input
+                      value={companyWebsiteUrl}
+                      onChange={(e) => setCompanyWebsiteUrl(e.target.value)}
+                      placeholder="https://example.com"
+                      className="h-12 text-base"
+                    />
                   </div>
-                  <label className="flex items-center gap-2 text-xs opacity-80 mt-2 select-none">
-                    <input type="checkbox" checked={companyIncludeSuggested} onChange={(e) => setCompanyIncludeSuggested(e.target.checked)} />
-                    Also generate AI inbox suggestions (unverified)
+                  <div className="mt-2 text-xs text-slate-500">
+                    Discover public inboxes, verify deliverability, then import only clean leads — no manual cleanup needed.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap lg:justify-end">
+                  <Button variant="primary" onClick={runCompanyDiscover} disabled={companyDiscoverBusy || !String(companyWebsiteUrl || "").trim()}>
+                    {companyDiscoverBusy ? "Discovering…" : "1. Discover emails"}
+                  </Button>
+                  <Button variant="ghost" onClick={verifySelectedCompanyEmails} disabled={companyDiscoverBusy || companyImportBusy || !discoveredSelected.length}>
+                    2. Verify selected
+                  </Button>
+                  <Button variant="ghost" onClick={importDiscoveredEmails} disabled={!canImportDiscovered}>
+                    3. Import valid ({discoveredValidSelected.length})
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-2">
+                {[
+                  ["Found", companyEmailStats.total],
+                  ["Selected", companyEmailStats.selected],
+                  ["Valid", companyEmailStats.validSelected],
+                  ["Failed", companyEmailStats.invalidSelected],
+                  ["Pending", companyEmailStats.pendingSelected],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-2xl bg-white/75 border border-slate-200/80 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+                    <div className="text-lg font-semibold text-slate-900">{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 items-start">
+              <div className="space-y-4">
+                <div className="glass p-4 rounded-3xl">
+                  <div className="text-sm font-semibold text-slate-900">Discovery settings</div>
+                  <div className="text-xs text-slate-500 mt-1">Keep this safe by default. SMTP probing is slower and some providers do not reveal mailbox existence.</div>
+
+                  <label className="flex items-start gap-2 text-sm mt-4 select-none">
+                    <input className="mt-1" type="checkbox" checked={companyIncludeSuggested} onChange={(e) => setCompanyIncludeSuggested(e.target.checked)} />
+                    <span>
+                      <span className="font-medium">Also generate AI inbox suggestions</span>
+                      <span className="block text-xs text-slate-500">Useful when the site hides emails. Suggestions must still be verified.</span>
+                    </span>
                   </label>
-                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+
+                  <div className="mt-4">
+                    <div className="text-xs text-slate-500 mb-1">Verification mode</div>
+                    <Select value={companyVerifyMode} onChange={(e) => setCompanyVerifyMode(e.target.value === "smtp" ? "smtp" : "no_smtp")}>
+                      <option value="no_smtp">Safe: syntax + domain + MX</option>
+                      <option value="smtp">Full: MX + SMTP probe</option>
+                    </Select>
+                  </div>
+
+                  <label className="flex items-start gap-2 text-sm mt-3 select-none">
+                    <input
+                      className="mt-1"
+                      type="checkbox"
+                      checked={companyRequireMailbox}
+                      onChange={(e) => setCompanyRequireMailbox(e.target.checked)}
+                      disabled={companyVerifyMode === "no_smtp"}
+                    />
+                    <span>
+                      <span className="font-medium">Require mailbox confirmation</span>
+                      <span className="block text-xs text-slate-500">SMTP mode only.</span>
+                    </span>
+                  </label>
+                </div>
+
+                <div className="glass p-4 rounded-3xl">
+                  <div className="flex items-center justify-between gap-2">
                     <div>
-                      <div className="text-xs opacity-70 mb-1">Verification mode (ping-email)</div>
-                      <Select
-                        value={companyVerifyMode}
-                        onChange={(e) => setCompanyVerifyMode(e.target.value === "smtp" ? "smtp" : "no_smtp")}
-                      >
-                        <option value="no_smtp">Safe: syntax + domain + MX (fast, low risk)</option>
-                        <option value="smtp">Full: MX + SMTP probe (slower)</option>
-                      </Select>
-                      <div className="text-[11px] opacity-60 mt-1">
-                        Note: some providers (e.g. Gmail) may not reliably disclose mailbox existence.
-                      </div>
+                      <div className="text-sm font-semibold text-slate-900">Selection tools</div>
+                      <div className="text-xs text-slate-500">No more deselecting failed leads manually.</div>
                     </div>
-                    <label className="flex items-center gap-2 text-xs opacity-80 select-none md:mt-6">
-                      <input
-                        type="checkbox"
-                        checked={companyRequireMailbox}
-                        onChange={(e) => setCompanyRequireMailbox(e.target.checked)}
-                        disabled={companyVerifyMode === "no_smtp"}
-                      />
-                      Require mailbox confirmation (SMTP only)
-                    </label>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        const sel: Record<string, boolean> = {};
+                        for (const it of companyAllImportableEmails) sel[it.email] = true;
+                        setCompanyDiscoveredSel(sel);
+                      }}
+                      disabled={companyDiscoverBusy || !companyAllImportableEmails.length}
+                    >
+                      Select all
+                    </Button>
+                    <Button variant="ghost" onClick={() => setCompanyDiscoveredSel({})} disabled={companyDiscoverBusy || !companyAllImportableEmails.length}>
+                      Clear
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        const sel: Record<string, boolean> = {};
+                        for (const it of companyAllImportableEmails) {
+                          if (companyVerifyMap[it.email]?.status === "valid") sel[it.email] = true;
+                        }
+                        setCompanyDiscoveredSel(sel);
+                      }}
+                      disabled={!companyAllImportableEmails.length}
+                    >
+                      Select valid
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setCompanyDiscoveredSel((m) => {
+                          const next = { ...m };
+                          for (const e of discoveredInvalidSelected) delete next[e];
+                          return next;
+                        });
+                      }}
+                      disabled={!discoveredInvalidSelected.length}
+                    >
+                      Remove failed
+                    </Button>
+                  </div>
+                  {discoveredSelected.length ? (
+                    <div className="mt-3 rounded-2xl border border-slate-200 bg-white/70 p-3 text-xs text-slate-600">
+                      Import will add <span className="font-semibold text-emerald-700">{discoveredValidSelected.length} valid</span>
+                      {discoveredNotVerified.length ? <span> and skip {discoveredNotVerified.length} pending/failed selected.</span> : <span>.</span>}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="glass p-4 rounded-3xl">
+                  <div className="text-sm font-semibold text-slate-900">Manual verified email</div>
+                  <div className="text-xs text-slate-500 mt-1">Check a corrected or known email, then add it to the import list.</div>
+                  <div className="mt-3 space-y-2">
+                    <Input value={companyManualEmail} onChange={(e) => setCompanyManualEmail(e.target.value)} placeholder="name@company.com" />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          if (!companyManualNorm) {
+                            notify("⚠️ Enter an email first");
+                            return;
+                          }
+                          verifyCompanyEmail(companyManualNorm);
+                        }}
+                        disabled={!companyManualNorm || companyVerifyMap[companyManualNorm]?.status === "busy"}
+                      >
+                        {companyVerifyMap[companyManualNorm]?.status === "busy" ? "Checking…" : "Check"}
+                      </Button>
+                      <Button variant="primary" onClick={() => addManualCompanyEmail(companyManualNorm)} disabled={!companyManualNorm || companyVerifyMap[companyManualNorm]?.status !== "valid"}>
+                        Add
+                      </Button>
+                    </div>
+                    {companyManualNorm ? (
+                      <div className="text-xs text-slate-500" title={companyVerifyMap[companyManualNorm]?.message || ""}>
+                        Status: {companyVerifyMap[companyManualNorm]?.status === "valid"
+                          ? "✅ Valid"
+                          : companyVerifyMap[companyManualNorm]?.status === "invalid"
+                            ? "❌ Invalid"
+                            : companyVerifyMap[companyManualNorm]?.status === "busy"
+                              ? "⏳ Checking…"
+                              : companyVerifyMap[companyManualNorm]?.status === "error"
+                                ? "⚠️ Error"
+                                : "Not verified"}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Button variant="ghost" onClick={runCompanyDiscover} disabled={companyDiscoverBusy || !String(companyWebsiteUrl || "").trim()}>
-                    {companyDiscoverBusy ? "Discovering…" : "Discover emails"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      const sel: Record<string, boolean> = {};
-                      for (const it of [...companyDiscovered, ...companySuggested, ...companyManualEmails, ...companyGenerated]) sel[it.email] = true;
-                      setCompanyDiscoveredSel(sel);
-                    }}
-                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length && !companyGenerated.length)}
-                  >
-                    Select all
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => setCompanyDiscoveredSel({})}
-                    disabled={companyDiscoverBusy || (!companyDiscovered.length && !companySuggested.length && !companyManualEmails.length && !companyGenerated.length)}
-                  >
-                    Clear
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={verifySelectedCompanyEmails}
-                    disabled={companyDiscoverBusy || companyImportBusy || !discoveredSelected.length}
-                  >
-                    Verify selected
-                  </Button>
-                  <Button variant="primary" onClick={importDiscoveredEmails} disabled={!canImportDiscovered}>
-                    {companyImportBusy ? "Importing…" : `Import (${discoveredSelected.length || 0})`}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={runCompanyEnrich}
-                    disabled={companyDiscoverBusy || companyImportBusy || companyEnrichBusy || !String(companyWebsiteUrl || "").trim()}
-                    title="Optional: fill missing fields for existing leads whose email domain matches this website"
-                  >
-                    {companyEnrichBusy ? "Enriching…" : "Enrich matching leads"}
-                  </Button>
-                </div>
-              </div>
 
-              {companyDiscoverNote ? <div className="text-xs opacity-60 mt-2">{companyDiscoverNote}</div> : null}
-
-              {discoveredSelected.length && discoveredNotVerified.length ? (
-                <div className="text-xs opacity-70 mt-2">
-                  ⚠️ Verify before importing: {discoveredNotVerified.length} selected email{discoveredNotVerified.length === 1 ? "" : "s"} pending/invalid.
-                </div>
-              ) : null}
-
-              <div className="mt-3 glass p-3">
-                <div className="text-xs font-medium">Manual check before adding</div>
-                <div className="text-xs opacity-70 mt-1">
-                  Paste any email you want to verify (including a correction to an AI suggestion). After it becomes ✅ Valid, you can add it to the import list.
-                </div>
-
-                <div className="mt-2 flex items-center gap-2 flex-wrap">
-                  <Input
-                    value={companyManualEmail}
-                    onChange={(e) => setCompanyManualEmail(e.target.value)}
-                    placeholder="name@company.com"
-                    className="min-w-[240px] flex-1"
-                  />
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      if (!companyManualNorm) {
-                        notify("⚠️ Enter an email first");
-                        return;
-                      }
-                      verifyCompanyEmail(companyManualNorm);
-                    }}
-                    disabled={!companyManualNorm || companyVerifyMap[companyManualNorm]?.status === "busy"}
-                  >
-                    {companyVerifyMap[companyManualNorm]?.status === "busy" ? "Checking…" : "Check"}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    onClick={() => addManualCompanyEmail(companyManualNorm)}
-                    disabled={!companyManualNorm || companyVerifyMap[companyManualNorm]?.status !== "valid"}
-                  >
-                    Add
-                  </Button>
-                </div>
-
-                {companyManualNorm ? (
-                  <div className="text-xs opacity-70 mt-2" title={companyVerifyMap[companyManualNorm]?.message || ""}>
-                    Status: {companyVerifyMap[companyManualNorm]?.status === "valid"
-                      ? "✅ Valid"
-                      : companyVerifyMap[companyManualNorm]?.status === "invalid"
-                        ? "❌ Invalid"
-                        : companyVerifyMap[companyManualNorm]?.status === "busy"
-                          ? "⏳ Checking…"
-                          : companyVerifyMap[companyManualNorm]?.status === "error"
-                            ? "⚠️ Error"
-                            : "Not verified"}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="mt-3 glass p-3">
-                <div className="text-xs font-medium">Email fallback generator (patterns)</div>
-                <div className="text-xs opacity-70 mt-1">
-                  If no valid inbox is found, generate common patterns (e.g. <span className="font-mono">first.last@company.com</span>) and verify each via ping-email before importing.
-                </div>
-
-                <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">First name</div>
+                <div className="glass p-4 rounded-3xl">
+                  <div className="text-sm font-semibold text-slate-900">Fallback pattern generator</div>
+                  <div className="text-xs text-slate-500 mt-1">Generate common address patterns, then verify them before import.</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
                     <Input value={companyFallbackFirst} onChange={(e) => setCompanyFallbackFirst(e.target.value)} placeholder="first" />
-                  </div>
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">Last name</div>
                     <Input value={companyFallbackLast} onChange={(e) => setCompanyFallbackLast(e.target.value)} placeholder="last" />
                   </div>
-                  <div className="md:mt-6 flex items-center gap-2">
+                  <div className="mt-2 flex items-center gap-2">
                     <Button
                       variant="ghost"
                       onClick={() => {
@@ -2229,20 +2308,7 @@ export function LeadsClient() {
                         const l = ln ? (ln[0] || "") : "";
                         const locals: string[] = [];
                         if (fn && ln) {
-                          locals.push(
-                            `${fn}.${ln}`,
-                            `${fn}${ln}`,
-                            `${fn}_${ln}`,
-                            `${fn}-${ln}`,
-                            `${f}${ln}`,
-                            `${f}.${ln}`,
-                            `${f}_${ln}`,
-                            `${f}-${ln}`,
-                            `${fn}${l}`,
-                            `${fn}.${l}`,
-                            `${ln}.${fn}`,
-                            `${ln}${fn}`,
-                          );
+                          locals.push(`${fn}.${ln}`, `${fn}${ln}`, `${fn}_${ln}`, `${fn}-${ln}`, `${f}${ln}`, `${f}.${ln}`, `${f}_${ln}`, `${f}-${ln}`, `${fn}${l}`, `${fn}.${l}`, `${ln}.${fn}`, `${ln}${fn}`);
                         }
                         if (fn) locals.push(`${fn}`, `${f}`);
                         if (ln) locals.push(`${ln}`, `${l}`);
@@ -2259,361 +2325,192 @@ export function LeadsClient() {
                         }
                         setCompanyGenerated((prev) => {
                           const existing = new Set([...companyDiscovered, ...companySuggested, ...companyManualEmails, ...prev].map((x) => String(x.email || "").toLowerCase()));
-                          const add = uniq
-                            .filter((e) => !existing.has(e.toLowerCase()))
-                            .map((email) => ({
-                              email: email.toLowerCase(),
-                              sourceUrl: "pattern",
-                              purpose: "pattern",
-                              recommended: true,
-                              confidence: 0.2,
-                              notes: "Generated pattern (verify before import)",
-                            }));
+                          const add = uniq.filter((e) => !existing.has(e.toLowerCase())).map((email) => ({
+                            email: email.toLowerCase(),
+                            sourceUrl: "pattern",
+                            purpose: "pattern",
+                            recommended: true,
+                            confidence: 0.2,
+                            notes: "Generated pattern (verify before import)",
+                          }));
                           return [...add, ...prev];
                         });
-                        notify("✅ Generated pattern emails (select + verify)");
+                        notify("✅ Generated pattern emails. Select and verify them.");
                       }}
                     >
-                      Generate patterns
+                      Generate
                     </Button>
-                    <Button
-                      variant="ghost"
-                      onClick={() => {
-                        setCompanyGenerated([]);
-                        notify("Cleared generated patterns");
-                      }}
-                      disabled={!companyGenerated.length}
-                    >
+                    <Button variant="ghost" onClick={() => { setCompanyGenerated([]); notify("Cleared generated patterns"); }} disabled={!companyGenerated.length}>
                       Clear
                     </Button>
                   </div>
                 </div>
+              </div>
 
-                {companyGenerated.length ? (
-                  <div className="mt-3">
-                    <div className="text-xs font-medium mb-2">Generated (verify then import)</div>
-                    <div className="space-y-2 max-h-40 overflow-auto">
-                      {companyGenerated.map((it) => (
-                        <label key={it.email} className="flex items-start gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            className="mt-1"
-                            checked={!!companyDiscoveredSel[it.email]}
-                            onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
-                          />
-                          <div className="min-w-0">
-                            <div className="font-mono break-all">{it.email}</div>
-                            <div className="flex items-center gap-2 mt-1 flex-wrap">
-                              <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
-                                {companyVerifyMap[it.email]?.status === "valid"
-                                  ? "✅ Valid"
-                                  : companyVerifyMap[it.email]?.status === "invalid"
-                                    ? "❌ Invalid"
-                                    : companyVerifyMap[it.email]?.status === "busy"
-                                      ? "⏳ Verifying…"
-                                      : companyVerifyMap[it.email]?.status === "error"
-                                        ? "⚠️ Error"
-                                        : "Not verified"}
-                              </span>
-                              {renderCompanyRiskPill(companyVerifyMap[it.email])}
-                              <Button
-                                variant="ghost"
-                                className="px-2 py-1 text-xs rounded-lg"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  verifyCompanyEmail(it.email);
-                                }}
-                                disabled={companyVerifyMap[it.email]?.status === "busy"}
-                              >
-                                {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
-                              </Button>
-                            </div>
-                            <div className="text-xs opacity-60 break-all mt-0.5">Source: generated pattern</div>
+              <div className="space-y-4">
+                {companyDiscoverNote ? (
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">{companyDiscoverNote}</div>
+                ) : null}
+
+                {companyAllImportableEmails.length ? (
+                  <div className="glass rounded-3xl overflow-hidden">
+                    <div className="p-4 border-b border-slate-200/70 flex items-center justify-between gap-3 flex-wrap">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">Review inboxes</div>
+                        <div className="text-xs text-slate-500">Grouped by source. Failed emails can stay selected — import skips them automatically.</div>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+                        <span className="rounded-full bg-emerald-50 text-emerald-700 px-2 py-1">✅ {companyEmailStats.validSelected} valid selected</span>
+                        <span className="rounded-full bg-rose-50 text-rose-700 px-2 py-1">❌ {companyEmailStats.invalidSelected} failed</span>
+                        <span className="rounded-full bg-slate-100 text-slate-600 px-2 py-1">⏳ {companyEmailStats.pendingSelected} pending</span>
+                      </div>
+                    </div>
+
+                    <div className="max-h-[520px] overflow-auto divide-y divide-slate-200/70">
+                      {[
+                        { title: "Published on website", count: companyDiscovered.length, items: companyDiscovered, empty: "No website-published emails yet." },
+                        { title: "AI suggested", count: companySuggested.length, items: companySuggested, empty: "AI suggestions are off or none were generated." },
+                        { title: "Manually added", count: companyManualEmails.length, items: companyManualEmails, empty: "No manual emails added." },
+                        { title: "Generated patterns", count: companyGenerated.length, items: companyGenerated, empty: "No generated patterns yet." },
+                      ].map((section) => (
+                        <div key={section.title} className="p-4">
+                          <div className="flex items-center justify-between gap-2 mb-3">
+                            <div className="text-xs uppercase tracking-wide text-slate-500 font-semibold">{section.title}</div>
+                            <div className="text-xs text-slate-400">{section.count}</div>
                           </div>
-                        </label>
+                          {section.items.length ? (
+                            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                              {section.items.map((it: any) => {
+                                const state = companyVerifyMap[it.email];
+                                const status = state?.status || "idle";
+                                const statusClass = status === "valid"
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : status === "invalid" || status === "error"
+                                    ? "bg-rose-50 text-rose-700 border-rose-200"
+                                    : status === "busy"
+                                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                                      : "bg-slate-50 text-slate-600 border-slate-200";
+                                const statusText = status === "valid"
+                                  ? "✅ Valid"
+                                  : status === "invalid"
+                                    ? "❌ Invalid"
+                                    : status === "busy"
+                                      ? "⏳ Verifying"
+                                      : status === "error"
+                                        ? "⚠️ Error"
+                                        : "Not verified";
+                                return (
+                                  <div key={`${section.title}-${it.email}`} className={`rounded-2xl border p-3 transition ${companyDiscoveredSel[it.email] ? "border-violet-300 bg-violet-50/40" : "border-slate-200 bg-white/70"}`}>
+                                    <div className="flex items-start gap-3">
+                                      <input
+                                        type="checkbox"
+                                        className="mt-1.5"
+                                        checked={!!companyDiscoveredSel[it.email]}
+                                        onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="font-mono text-sm break-all text-slate-900">{it.email}</div>
+                                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                                          <span className={`rounded-full border px-2 py-1 text-[11px] ${statusClass}`} title={state?.message || ""}>{statusText}</span>
+                                          {renderCompanyRiskPill(state)}
+                                          {it.purpose ? <span className="rounded-full bg-slate-100 text-slate-600 px-2 py-1 text-[11px]">{it.purpose}</span> : null}
+                                          {typeof it.confidence === "number" ? <span className="text-[11px] text-slate-500">AI {(it.confidence * 100).toFixed(0)}%</span> : null}
+                                        </div>
+                                        {it.notes ? <div className="mt-2 text-xs text-slate-500">{it.notes}</div> : null}
+                                        {renderCompanyRiskFlags(state)}
+                                        {it.evidenceUrls?.length ? (
+                                          <div className="mt-2 text-xs text-slate-500 break-all">
+                                            Found on: {it.evidenceUrls.slice(0, 2).map((u: string, idx: number) => (
+                                              <span key={u}>
+                                                <a className="underline" href={u} target="_blank" rel="noreferrer">page {idx + 1}</a>
+                                                {idx === 0 && it.evidenceUrls!.length > 2 ? <span className="opacity-60"> (+{it.evidenceUrls!.length - 2} more)</span> : null}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                      <Button
+                                        variant="ghost"
+                                        className="px-2 py-1 text-xs rounded-lg shrink-0"
+                                        onClick={() => verifyCompanyEmail(it.email)}
+                                        disabled={status === "busy"}
+                                      >
+                                        {status === "valid" ? "Recheck" : "Verify"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-slate-200 bg-white/50 p-4 text-sm text-slate-500">{section.empty}</div>
+                          )}
+                        </div>
                       ))}
                     </div>
                   </div>
-                ) : null}
-              </div>
-
-              {companyManualEmails.length ? (
-                <div className="mt-3">
-                  <div className="text-xs font-medium mb-2">Manually added (verified)</div>
-                  <div className="space-y-2 max-h-40 overflow-auto">
-                    {companyManualEmails.map((it) => (
-                      <label key={it.email} className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="mt-1"
-                          checked={!!companyDiscoveredSel[it.email]}
-                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
-                        />
-                        <div className="min-w-0">
-                          <div className="font-mono break-all">{it.email}</div>
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
-                              {companyVerifyMap[it.email]?.status === "valid" ? "✅ Valid" : companyVerifyMap[it.email]?.status === "busy" ? "⏳ Verifying…" : companyVerifyMap[it.email]?.status === "error" ? "⚠️ Error" : "Not verified"}
-                            </span>
-                            {renderCompanyRiskPill(companyVerifyMap[it.email])}
-                            <Button
-                              variant="ghost"
-                              className="px-2 py-1 text-xs rounded-lg"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                verifyCompanyEmail(it.email);
-                              }}
-                              disabled={companyVerifyMap[it.email]?.status === "busy"}
-                            >
-                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
-                            </Button>
-                          </div>
-                          <div className="text-xs opacity-60 break-all mt-0.5">Source: manually added</div>
-                        </div>
-                      </label>
-                    ))}
+                ) : (
+                  <div className="glass rounded-3xl p-8 text-center">
+                    <div className="mx-auto h-14 w-14 rounded-3xl bg-violet-50 flex items-center justify-center text-2xl">🔎</div>
+                    <div className="mt-3 text-base font-semibold text-slate-900">No emails found yet</div>
+                    <div className="mt-1 text-sm text-slate-500">Enter a company website and click Discover emails. Results will appear here in clean grouped cards.</div>
                   </div>
-                </div>
-              ) : null}
+                )}
 
-              {companyDiscovered.length ? (
-                <div className="mt-3">
-                  <div className="text-xs font-medium mb-2">Emails published on the website</div>
-                  <div className="space-y-2 max-h-56 overflow-auto">
-                    {companyDiscovered.map((it) => (
-                      <label key={it.email} className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="mt-1"
-                          checked={!!companyDiscoveredSel[it.email]}
-                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
-                        />
-                        <div className="min-w-0">
-                          <div className="font-mono break-all">{it.email}</div>
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            <span
-                              className="text-xs opacity-70"
-                              title={companyVerifyMap[it.email]?.message || ""}
-                            >
-                              {companyVerifyMap[it.email]?.status === "valid"
-                                ? "✅ Valid"
-                                : companyVerifyMap[it.email]?.status === "invalid"
-                                  ? "❌ Invalid"
-                                  : companyVerifyMap[it.email]?.status === "busy"
-                                    ? "⏳ Verifying…"
-                                    : companyVerifyMap[it.email]?.status === "error"
-                                      ? "⚠️ Error"
-                                      : "Not verified"}
-                            </span>
-                            {renderCompanyRiskPill(companyVerifyMap[it.email])}
-                            <Button
-                              variant="ghost"
-                              className="px-2 py-1 text-xs rounded-lg"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                verifyCompanyEmail(it.email);
-                              }}
-                              disabled={companyVerifyMap[it.email]?.status === "busy"}
-                            >
-                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
-                            </Button>
-                          </div>
-                          <div className="text-xs opacity-70 mt-0.5">
-                            AI: <span className="font-medium">{it.purpose || "other"}</span>
-                            {typeof it.confidence === "number" ? <span className="opacity-70"> · {(it.confidence * 100).toFixed(0)}%</span> : null}
-                            {it.recommended ? <span className="ml-1">· ✅ ok for outreach</span> : <span className="ml-1">· 🚫 avoid outreach</span>}
-                          </div>
-                          {renderCompanyRiskFlags(companyVerifyMap[it.email])}
-                          {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
-                          {it.evidenceUrls?.length ? (
-                            <div className="text-xs opacity-60 mt-0.5 break-all">
-                              Found on: {it.evidenceUrls.slice(0, 2).map((u, idx) => (
-                                <span key={u}>
-                                  <a className="underline" href={u} target="_blank" rel="noreferrer">page {idx + 1}</a>
-                                  {idx === 0 && it.evidenceUrls!.length > 2 ? <span className="opacity-60"> (+{it.evidenceUrls!.length - 2} more)</span> : null}
-                                </span>
-                              ))}
+                {companyOtherEmails.length || companyContactForms.length ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {companyOtherEmails.length ? (
+                      <div className="glass p-4 rounded-3xl">
+                        <div className="text-sm font-semibold text-slate-900">Other public emails</div>
+                        <div className="text-xs text-slate-500 mt-1">Shown for reference. These are not company-domain import candidates.</div>
+                        <div className="mt-3 space-y-2 max-h-44 overflow-auto">
+                          {companyOtherEmails.map((it) => (
+                            <div key={it.email} className="rounded-2xl border border-slate-200 bg-white/70 p-3">
+                              <div className="font-mono text-sm break-all">{it.email}</div>
+                              <div className="text-xs text-slate-500 break-all mt-1">Source: {it.sourceUrl}</div>
                             </div>
-                          ) : null}
+                          ))}
                         </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {companySuggested.length ? (
-                <div className="mt-3">
-                  <div className="text-xs font-medium mb-2">AI-suggested inboxes (unverified)</div>
-                  <div className="space-y-2 max-h-56 overflow-auto">
-                    {companySuggested.map((it) => (
-                      <label key={it.email} className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="mt-1"
-                          checked={!!companyDiscoveredSel[it.email]}
-                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
-                        />
-                        <div className="min-w-0">
-                          <div className="font-mono break-all">{it.email}</div>
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            <span
-                              className="text-xs opacity-70"
-                              title={companyVerifyMap[it.email]?.message || ""}
-                            >
-                              {companyVerifyMap[it.email]?.status === "valid"
-                                ? "✅ Valid"
-                                : companyVerifyMap[it.email]?.status === "invalid"
-                                  ? "❌ Invalid"
-                                  : companyVerifyMap[it.email]?.status === "busy"
-                                    ? "⏳ Verifying…"
-                                    : companyVerifyMap[it.email]?.status === "error"
-                                      ? "⚠️ Error"
-                                      : "Not verified"}
-                            </span>
-                            <Button
-                              variant="ghost"
-                              className="px-2 py-1 text-xs rounded-lg"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                verifyCompanyEmail(it.email);
-                              }}
-                              disabled={companyVerifyMap[it.email]?.status === "busy"}
-                            >
-                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
-                            </Button>
-                          </div>
-                          <div className="text-xs opacity-70 mt-0.5">
-                            AI: <span className="font-medium">{it.purpose || "other"}</span>
-                            {typeof it.confidence === "number" ? <span className="opacity-70"> · {(it.confidence * 100).toFixed(0)}%</span> : null}
-                            {it.recommended ? <span className="ml-1">· ✅ ok for outreach</span> : <span className="ml-1">· 🚫 avoid outreach</span>}
-                          </div>
-                          {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
-                          <div className="text-xs opacity-60 break-all mt-0.5">Source: AI suggested (unverified)</div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-
-              {companyManualEmails.length ? (
-                <div className="mt-3">
-                  <div className="text-xs font-medium mb-2">Manually added emails</div>
-                  <div className="space-y-2 max-h-40 overflow-auto">
-                    {companyManualEmails.map((it) => (
-                      <label key={it.email} className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="mt-1"
-                          checked={!!companyDiscoveredSel[it.email]}
-                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
-                        />
-                        <div className="min-w-0">
-                          <div className="font-mono break-all">{it.email}</div>
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
-                              {companyVerifyMap[it.email]?.status === "valid"
-                                ? "✅ Valid"
-                                : companyVerifyMap[it.email]?.status === "invalid"
-                                  ? "❌ Invalid"
-                                  : companyVerifyMap[it.email]?.status === "busy"
-                                    ? "⏳ Verifying…"
-                                    : companyVerifyMap[it.email]?.status === "error"
-                                      ? "⚠️ Error"
-                                      : "Not verified"}
-                            </span>
-                            <Button
-                              variant="ghost"
-                              className="px-2 py-1 text-xs rounded-lg"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                verifyCompanyEmail(it.email);
-                              }}
-                              disabled={companyVerifyMap[it.email]?.status === "busy"}
-                            >
-                              {companyVerifyMap[it.email]?.status === "valid" ? "Re-verify" : "Verify"}
-                            </Button>
-                          </div>
-                          <div className="text-xs opacity-60 break-all mt-0.5">Source: manually added</div>
-                          {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {companyOtherEmails.length ? (
-                <div className="mt-3">
-                  <div className="text-xs font-medium mb-2">Other public emails (not company domain)</div>
-                  <div className="space-y-2 max-h-40 overflow-auto">
-                    {companyOtherEmails.map((it) => (
-                      <label key={it.email} className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="mt-1"
-                          checked={!!companyDiscoveredSel[it.email]}
-                          onChange={(e) => setCompanyDiscoveredSel((m) => ({ ...m, [it.email]: e.target.checked }))}
-                        />
-                        <div>
-                          <div className="font-mono">{it.email}</div>
-                          <div className="text-xs opacity-60 break-all">Source: {it.sourceUrl}</div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {companyContactForms.length ? (
-                <div className="mt-3 glass p-3">
-                  <div className="text-xs font-medium">Contact forms found</div>
-                  <div className="text-xs opacity-70 mt-1">If the site does not publish emails, these are the best official ways to reach them.</div>
-                  <div className="mt-2 space-y-1 max-h-40 overflow-auto">
-                    {companyContactForms.map((f, idx) => (
-                      <div key={`${f.url}-${idx}`} className="text-xs break-all">
-                        <a className="underline" href={f.url} target="_blank" rel="noreferrer">{f.url}</a>
-                        {f.sourceUrl && f.sourceUrl !== f.url ? (
-                          <span className="opacity-60"> — found on {f.sourceUrl}</span>
-                        ) : null}
                       </div>
-                    ))}
+                    ) : null}
+
+                    {companyContactForms.length ? (
+                      <div className="glass p-4 rounded-3xl">
+                        <div className="text-sm font-semibold text-slate-900">Contact forms found</div>
+                        <div className="text-xs text-slate-500 mt-1">Official fallback channels if the site does not publish inboxes.</div>
+                        <div className="mt-3 space-y-2 max-h-44 overflow-auto">
+                          {companyContactForms.map((f, idx) => (
+                            <div key={`${f.url}-${idx}`} className="rounded-2xl border border-slate-200 bg-white/70 p-3 text-xs break-all">
+                              <a className="underline" href={f.url} target="_blank" rel="noreferrer">{f.url}</a>
+                              {f.sourceUrl && f.sourceUrl !== f.url ? <div className="text-slate-500 mt-1">Found on {f.sourceUrl}</div> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
-                </div>
-              ) : null}
+                ) : null}
 
-              {!companyDiscovered.length && !companySuggested.length && !companyOtherEmails.length && !companyContactForms.length ? (
-                <div className="text-sm opacity-70 mt-3">No emails found yet.</div>
-              ) : null}
-            </div>
-
-            {companyEnrichResult ? (
-              <div className="glass p-3">
-                <div className="text-sm font-medium">Result</div>
-                <div className="text-xs opacity-70 mt-1">Website: <span className="font-mono">{companyEnrichResult.website}</span></div>
-                <div className="text-xs opacity-70 mt-1">Matched leads: {companyEnrichResult.matched}</div>
-                <div className="text-xs opacity-70 mt-1">Updated (filled missing): {companyEnrichResult.updated}</div>
-                <div className="text-xs opacity-70 mt-1">Discovered emails (AI): {companyEnrichResult.discovered}</div>
-                <div className="text-xs opacity-70 mt-1">New leads created: {companyEnrichResult.created}</div>
-                {companyEnrichResult.note ? <div className="text-xs opacity-60 mt-2">{companyEnrichResult.note}</div> : null}
-                {companyEnrichResult.rationale ? (
-                  <div className="mt-3">
-                    <div className="text-xs font-medium mb-1">Notes</div>
-                    <div className="text-sm whitespace-pre-wrap">{companyEnrichResult.rationale}</div>
+                {companyEnrichResult ? (
+                  <div className="glass p-4 rounded-3xl">
+                    <div className="text-sm font-semibold text-slate-900">Enrichment result</div>
+                    <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                      <div className="rounded-2xl bg-white/70 border border-slate-200 p-3"><div className="text-slate-500">Matched</div><div className="text-lg font-semibold">{companyEnrichResult.matched}</div></div>
+                      <div className="rounded-2xl bg-white/70 border border-slate-200 p-3"><div className="text-slate-500">Updated</div><div className="text-lg font-semibold">{companyEnrichResult.updated}</div></div>
+                      <div className="rounded-2xl bg-white/70 border border-slate-200 p-3"><div className="text-slate-500">Discovered</div><div className="text-lg font-semibold">{companyEnrichResult.discovered}</div></div>
+                      <div className="rounded-2xl bg-white/70 border border-slate-200 p-3"><div className="text-slate-500">Created</div><div className="text-lg font-semibold">{companyEnrichResult.created}</div></div>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-3">Website: <span className="font-mono">{companyEnrichResult.website}</span></div>
+                    {companyEnrichResult.note ? <div className="text-xs text-slate-500 mt-2">{companyEnrichResult.note}</div> : null}
+                    {companyEnrichResult.rationale ? <div className="mt-3 text-sm whitespace-pre-wrap">{companyEnrichResult.rationale}</div> : null}
                   </div>
                 ) : null}
               </div>
-            ) : null}
+            </div>
           </div>
         </Modal>
       ) : null}
+
 
       {showAiSegments ? (
         <Modal
