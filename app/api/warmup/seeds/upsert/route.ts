@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/crypto";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: Request) {
   let s: any;
   try { s = await requireSession(); } catch { return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 }); }

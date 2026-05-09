@@ -207,7 +207,7 @@ export default function CampaignCreateWizard({ mailboxes, pools, leads, resumeCa
     } catch {
       setTzOptions(fallback);
     }
-  }, []);
+  }, [timezone]);
 
   // --- Resume existing draft (from Campaigns banner: /app/campaigns/new?resume=<id>) ---
   useEffect(() => {
@@ -399,7 +399,7 @@ export default function CampaignCreateWizard({ mailboxes, pools, leads, resumeCa
     } catch {
       return null;
     }
-  }, [timezone]);
+  }, [mounted, timezone]);
 
   async function ensureCampaignCreated() {
     if (campaignId) return campaignId;
@@ -831,7 +831,7 @@ export default function CampaignCreateWizard({ mailboxes, pools, leads, resumeCa
                     {mailboxStrategy === "weighted" ? (
                       <>Weighted routing uses the pool member weights you set (higher weight = more sends).</>
                     ) : mailboxStrategy === "least_recent" ? (
-                      <>Least-recent prioritizes senders that haven't sent for this campaign recently (great for balancing).</>
+                      <>Least-recent prioritizes senders that haven&apos;t sent for this campaign recently (great for balancing).</>
                     ) : mailboxStrategy === "score" ? (
                       <>Score-based chooses the healthiest mailbox (lowest bounce + failure risk) first.</>
                     ) : mailboxStrategy === "score_idle" ? (

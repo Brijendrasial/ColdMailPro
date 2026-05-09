@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function clampInt(v: string | null, def: number, min: number, max: number) {
   const n = v ? parseInt(v, 10) : NaN;
   if (!Number.isFinite(n)) return def;

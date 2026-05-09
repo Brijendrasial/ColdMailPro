@@ -2,13 +2,16 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: Request) {
   let s: any;
   try { s = await requireSession(); } catch { return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 }); }
 
   const body = await req.json().catch(() => ({}));
   const mailboxIdsRaw = Array.isArray(body.mailboxIds) ? body.mailboxIds : [];
-  const mailboxIds = Array.from(new Set(mailboxIdsRaw.map((x: any) => String(x || "").trim()).filter(Boolean)));
+  const mailboxIds: string[] = Array.from(new Set(mailboxIdsRaw.map((x: any) => String(x || "").trim()).filter(Boolean)));
   if (!mailboxIds.length) return NextResponse.json({ error: "mailboxIds required" }, { status: 400 });
   if (mailboxIds.length > 200) return NextResponse.json({ error: "Too many mailboxes (max 200)" }, { status: 400 });
 

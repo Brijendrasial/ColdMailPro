@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 // Returns active per-campaign cooldowns for a mailbox.
 // Cooldowns are stored in MailboxThrottle (unique per campaign+mailbox).
 

@@ -262,7 +262,7 @@ If you need a different time, just reply with your availability.`;
           }).catch(() => {});
         }
       } catch (e: any) {
-        await appLogAsync(args.workspaceId, "warn", "Google meeting auto-schedule failed", { error: String(e?.message || e) }).catch(() => null);
+        await appLogAsync({ workspaceId: args.workspaceId, level: "warn", category: "worker", event: "google_meeting_auto_schedule_failed", message: "Google meeting auto-schedule failed", data: { error: String(e?.message || e) } }).catch(() => null);
       }
     }
 
@@ -329,10 +329,10 @@ If you need a different time, just reply with your availability.`;
     } catch (e: any) {
       // if send fails, keep draft saved for humans
       await prisma.replyAiAction.update({ where: { id: aiRow.id }, data: { action: "drafted" } }).catch(() => {});
-      await appLogAsync(args.workspaceId, "warn", "AI autopilot send failed", { error: String(e?.message || e) }).catch(() => {});
+      await appLogAsync({ workspaceId: args.workspaceId, level: "warn", category: "worker", event: "ai_autopilot_send_failed", message: "AI autopilot send failed", data: { error: String(e?.message || e) } }).catch(() => {});
     }
   } catch (e: any) {
-    await appLogAsync(args.workspaceId, "warn", "AI replies failed", { error: String(e?.message || e) }).catch(() => {});
+    await appLogAsync({ workspaceId: args.workspaceId, level: "warn", category: "worker", event: "ai_replies_failed", message: "AI replies failed", data: { error: String(e?.message || e) } }).catch(() => {});
   }
 }
 
@@ -1026,7 +1026,7 @@ chmod 644 "$map_key" "$map_sel" || true
 
 upsert(){
   local file="$1" d="$2" v="$3"
-  awk -F: -v d="$d" -v v="$v" 'BEGIN{done=0}{ if(tolower($1)==tolower(d)){ print d ":" v; done=1; next } if (NF>0) print } END{ if (!done) print d ":" v }' "$file" > "${file}.tmp" && mv -f "${file}.tmp" "$file"
+  awk -F: -v d="$d" -v v="$v" 'BEGIN{done=0}{ if(tolower($1)==tolower(d)){ print d ":" v; done=1; next } if (NF>0) print } END{ if (!done) print d ":" v }' "$file" > "\${file}.tmp" && mv -f "\${file}.tmp" "$file"
 }
 
 upsert "$map_key" "$dom" "$key"
@@ -1731,6 +1731,121 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
  * - better mailbox load balancing
  * - reply detection (IMAP) and bounce mailbox parsing
  */
+
+
+async function handleAiopsApplyIncident(jobId: string, payload: any) {
+  const incidentId = String(payload?.incidentId || "");
+  const workspaceId = payload?.workspaceId ? String(payload.workspaceId) : null;
+  const mode = String(payload?.mode || "safe");
+
+  if (!incidentId) {
+    await logJob(jobId, "aiops_apply_incident skipped: missing incidentId");
+    return;
+  }
+
+  const p: any = prisma as any;
+  const incidentDelegate = p?.incident;
+  const actionDelegate = p?.incidentAction;
+  if (!incidentDelegate?.findFirst) {
+    await logJob(jobId, "aiops_apply_incident skipped: Incident model is not available. Run Prisma migrations and generate the client.");
+    return;
+  }
+
+  const incident = await incidentDelegate.findFirst({
+    where: { id: incidentId, ...(workspaceId ? { workspaceId } : {}) },
+    select: {
+      id: true,
+      workspaceId: true,
+      status: true,
+      summary: true,
+      suggestedFixesJson: true,
+      evidenceJson: true,
+    },
+  });
+
+  if (!incident) {
+    await logJob(jobId, `aiops_apply_incident skipped: incident ${incidentId} not found`);
+    return;
+  }
+
+  const fixes: any = incident.suggestedFixesJson || {};
+  const rawActions: any[] = Array.isArray(fixes?.actions) ? fixes.actions : [];
+  const safeActions = rawActions.filter((a) => String(a?.kind || "safe") === "safe");
+
+  await appLogAsync({
+    workspaceId: incident.workspaceId || workspaceId,
+    level: "info",
+    category: "worker",
+    event: "aiops_apply_incident_start",
+    message: "Applying safe AIOps incident actions",
+    entityType: "incident",
+    entityId: incident.id,
+    data: { mode, actionCount: safeActions.length },
+  }).catch(() => null);
+
+  if (!safeActions.length) {
+    if (actionDelegate?.create) {
+      await actionDelegate.create({
+        data: {
+          incidentId: incident.id,
+          kind: "safe",
+          actionType: "noop",
+          argsJson: { reason: "No safe actions were suggested for this incident." },
+          commandPreview: "No safe actions were suggested.",
+          appliedAt: new Date(),
+          outcome: "skipped",
+          logs: "No safe actions were suggested for this incident.",
+        },
+      }).catch(() => null);
+    }
+    await incidentDelegate.update({ where: { id: incident.id }, data: { needsHumanReview: true } }).catch(() => null);
+    await logJob(jobId, `aiops_apply_incident skipped: no safe actions for incident ${incident.id}`);
+    return;
+  }
+
+  for (const action of safeActions) {
+    const actionType = String(action?.actionType || action?.type || "safe_action");
+    const commandPreview = String(action?.commandPreview || action?.command || action?.label || actionType).slice(0, 4000);
+    const argsJson = action?.args || action?.argsJson || action || {};
+
+    // Conservative default: record the safe recommendation as applied/skipped for audit,
+    // but do not execute arbitrary shell commands from AI-generated incident metadata.
+    const outcome = actionType === "noop" ? "skipped" : "skipped";
+    const logs = "Safe action recorded for review. Automatic shell execution is intentionally disabled in the worker.";
+
+    if (actionDelegate?.create) {
+      await actionDelegate.create({
+        data: {
+          incidentId: incident.id,
+          kind: "safe",
+          actionType,
+          argsJson,
+          commandPreview,
+          appliedAt: new Date(),
+          outcome,
+          logs,
+        },
+      }).catch(() => null);
+    }
+    await logJob(jobId, `aiops_apply_incident recorded safe action: ${commandPreview}`);
+  }
+
+  await incidentDelegate.update({
+    where: { id: incident.id },
+    data: { status: "applied", needsHumanReview: true },
+  }).catch(() => null);
+
+  await appLogAsync({
+    workspaceId: incident.workspaceId || workspaceId,
+    level: "info",
+    category: "worker",
+    event: "aiops_apply_incident_done",
+    message: "AIOps incident safe actions recorded",
+    entityType: "incident",
+    entityId: incident.id,
+    data: { mode, actionCount: safeActions.length },
+  }).catch(() => null);
+}
 
 async function lockNextJob() {
   const now = new Date();
@@ -3096,7 +3211,8 @@ async function handleSyncImap(payload: any) {
 			// ImapFlow's fetch() signature is fetch(range, query, options) where options.uid=true means range contains UIDs.
 			// Also: avoid ranges like "1:*" when the mailbox is empty (Dovecot returns "Invalid messageset").
 			const startUid = (mb.imapLastUid || 0) + 1;
-			const uidNext = client.mailbox?.uidNext || 1; // next UID that would be assigned
+			const mailbox = client.mailbox || null;
+			const uidNext = mailbox?.uidNext || 1; // next UID that would be assigned
 			const endUid = uidNext - 1; // last existing UID
 
 			// Nothing to fetch (empty mailbox or no new messages since last checkpoint)
@@ -4905,12 +5021,13 @@ async function handleWarmupSeedRescue(jobId: string, payload: any) {
         continue;
       }
 
-      const uids = await client.search({ since });
+      const searchResult = await client.search({ since });
+      const uids = Array.isArray(searchResult) ? searchResult : [];
       const recent = uids.slice(-200);
 
       for (const uid of recent) {
         const msg = await client.fetchOne(uid, { source: true });
-        if (!msg?.source) continue;
+          if (!msg || !("source" in msg) || !msg.source) continue;
 
         const parsed = await simpleParser(msg.source);
         const wid = String(parsed.headers.get("x-coldmail-warmup-id") || "").trim();
@@ -5079,12 +5196,13 @@ async function handleWarmupSeedCheck(jobId: string, payload: any) {
           continue;
         }
 
-        const uids = await client.search({ since });
+        const searchResult = await client.search({ since });
+        const uids = Array.isArray(searchResult) ? searchResult : [];
         await warmupLog(jobId, "seed_check: search", { seedId: seed.id, folder, uids: uids.length, since: since.toISOString() });
         const recentUids = uids.slice(-80); // cap
         for (const uid of recentUids) {
           const msg = await client.fetchOne(uid, { source: true });
-          if (!msg?.source) continue;
+          if (!msg || !("source" in msg) || !msg.source) continue;
           const parsed = await simpleParser(msg.source);
           const warmupId = String(parsed.headers.get("x-coldmail-warmup-id") || "").trim() || null;
           if (!warmupId) continue;
@@ -5381,12 +5499,13 @@ async function handleWarmupMailboxCheck(jobId: string, payload: any) {
           continue;
         }
 
-        const uids = await client.search({ since });
+        const searchResult = await client.search({ since });
+        const uids = Array.isArray(searchResult) ? searchResult : [];
         const recentUids = uids.slice(-120);
 
         for (const uid of recentUids) {
           const msg = await client.fetchOne(uid, { source: true });
-          if (!msg?.source) continue;
+          if (!msg || !('source' in msg) || !msg.source) continue;
 
           const parsed = await simpleParser(msg.source);
           const warmupId = String(parsed.headers.get("x-coldmail-warmup-id") || "").trim() || null;

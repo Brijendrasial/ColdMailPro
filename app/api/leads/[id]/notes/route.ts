@@ -4,6 +4,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { logLeadActivity } from "@/lib/lead-activity";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 const Create = z.object({ kind: z.enum(["note", "call", "meeting"]).optional().default("note"), body: z.string().min(1) });
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {

@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { enqueueJob } from "@/worker/queue";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 type Action = "pause" | "run" | "stop" | "read" | "unread" | "archive" | "unarchive" | "duplicate";
 
 export async function POST(req: NextRequest) {

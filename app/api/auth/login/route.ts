@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { login } from "@/lib/auth";
 import { absoluteUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const form = await req.formData();
   const email = String(form.get("email") || "");

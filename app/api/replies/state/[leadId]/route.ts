@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function normalizeLabels(v: any): string[] {
   if (!v) return [];
   if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 25);

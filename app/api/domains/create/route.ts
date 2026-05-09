@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 import { encrypt } from "@/lib/crypto";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 async function enqueueJob(type: string, payload: any) {
   const delegate = (prisma as any)?.job;
   if (delegate?.create) {

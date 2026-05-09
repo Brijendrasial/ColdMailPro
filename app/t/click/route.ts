@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseSafeHttpUrl, verifyTrackingClick } from "@/lib/tracking";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const mid = url.searchParams.get("m") || "";

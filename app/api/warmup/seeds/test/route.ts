@@ -6,6 +6,9 @@ import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { env } from "@/lib/env";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: Request) {
   let s: any;
   try { s = await requireSession(); } catch { return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 }); }

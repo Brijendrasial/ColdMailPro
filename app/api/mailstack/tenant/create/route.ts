@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function splitLines(input: string) {
   return input
     .split(/\r?\n/)

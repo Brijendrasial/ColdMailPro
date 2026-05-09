@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function POST() {
   let s: any;
@@ -44,12 +48,12 @@ All the best.`,
     },
   ];
 
-  await prisma.warmupTemplate.createMany({
-    data: [
-      ...initial.map((t) => ({ workspaceId: s.wid, type: "initial", ...t, isActive: true, source: "system" })),
-      ...reply.map((t) => ({ workspaceId: s.wid, type: "reply", ...t, isActive: true, source: "system" })),
-    ],
-  });
+  const data: Prisma.WarmupTemplateCreateManyInput[] = [
+    ...initial.map((t) => ({ workspaceId: s.wid, type: "initial" as const, ...t, isActive: true, source: "system" })),
+    ...reply.map((t) => ({ workspaceId: s.wid, type: "reply" as const, ...t, isActive: true, source: "system" })),
+  ];
+
+  await prisma.warmupTemplate.createMany({ data });
 
   return NextResponse.json({ ok: true });
 }

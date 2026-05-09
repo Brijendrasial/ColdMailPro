@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/lib/mailer";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 // Send a manual reply from the Replies tab.
 // Creates a new Message row and a sent event for audit.
 

@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 import { sendEmail } from "@/lib/mailer";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function clip(s: string, n: number) {
   return s.length > n ? s.slice(0, n) : s;
 }

@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { emailDomain, normalizeEmail } from "@/lib/email-quality";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function norm(s: any) {
   return String(s || "").trim().toLowerCase();
 }

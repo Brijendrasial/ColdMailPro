@@ -520,3 +520,522 @@ AIOPS_AI_ANALYSIS=true
 - Incident insert now uses **non-interactive mysql auth** (`MYSQL_PWD`) and is tolerant to table name variants: `Incident` / `incidents` / `incident`.
 
 If the UI still shows no incidents, check `/var/log/coldmail-aiops.log` for `[DB] ...` lines to see the exact reason.
+
+## Fixed56: automatic MailStack TLS issuance and renewal restarts
+
+MailStack TLS automation now installs automatically when Cloudflare is initialized, when tenant setup runs, and when DNS sync runs. It adds:
+
+- A certbot deploy hook at `/etc/letsencrypt/renewal-hooks/deploy/20-mailstack-tenant-sni.sh`
+- A retry timer at `mailstack-tls-auto.timer`
+- A stable runner at `/usr/local/sbin/mailstack-addon`
+- Automatic cert copy from `/etc/letsencrypt/live/mail.<domain>/` into `/etc/mailstack/certs/mail.<domain>/`
+- Automatic Dovecot SNI config rebuild at `/etc/dovecot/conf.d/99-mailstack-sni.conf`
+- Automatic `systemctl restart dovecot` and `systemctl restart exim` after issue, renewal, or sync
+
+Useful commands:
+
+```bash
+sudo scripts/mailstack-addon.sh tls-auto-install
+sudo scripts/mailstack-addon.sh tls-auto-run
+sudo scripts/mailstack-addon.sh tls-issue --tenant TENANT_NAME
+sudo scripts/mailstack-addon.sh tls-sync-renewed
+sudo systemctl status mailstack-tls-auto.timer
+```
+---
+
+## Fixed57: full patch documentation + GitHub update notes
+
+This package documents the full stabilization work done across the fixed15 → fixed57 patch line. The application now builds through the full production command:
+
+```bash
+npm run build
+```
+
+The build command now performs:
+
+```bash
+node scripts/clean-build.mjs && next build && tsc -p tsconfig.worker.json
+```
+
+That means the Next.js app, route generation, lint/type validation, and standalone worker TypeScript compile are all covered by the same command.
+
+### Important upgrade command
+
+For clean upgrades from any earlier fixed package, remove the old extracted folder first so stale `.next`, worker artifacts, or old route files cannot remain on disk:
+
+```bash
+rm -rf coldmail-pro
+unzip coldmail-pro-v1.75-fixed57-readme-full-changelog.zip
+cd coldmail-pro
+npm install
+npm run build
+```
+
+### GitHub update command summary
+
+To update the GitHub repository at `https://github.com/Brijendrasial/ColdMailPro`, copy the contents of this package into your local clone, commit, and push:
+
+```bash
+git clone https://github.com/Brijendrasial/ColdMailPro.git
+cd ColdMailPro
+rsync -a --delete --exclude='.git' /path/to/extracted/coldmail-pro/ ./
+git status
+git add .
+git commit -m "Stabilize build and automate MailStack SSL renewal"
+git push origin main
+```
+
+If your default branch is `master`, replace `main` with `master`.
+
+---
+
+## Complete patch changelog: fixed15 → fixed57
+
+The following sections explain the changes added during the stabilization cycle. They are grouped by purpose instead of raw commit order so future maintenance is easier.
+
+### 1. JSX lint and React warning cleanup
+
+Several production builds were blocked by strict Next.js ESLint rules. The JSX text had unescaped apostrophes and quotes in a few components, which triggered `react/no-unescaped-entities`. These were fixed by escaping or rewriting the affected JSX text.
+
+Affected areas included:
+
+- `app/app/mailboxes/warmup/WarmupClient.tsx`
+- `components/campaigns/campaign-create-wizard.tsx`
+- `components/leads/leads-client.tsx`
+
+React hook warnings were also cleaned up in the main warning hotspots so the build output is much cleaner:
+
+- Warmup client loading effects
+- Campaign create wizard memo/effect dependencies
+- Leads client toast and memo dependency warnings
+- Team replies inbox detail loading
+
+The 2FA QR image was changed from raw `<img>` usage to Next.js image handling where appropriate to avoid the `@next/next/no-img-element` warning.
+
+### 2. Type declarations for untyped packages
+
+The project used packages that either lacked installed TypeScript declarations or had incomplete local declarations. Local shims and dev type dependencies were added so production type-checking can complete without weakening the app globally.
+
+Packages covered include:
+
+- `bcryptjs`
+- `nodemailer`
+- `mailparser`
+- `qrcode`
+- `ping-email`
+
+The `nodemailer` type shim now includes a required `verify()` method because the SMTP test route and worker call `transport.verify()` directly.
+
+The `mailparser` shim now includes practical parsed-mail fields such as:
+
+- `from?.text`
+- `subject`
+- `text`
+- `html`
+- `headers.get(...)`
+
+This fixed worker IMAP parsing type errors without changing runtime behavior.
+
+### 3. Warmup API request body typing fixes
+
+Several warmup routes parsed JSON bodies where arrays were inferred as `unknown[]`. Prisma requires `string[]` for filters such as:
+
+```ts
+where: { id: { in: mailboxIds } }
+```
+
+The following routes were fixed by validating and narrowing IDs to `string[]`:
+
+- `app/api/warmup/profiles/bulk-delete/route.ts`
+- `app/api/warmup/profiles/bulk-update/route.ts`
+
+This prevents Prisma type errors and also makes the runtime request validation safer.
+
+### 4. Prisma enum and nullable relation fixes
+
+The warmup template seeding route now uses proper Prisma create input typing so template types like `initial` and `reply` are treated as enum-compatible values instead of loose strings.
+
+Updated file:
+
+- `app/api/warmup/templates/seed-defaults/route.ts`
+
+Unsubscribe tracking was also hardened for messages that may not have a `campaignId` or `leadId`. Campaign auto-pause and enrollment-stop logic now only run when those IDs exist.
+
+Updated file:
+
+- `app/t/unsub/route.ts`
+
+This avoids nullable Prisma filter errors and protects tracking routes from crashing on non-campaign messages.
+
+### 5. Campaign analytics and dashboard typing fixes
+
+Campaign analytics previously allowed `stepNumber` to be `null` while the row type required a number. The analytics aggregation now skips rows without a valid step number before inserting them into typed results.
+
+Updated file:
+
+- `app/app/campaigns/[id]/analytics/page.tsx`
+
+The campaign mailbox dashboard had worker compile errors from `new Map(...)` inferring `unknown` values from Prisma aggregate rows. A typed helper now converts grouped Prisma count rows into `Map<string, number>` so all rate calculations work with real numbers.
+
+Updated file:
+
+- `lib/campaign-mailboxes-dashboard.ts`
+
+This fixed calculations for:
+
+- sent in the last 24 hours
+- sent in the last 7 days
+- queued messages
+- failed messages
+- bounce rate
+- hard bounce rate
+- unsubscribe rate
+- sender health penalty calculations
+
+### 6. Shared component and UI typing fixes
+
+The shared `Card` component now supports usages where `children` are optional. This fixed self-closing status cards such as campaign “Not found” states.
+
+Affected files included:
+
+- `components/ui.tsx`
+- `app/app/campaigns/[id]/deliverability/page.tsx`
+- `app/app/campaigns/[id]/funnel/page.tsx`
+
+MailStack and Settings components now have explicit row types instead of relying on implicit `any` from database/API responses.
+
+Affected files included:
+
+- `app/app/mailstack/page.tsx`
+- `app/app/settings/IncidentsCard.tsx`
+
+### 7. Leads page fixes
+
+The leads client had several production type issues that were fixed without removing features.
+
+Changes include:
+
+- Added missing `bulkBusy` state for AI bulk enrichment.
+- Disabled the bulk enrich button while enrichment is running.
+- Added safe company verification risk score rendering.
+- Replaced repeated optional-chain comparisons with typed helper renderers.
+- Made risk flags rendering safe.
+
+Updated file:
+
+- `components/leads/leads-client.tsx`
+
+### 8. Replies AI and Google Calendar scheduling types
+
+The team replies inbox UI checks whether an AI reply created a scheduled calendar event. The AI action type now includes optional scheduling fields:
+
+- `scheduledEventId?: string | null`
+- `scheduledMeetLink?: string | null`
+
+Updated file:
+
+- `components/replies/team-replies-inbox.tsx`
+
+The Google integration callback was also updated to use absolute redirects. Next.js requires absolute URLs in route handlers during build/export, so relative redirects such as `/app/replies?google=error` were replaced with safe absolute redirects using the existing URL helper.
+
+Updated route:
+
+- `app/api/integrations/google/callback/route.ts`
+
+### 9. AI helper and AIOps typing fixes
+
+AI tag parsing now explicitly returns `string[]` instead of letting `Set` inference produce `unknown[]`.
+
+Updated file:
+
+- `lib/ai.ts`
+
+A missing JSON chat helper was added so AI operations can request structured JSON responses through the configured OpenAI-compatible endpoint.
+
+Added helper:
+
+- `aiChatJson<T>()`
+
+AIOps environment flags were added to the typed environment object:
+
+- `AIOPS_ENABLED`
+- `AIOPS_AI_ANALYSIS`
+
+Updated file:
+
+- `lib/env.ts`
+
+### 10. Worker logging and mailer contract fixes
+
+`appLogAsync` now uses the newer single-object call style everywhere in the worker. Old positional calls were updated.
+
+Updated file:
+
+- `worker/worker.ts`
+
+The mailer input type now supports an optional `log` callback because the worker passes a warmup log callback into `sendEmail(...)`.
+
+Updated file:
+
+- `lib/mailer.ts`
+
+The mailer now safely reports send lifecycle events through the callback when provided:
+
+- send start
+- send success
+- send failure
+
+### 11. Worker shell template escaping
+
+A shell script embedded inside `worker/worker.ts` used shell variables such as `${file}`. TypeScript interpreted these as JavaScript template interpolation. Those shell variables are now escaped so the generated script remains correct and TypeScript no longer looks for a JavaScript variable named `file`.
+
+Updated file:
+
+- `worker/worker.ts`
+
+### 12. AIOps incident worker handler
+
+The worker dispatcher referenced `aiops_apply_incident`, but the handler was missing. A safe handler was added.
+
+The handler records safe suggested incident actions and does not execute arbitrary AI-generated shell commands automatically.
+
+Updated file:
+
+- `worker/worker.ts`
+
+### 13. IMAP worker safety and typing fixes
+
+The worker now handles IMAP library return values that may be `false` instead of an object or array.
+
+Fixes include:
+
+- Guarding `client.mailbox` before reading `uidNext`
+- Guarding `client.search(...)` before using `.slice()` or `.length`
+- Guarding `client.fetchOne(...)` before reading `.source`
+
+Updated file:
+
+- `worker/worker.ts`
+
+This prevents both TypeScript errors and possible runtime crashes during IMAP polling, warmup placement checks, and reply ingestion.
+
+### 14. Next.js route and build stability fixes
+
+The build process now starts by cleaning stale build artifacts. This prevents broken `.next` manifests, stale page traces, or old route outputs from affecting the next build.
+
+Added file:
+
+- `scripts/clean-build.mjs`
+
+Updated `package.json` build script:
+
+```bash
+node scripts/clean-build.mjs && next build && tsc -p tsconfig.worker.json
+```
+
+The cleaner removes:
+
+- `.next`
+- `tsconfig.tsbuildinfo`
+- `worker-dist/tsconfig.worker.tsbuildinfo`
+
+A dedicated `app/not-found.tsx` was added so `/_not-found` is always available during App Router builds.
+
+API routes that depend on auth, cookies, DB access, tracking, or runtime request state are now marked as dynamic Node routes:
+
+```ts
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+```
+
+This prevents Next.js from trying to statically prerender API routes that must run at request time.
+
+### 15. Two-factor route compatibility
+
+Physical App Router folders named `2fa` caused module resolution problems during production builds. The real route folders were moved to `twofa`, while legacy `/2fa/...` URLs remain supported.
+
+New internal route structure:
+
+- `/api/auth/twofa/verify`
+- `/api/settings/twofa/start`
+- `/api/settings/twofa/verify`
+- `/api/settings/twofa/disable`
+- `/api/settings/twofa/recovery/regenerate`
+
+Legacy compatibility remains available through middleware rewrites:
+
+- `/api/auth/2fa/...` → `/api/auth/twofa/...`
+- `/api/settings/2fa/...` → `/api/settings/twofa/...`
+
+Frontend calls were updated to use the new `twofa` paths directly.
+
+### 16. Prerender/export hardening
+
+Some routes and fallback pages triggered chunk-loading errors during static generation. The build was hardened by:
+
+- Avoiding brittle static prerendering of login/not-found behavior
+- Adding simple Pages Router fallbacks:
+  - `pages/404.tsx`
+  - `pages/_error.tsx`
+- Removing legacy `2fa` rewrites from `next.config.mjs` and moving compatibility into middleware
+
+This keeps the build stable while preserving runtime behavior.
+
+### 17. Search params and pathname null-safety
+
+With the current Next.js/TypeScript setup, navigation hooks can be nullable in some contexts. Components now safely handle those cases.
+
+Updated files:
+
+- `components/campaigns/campaigns-table.tsx`
+- `components/dashboard/date-range-controls.tsx`
+
+Fixes include:
+
+- fallback `URLSearchParams`
+- fallback pathname for analytics date controls
+
+### 18. Worker TypeScript configuration
+
+The standalone worker TypeScript compile now uses alias-friendly module resolution compatible with the Next app codebase.
+
+Updated file:
+
+- `tsconfig.worker.json`
+
+Important settings:
+
+```json
+{
+  "module": "ESNext",
+  "moduleResolution": "Bundler"
+}
+```
+
+The worker config also includes the needed project type files:
+
+- `next-env.d.ts`
+- `types-untyped-modules.d.ts`
+
+This allows imports like `@/lib/prisma` and `@/lib/env` to resolve correctly during `tsc -p tsconfig.worker.json`.
+
+### 19. MailStack certificate renewal sync
+
+The MailStack SSL issue was caused by a common certbot/SNI mismatch:
+
+- Certbot renews certificates under `/etc/letsencrypt/live/mail.<domain>/`
+- Dovecot/Exim may serve copied tenant certificates under `/etc/mailstack/certs/mail.<domain>/`
+- Without a deploy hook, renewed certificates may not be copied into the active MailStack SNI folder
+- Services may keep serving the old certificate until reloaded or restarted
+
+A certbot deploy hook was added:
+
+```bash
+/etc/letsencrypt/renewal-hooks/deploy/20-mailstack-tenant-sni.sh
+```
+
+On renewal, it now:
+
+1. Finds renewed `mail.<domain>` certificates.
+2. Copies `fullchain.pem` and `privkey.pem` into `/etc/mailstack/certs/mail.<domain>/`.
+3. Rebuilds Dovecot SNI config at `/etc/dovecot/conf.d/99-mailstack-sni.conf`.
+4. Restarts Dovecot.
+5. Restarts Exim.
+
+The important service restart commands are automatic now:
+
+```bash
+systemctl restart dovecot
+systemctl restart exim
+```
+
+Manual repair command:
+
+```bash
+sudo scripts/mailstack-addon.sh tls-sync-renewed
+```
+
+### 20. Fully automatic MailStack SSL issuance and retry timer
+
+The SSL process is now automated beyond certbot renewal. The addon installs a stable system runner and retry timer so issuance can succeed after DNS propagation completes.
+
+Installed runner:
+
+```bash
+/usr/local/sbin/mailstack-addon
+```
+
+Installed timer:
+
+```bash
+mailstack-tls-auto.timer
+```
+
+The timer retries TLS issuance every 30 minutes. This helps when Cloudflare DNS or nameserver propagation is not ready during the first tenant setup attempt.
+
+Automation is installed or refreshed when:
+
+- Cloudflare is initialized
+- tenant setup runs
+- DNS sync runs
+- manual SSL issue runs
+
+Useful commands:
+
+```bash
+sudo scripts/mailstack-addon.sh tls-auto-install
+sudo scripts/mailstack-addon.sh tls-auto-run
+sudo scripts/mailstack-addon.sh tls-issue --tenant TENANT_NAME
+sudo scripts/mailstack-addon.sh tls-sync-renewed
+sudo systemctl status mailstack-tls-auto.timer
+sudo certbot certificates
+```
+
+Immediate expired certificate repair:
+
+```bash
+sudo scripts/mailstack-addon.sh tls-issue --tenant YOUR_TENANT_NAME
+sudo scripts/mailstack-addon.sh tls-sync-renewed
+sudo systemctl restart dovecot
+sudo systemctl restart exim
+```
+
+### 21. Script executable permissions
+
+All shell scripts under `scripts/` are packaged with executable permissions preserved. This matters for server commands such as:
+
+```bash
+sudo scripts/mailstack.sh install ...
+sudo scripts/mailstack-addon.sh tls-auto-install
+sudo scripts/mailstack-addon.sh tls-auto-run
+```
+
+### 22. Final build status for this patch line
+
+The expected successful build output should include:
+
+```bash
+✓ Compiled successfully
+✓ Linting and checking validity of types
+✓ Collecting page data
+✓ Generating static pages
+✓ Collecting build traces
+✓ Finalizing page optimization
+```
+
+Then the worker TypeScript step should run:
+
+```bash
+tsc -p tsconfig.worker.json
+```
+
+If you see stale route or chunk errors after replacing files, remove the extracted folder and unzip again:
+
+```bash
+rm -rf coldmail-pro
+unzip coldmail-pro-v1.75-fixed57-readme-full-changelog.zip
+cd coldmail-pro
+npm install
+npm run build
+```
+

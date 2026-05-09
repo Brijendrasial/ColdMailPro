@@ -277,10 +277,16 @@ export async function getCampaignMailboxDashboard(workspaceId: string, campaignI
   const replyMap = rollupEventCounts(replies7d);
   const unsubMap = rollupEventCounts(unsubs7d);
 
-  const sent24Map = new Map(sent24h.map((r: any) => [String(r.mailboxId), Number(r._count?._all || 0)]));
-  const sent7Map = new Map(sent7d.map((r: any) => [String(r.mailboxId), Number(r._count?._all || 0)]));
-  const qMap = new Map(queued.map((r: any) => [String(r.mailboxId), Number(r._count?._all || 0)]));
-  const fail24Map = new Map(failed24h.map((r: any) => [String(r.mailboxId), Number(r._count?._all || 0)]));
+  type MailboxCountRow = { mailboxId: string | null; _count?: { _all?: number | null } | null };
+  const countMapByMailbox = (rows: MailboxCountRow[]): Map<string, number> =>
+    new Map<string, number>(
+      rows.map((r): [string, number] => [String(r.mailboxId || ""), Number(r._count?._all || 0)]).filter(([mailboxId]) => Boolean(mailboxId))
+    );
+
+  const sent24Map = countMapByMailbox(sent24h as MailboxCountRow[]);
+  const sent7Map = countMapByMailbox(sent7d as MailboxCountRow[]);
+  const qMap = countMapByMailbox(queued as MailboxCountRow[]);
+  const fail24Map = countMapByMailbox(failed24h as MailboxCountRow[]);
 
   const throttles = await prisma.mailboxThrottle.findMany({
     where: { campaignId, mailboxId: { in: mailboxIds }, until: { gt: now } },

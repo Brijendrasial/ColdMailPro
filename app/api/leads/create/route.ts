@@ -5,7 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { PingEmail } from "ping-email";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 const Body = z.object({
   email: z.string().email(),

@@ -5,6 +5,9 @@ import { enqueueJob } from "@/worker/queue";
 import { absoluteUrl } from "@/lib/url";
 import { buildCampaignQaReport } from "@/lib/campaign-qa";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const form = await req.formData();

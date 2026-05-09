@@ -74,6 +74,46 @@ function assertAiEnabled(feature: "warmup" | "leads" | "replies") {
   if (feature === "replies" && !env.REPLIES_AI_ENABLED) throw new Error("REPLIES_AI_DISABLED");
 }
 
+
+async function aiChatJson<T>(messages: ChatMessage[]): Promise<T | null> {
+  if (!env.AI_API_KEY) {
+    throw new Error("AI_API_KEY_MISSING");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), env.AI_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${env.AI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: env.AI_MODEL,
+        messages,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+      }),
+      signal: controller.signal,
+    });
+
+    const j = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = j?.error?.message || j?.error || j?.message || `HTTP_${res.status}`;
+      throw new Error(String(msg));
+    }
+
+    const content = j?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("AI_EMPTY_RESPONSE");
+    const parsed = extractJsonObject(String(content));
+    return parsed ? (parsed as T) : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function chatCompletion(messages: ChatMessage[], feature: "warmup" | "leads" | "replies") {
   assertAiEnabled(feature);
   if (!env.AI_API_KEY) {
@@ -368,13 +408,13 @@ Leads JSON:\n${JSON.stringify(compact)}\n\nReturn JSON ONLY.`;
 
   try {
     const parsed = JSON.parse(content);
-    const tags = Array.isArray(parsed?.tags) ? parsed.tags.map((t: any) => String(t || "").trim().toLowerCase()).filter(Boolean) : [];
-    const uniq = Array.from(new Set(tags)).slice(0, maxTags);
+    const tags: string[] = Array.isArray(parsed?.tags) ? parsed.tags.map((t: any) => String(t || "").trim().toLowerCase()).filter(Boolean) : [];
+    const uniq: string[] = Array.from(new Set<string>(tags)).slice(0, maxTags);
     return { tags: uniq, rationale: String(parsed?.rationale || "").trim() };
   } catch {
     // fallback: attempt array extraction
-    const arr = extractJsonArray(content).map((t) => String(t || "").trim().toLowerCase()).filter(Boolean);
-    const uniq = Array.from(new Set(arr)).slice(0, maxTags);
+    const arr: string[] = extractJsonArray(content).map((t) => String(t || "").trim().toLowerCase()).filter(Boolean);
+    const uniq: string[] = Array.from(new Set<string>(arr)).slice(0, maxTags);
     return { tags: uniq, rationale: "" };
   }
 }

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function csvEscape(v: any) {
   const s = String(v ?? "");
   if (s.includes("\"") || s.includes(",") || s.includes("\n") || s.includes("\r")) {

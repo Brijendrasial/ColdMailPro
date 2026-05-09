@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getLocalYmd, startOfLocalDayUtc, warmupTargetForDay } from "@/lib/warmupTime";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function ymdFromParts(y: number, m: number, d: number) {
   const mm = String(m).padStart(2, "0");
   const dd = String(d).padStart(2, "0");

@@ -5,7 +5,9 @@ import { parse } from "csv-parse/sync";
 import { env } from "@/lib/env";
 import { PingEmail } from "ping-email";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 function norm(s: any) {
   const v = String(s ?? "").trim();

@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 type Update = { id: string; weight: number; isActive: boolean };
 type Add = { mailboxId: string; weight: number };
 

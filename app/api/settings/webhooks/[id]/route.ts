@@ -3,6 +3,9 @@ import crypto from "crypto";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function makeSecret() {
   return crypto.randomBytes(24).toString("base64url");
 }

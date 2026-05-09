@@ -7,7 +7,7 @@ export function Container({
   wide = false,
   className = "",
 }: {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   wide?: boolean;
   className?: string;
 }) {
@@ -49,7 +49,7 @@ export function Card({
 }: {
   title?: string;
   subtitle?: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
   right?: React.ReactNode;
   className?: string;
 }) {
@@ -100,7 +100,7 @@ type PillTone =
   | "gray"
   | "amber";
 
-export function Pill({ children, tone = "neutral" }: { children: React.ReactNode; tone?: PillTone }) {
+export function Pill({ children, tone = "neutral" }: { children?: React.ReactNode; tone?: PillTone }) {
   const base = "inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border";
   const t = tone === "green" ? "success" : tone === "red" ? "danger" : tone === "gray" ? "neutral" : tone === "amber" ? "warning" : tone;
 
@@ -248,7 +248,7 @@ export function Modal({
   wide = false,
 }: {
   title: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
   footer?: React.ReactNode;
   onClose: () => void;
   wide?: boolean;

@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET(req: Request) {
   const p: any = prisma as any;
   if (!p?.incident?.findMany) {

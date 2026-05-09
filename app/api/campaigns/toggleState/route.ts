@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { enqueueJob } from "@/worker/queue";
 import { buildCampaignQaReport } from "@/lib/campaign-qa";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const body = await req.json().catch(() => ({} as any));

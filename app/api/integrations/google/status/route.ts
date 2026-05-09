@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { getGoogleCalendarAccount, googleOauthEnabled } from "@/lib/google-calendar";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET() {
   const s = await requireSession();
   const acct = await getGoogleCalendarAccount(s.wid);

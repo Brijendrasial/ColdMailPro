@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import crypto from "node:crypto";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 async function enqueueJob(type: string, payload: any) {
   const delegate = (prisma as any)?.job;
   if (delegate?.create) {

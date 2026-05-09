@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { aiClassifyAndDraftReply } from "@/lib/ai";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function safeStr(v: any, max = 5000) {
   const s = String(v || "").trim();
   return s.length > max ? s.slice(0, max) : s;

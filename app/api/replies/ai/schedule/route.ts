@@ -5,6 +5,9 @@ import { aiExtractMeetingTimeFromReply } from "@/lib/ai";
 import { createGoogleMeetEvent } from "@/lib/google-calendar";
 import { sendEmail } from "@/lib/mailer";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function getGcalCfg(settingsJson: any) {
   const gc = (settingsJson || {})?.repliesAi?.googleCalendar || {};
   return {

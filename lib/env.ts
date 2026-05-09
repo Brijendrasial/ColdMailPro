@@ -125,6 +125,10 @@ AUTOFIX_MAX_SAFE_ATTEMPTS_PER_JOB: z.coerce.number().int().min(0).max(5).default
   AI_WEBSEARCH_MODEL: z.string().default("gpt-5"),
   AI_WEBSEARCH_MAX_TOOL_CALLS: z.coerce.number().int().positive().default(3),
 
+  // AI operations incident tracking
+  AIOPS_ENABLED: z.coerce.boolean().default(false),
+  AIOPS_AI_ANALYSIS: z.coerce.boolean().default(false),
+
   // --- Unified App Logging ---
   INTERNAL_LOG_TOKEN: z.string().optional(),
   APPLOG_DB: z.coerce.boolean().default(true),
@@ -221,6 +225,9 @@ export const env = schema.parse({
   AI_WEBSEARCH_ENABLED: process.env.AI_WEBSEARCH_ENABLED,
   AI_WEBSEARCH_MODEL: process.env.AI_WEBSEARCH_MODEL,
   AI_WEBSEARCH_MAX_TOOL_CALLS: process.env.AI_WEBSEARCH_MAX_TOOL_CALLS,
+
+  AIOPS_ENABLED: process.env.AIOPS_ENABLED,
+  AIOPS_AI_ANALYSIS: process.env.AIOPS_AI_ANALYSIS,
 
   INTERNAL_LOG_TOKEN: process.env.INTERNAL_LOG_TOKEN,
   APPLOG_DB: process.env.APPLOG_DB,

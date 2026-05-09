@@ -125,12 +125,13 @@ function healthForCampaign(c: CampaignRow): { label: "Good" | "Watch" | "Risk" |
 export default function CampaignsTable({ initial, opsSummary }: { initial: CampaignRow[]; opsSummary?: OpsSummary }) {
   const router = useRouter();
   const sp = useSearchParams();
+  const params = sp ?? new URLSearchParams();
 
   // URL-driven filters (so it feels like a pro app and can be shared/bookmarked)
-  const urlStatus = (sp.get("status") || "all").toLowerCase();
-  const urlHealth = (sp.get("health") || "all").toLowerCase();
-  const urlSort = (sp.get("sort") || "updated").toLowerCase();
-  const urlQ = sp.get("q") || "";
+  const urlStatus = (params.get("status") || "all").toLowerCase();
+  const urlHealth = (params.get("health") || "all").toLowerCase();
+  const urlSort = (params.get("sort") || "updated").toLowerCase();
+  const urlQ = params.get("q") || "";
 
   const [q, setQ] = useState(urlQ);
   const [status, setStatus] = useState(urlStatus);
@@ -239,12 +240,12 @@ export default function CampaignsTable({ initial, opsSummary }: { initial: Campa
   const someChecked = rows.some((r) => selected[r.id]) && !allChecked;
 
   function updateUrl(next: { q?: string; status?: string; health?: string; sort?: string }) {
-    const params = new URLSearchParams(sp.toString());
-    if (typeof next.q === "string") (next.q ? params.set("q", next.q) : params.delete("q"));
-    if (typeof next.status === "string") (next.status && next.status !== "all" ? params.set("status", next.status) : params.delete("status"));
-    if (typeof next.health === "string") (next.health && next.health !== "all" ? params.set("health", next.health) : params.delete("health"));
-    if (typeof next.sort === "string") (next.sort && next.sort !== "updated" ? params.set("sort", next.sort) : params.delete("sort"));
-    const qs = params.toString();
+    const nextParams = new URLSearchParams(params.toString());
+    if (typeof next.q === "string") (next.q ? nextParams.set("q", next.q) : nextParams.delete("q"));
+    if (typeof next.status === "string") (next.status && next.status !== "all" ? nextParams.set("status", next.status) : nextParams.delete("status"));
+    if (typeof next.health === "string") (next.health && next.health !== "all" ? nextParams.set("health", next.health) : nextParams.delete("health"));
+    if (typeof next.sort === "string") (next.sort && next.sort !== "updated" ? nextParams.set("sort", next.sort) : nextParams.delete("sort"));
+    const qs = nextParams.toString();
     router.replace(qs ? `/app/campaigns?${qs}` : "/app/campaigns");
   }
 

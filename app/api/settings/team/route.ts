@@ -6,6 +6,9 @@ import { normalizeRole, canManageTeam } from "@/lib/rbac";
 import { logAudit } from "@/lib/audit";
 import crypto from "crypto";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function sha256(s: string) {
   return crypto.createHash("sha256").update(s).digest("hex");
 }

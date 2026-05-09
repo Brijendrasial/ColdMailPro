@@ -28,7 +28,9 @@ export default async function CampaignFunnelPage({ params }: { params: { id: str
   if (!camp) {
     return (
       <Container>
-        <Card title="Not found" subtitle="Campaign does not exist or you don’t have access." />
+        <Card title="Not found" subtitle="Campaign does not exist or you don’t have access.">
+          <div />
+        </Card>
       </Container>
     );
   }

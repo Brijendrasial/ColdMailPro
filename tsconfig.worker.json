@@ -3,9 +3,21 @@
   "compilerOptions": {
     "outDir": "worker-dist",
     "noEmit": false,
-    "moduleResolution": "NodeNext",
-    "module": "NodeNext",
-    "noEmitOnError": true
+    "noEmitOnError": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": false,
+    "noImplicitAny": false,
+    "isolatedModules": false,
+    "types": ["node"],
+    "plugins": []
   },
-  "include": ["worker/**/*.ts", "lib/**/*.ts", "prisma/**/*.ts"]
+  "include": [
+    "next-env.d.ts",
+    "worker/**/*.ts",
+    "lib/**/*.ts",
+    "prisma/**/*.ts",
+    "types-untyped-modules.d.ts"
+  ],
+  "exclude": ["node_modules", ".next"]
 }

@@ -89,11 +89,12 @@ export default async function CampaignAnalytics({ params }: { params: { id: stri
 
   const agg = new Map<string, Row>();
   for (const m of msgs) {
-    if (!m.sentAt) continue;
+    if (!m.sentAt || m.stepNumber == null) continue;
+    const stepNumber = m.stepNumber;
     const v = m.stepVariantId ? variantName.get(m.stepVariantId) || "A" : "A";
-    const key = `${m.stepNumber}|${v}`;
+    const key = `${stepNumber}|${v}`;
     const row = agg.get(key) || {
-      stepNumber: m.stepNumber,
+      stepNumber,
       variant: v,
       sent: 0,
       opens: 0,

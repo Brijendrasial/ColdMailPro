@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/crypto";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function isEmailish(x: string) {
   const s = x.trim();
   return s.includes("@") && !s.includes(" ");

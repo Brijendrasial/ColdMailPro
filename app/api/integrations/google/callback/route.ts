@@ -5,9 +5,23 @@ import { googleOAuthClient, upsertGoogleCalendarAccount } from "@/lib/google-cal
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/crypto";
 import { google } from "googleapis";
+import { absoluteUrl } from "@/lib/url";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const STATE_COOKIE = "cm_google_oauth_state";
 const NEXT_COOKIE = "cm_google_oauth_next";
+
+function safeRelativePath(value: string | null | undefined, fallback = "/app/replies") {
+  if (!value || !value.startsWith("/")) return fallback;
+  if (value.startsWith("//")) return fallback;
+  return value;
+}
+
+function redirectTo(req: NextRequest, path: string) {
+  return NextResponse.redirect(absoluteUrl(req, path));
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -17,17 +31,17 @@ export async function GET(req: NextRequest) {
     const state = url.searchParams.get("state");
 
     const expectedState = cookies().get(STATE_COOKIE)?.value;
-    const next = cookies().get(NEXT_COOKIE)?.value || "/app/replies";
+    const next = safeRelativePath(cookies().get(NEXT_COOKIE)?.value, "/app/replies");
 
     // Clear ephemeral cookies either way.
     cookies().set(STATE_COOKIE, "", { path: "/", maxAge: 0 });
     cookies().set(NEXT_COOKIE, "", { path: "/", maxAge: 0 });
 
     if (!code) {
-      return NextResponse.redirect(`${next}?google=error&reason=missing_code`);
+      return redirectTo(req, `${next}?google=error&reason=missing_code`);
     }
     if (!state || !expectedState || state !== expectedState) {
-      return NextResponse.redirect(`${next}?google=error&reason=bad_state`);
+      return redirectTo(req, `${next}?google=error&reason=bad_state`);
     }
 
     const oauth2 = googleOAuthClient();
@@ -56,7 +70,7 @@ export async function GET(req: NextRequest) {
 
     if (!refreshToken) {
       // This can happen if the user granted access earlier but Google didn't return refresh_token.
-      return NextResponse.redirect(`${next}?google=error&reason=missing_refresh_token`);
+      return redirectTo(req, `${next}?google=error&reason=missing_refresh_token`);
     }
 
     await upsertGoogleCalendarAccount({
@@ -67,8 +81,8 @@ export async function GET(req: NextRequest) {
       scope: tokens.scope ? String(tokens.scope) : null,
     });
 
-    return NextResponse.redirect(`${next}?google=connected`);
+    return redirectTo(req, `${next}?google=connected`);
   } catch {
-    return NextResponse.redirect(`/app/replies?google=error`);
+    return redirectTo(req, "/app/replies?google=error");
   }
 }

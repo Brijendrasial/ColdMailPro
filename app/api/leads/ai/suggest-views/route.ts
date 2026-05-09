@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { aiSuggestLeadViews } from "@/lib/ai";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function norm(s: string) {
   return s.trim().toLowerCase();
 }

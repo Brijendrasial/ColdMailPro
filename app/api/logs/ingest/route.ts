@@ -3,7 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { getSession } from "@/lib/auth";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 function normalizeLevel(v: any) {
   const s = String(v || "info").toLowerCase();

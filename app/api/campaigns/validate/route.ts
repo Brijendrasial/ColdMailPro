@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { buildCampaignQaReport } from "@/lib/campaign-qa";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const body = await req.json().catch(() => ({}));

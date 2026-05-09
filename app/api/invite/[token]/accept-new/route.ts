@@ -6,6 +6,9 @@ import { prisma } from "@/lib/prisma";
 import { createDbSessionAndCookie } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function sha256(s: string) {
   return crypto.createHash("sha256").update(s).digest("hex");
 }

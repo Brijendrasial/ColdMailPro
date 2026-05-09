@@ -10,6 +10,36 @@ type LeadViewRow = { id: string; name: string; payload: any; updatedAt?: string 
 
 type MailboxMini = { id: string; name: string; fromEmail: string; isActive: boolean };
 
+type CompanyVerifyState = {
+  status: "idle" | "busy" | "valid" | "invalid" | "error";
+  message?: string;
+  riskScore?: number;
+  riskFlags?: Record<string, unknown>;
+};
+
+function companyRiskTone(riskScore: number): "danger" | "warning" | "success" {
+  if (riskScore >= 70) return "danger";
+  if (riskScore >= 40) return "warning";
+  return "success";
+}
+
+function renderCompanyRiskPill(verify?: CompanyVerifyState) {
+  const riskScore = verify?.riskScore;
+  if (typeof riskScore !== "number") return null;
+  return <Pill tone={companyRiskTone(riskScore)}>Risk {riskScore}</Pill>;
+}
+
+function renderCompanyRiskFlags(verify?: CompanyVerifyState) {
+  const riskFlags = verify?.riskFlags;
+  if (!riskFlags) return null;
+  const flags = Object.entries(riskFlags)
+    .filter(([, v]) => !!v)
+    .map(([k]) => String(k).replace(/([A-Z])/g, " $1").toLowerCase())
+    .slice(0, 6)
+    .join(", ") || "none";
+  return <div className="text-xs opacity-60 mt-0.5">Flags: {flags}</div>;
+}
+
 export type LeadRow = {
   id: string;
   email: string;
@@ -109,6 +139,7 @@ export function LeadsClient() {
   const [newListName, setNewListName] = useState<string>("");
 
   // Bulk helpers
+  const [bulkBusy, setBulkBusy] = useState<boolean>(false);
   const [bulkStage, setBulkStage] = useState<string>("");
   const [bulkOwner, setBulkOwner] = useState<string>("");
   const [bulkList, setBulkList] = useState<string>("");
@@ -199,17 +230,7 @@ export function LeadsClient() {
   // Per-email verification state for AI-discovered emails (ping-email)
   const [companyVerifyMode, setCompanyVerifyMode] = useState<"smtp" | "no_smtp">("no_smtp");
   const [companyRequireMailbox, setCompanyRequireMailbox] = useState<boolean>(false);
-  const [companyVerifyMap, setCompanyVerifyMap] = useState<
-    Record<
-      string,
-      {
-        status: "idle" | "busy" | "valid" | "invalid" | "error";
-        message?: string;
-        riskScore?: number;
-        riskFlags?: any;
-      }
-    >
-  >({});
+  const [companyVerifyMap, setCompanyVerifyMap] = useState<Record<string, CompanyVerifyState>>({});
   // Only company-domain inboxes are importable (import endpoint filters by domain anyway).
   // Keep "other" emails selectable for reference/copy, but don't treat them as import candidates.
   const discoveredSelected = useMemo(
@@ -1354,6 +1375,7 @@ export function LeadsClient() {
                 </Button>
                 <Button
                   variant="ghost"
+                  disabled={bulkBusy}
                   onClick={async () => {
                     const hint = prompt("Optional hint for enrichment (e.g. ICP/job titles to focus on):", "") ?? null;
                     if (hint === null) return;
@@ -1376,7 +1398,7 @@ export function LeadsClient() {
                     }
                   }}
                 >
-                  ⚡ Bulk enrich
+                  {bulkBusy ? "Enriching…" : "⚡ Bulk enrich"}
                 </Button>
 
                 <Button
@@ -2293,11 +2315,7 @@ export function LeadsClient() {
                                         ? "⚠️ Error"
                                         : "Not verified"}
                               </span>
-                              {typeof companyVerifyMap[it.email]?.riskScore === "number" ? (
-                                <Pill tone={companyVerifyMap[it.email]?.riskScore >= 70 ? "danger" : companyVerifyMap[it.email]?.riskScore >= 40 ? "warning" : "success"}>
-                                  Risk {companyVerifyMap[it.email]?.riskScore}
-                                </Pill>
-                              ) : null}
+                              {renderCompanyRiskPill(companyVerifyMap[it.email])}
                               <Button
                                 variant="ghost"
                                 className="px-2 py-1 text-xs rounded-lg"
@@ -2338,11 +2356,7 @@ export function LeadsClient() {
                             <span className="text-xs opacity-70" title={companyVerifyMap[it.email]?.message || ""}>
                               {companyVerifyMap[it.email]?.status === "valid" ? "✅ Valid" : companyVerifyMap[it.email]?.status === "busy" ? "⏳ Verifying…" : companyVerifyMap[it.email]?.status === "error" ? "⚠️ Error" : "Not verified"}
                             </span>
-                            {typeof companyVerifyMap[it.email]?.riskScore === "number" ? (
-                              <Pill tone={companyVerifyMap[it.email]?.riskScore >= 70 ? "danger" : companyVerifyMap[it.email]?.riskScore >= 40 ? "warning" : "success"}>
-                                Risk {companyVerifyMap[it.email]?.riskScore}
-                              </Pill>
-                            ) : null}
+                            {renderCompanyRiskPill(companyVerifyMap[it.email])}
                             <Button
                               variant="ghost"
                               className="px-2 py-1 text-xs rounded-lg"
@@ -2393,11 +2407,7 @@ export function LeadsClient() {
                                       ? "⚠️ Error"
                                       : "Not verified"}
                             </span>
-                            {typeof companyVerifyMap[it.email]?.riskScore === "number" ? (
-                              <Pill tone={companyVerifyMap[it.email]?.riskScore >= 70 ? "danger" : companyVerifyMap[it.email]?.riskScore >= 40 ? "warning" : "success"}>
-                                Risk {companyVerifyMap[it.email]?.riskScore}
-                              </Pill>
-                            ) : null}
+                            {renderCompanyRiskPill(companyVerifyMap[it.email])}
                             <Button
                               variant="ghost"
                               className="px-2 py-1 text-xs rounded-lg"
@@ -2416,16 +2426,7 @@ export function LeadsClient() {
                             {typeof it.confidence === "number" ? <span className="opacity-70"> · {(it.confidence * 100).toFixed(0)}%</span> : null}
                             {it.recommended ? <span className="ml-1">· ✅ ok for outreach</span> : <span className="ml-1">· 🚫 avoid outreach</span>}
                           </div>
-                          {companyVerifyMap[it.email]?.riskFlags ? (
-                            <div className="text-xs opacity-60 mt-0.5">
-                              Flags: {
-                                Object.entries(companyVerifyMap[it.email].riskFlags)
-                                  .filter(([, v]) => !!v)
-                                  .map(([k]) => String(k).replace(/([A-Z])/g, " $1").toLowerCase())
-                                  .slice(0, 6)
-                                  .join(", ") || "none"}
-                            </div>
-                          ) : null}
+                          {renderCompanyRiskFlags(companyVerifyMap[it.email])}
                           {it.notes ? <div className="text-xs opacity-60 mt-0.5">{it.notes}</div> : null}
                           {it.evidenceUrls?.length ? (
                             <div className="text-xs opacity-60 mt-0.5 break-all">
@@ -2762,7 +2763,7 @@ export function LeadsClient() {
                     </label>
                     <div className="text-xs opacity-60">
                       This will only save the lead when the SMTP check explicitly confirms the mailbox.
-                      Some providers may still return "unknown" for privacy reasons.
+                      Some providers may still return &quot;unknown&quot; for privacy reasons.
                     </div>
                   </div>
 
@@ -3226,7 +3227,7 @@ function SuppressionManager({ onClose, onToast, onChanged }: { onClose: () => vo
     return () => {
       cancelled = true;
     };
-  }, [q, page]);
+  }, [q, page, onToast]);
 
   return (
     <Modal title="Suppression list (DNC)" onClose={onClose}>
@@ -3339,7 +3340,7 @@ function DuplicatesManager({ onClose, onToast, onChanged }: { onClose: () => voi
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onToast]);
 
   return (
     <Modal title="Duplicate detector + merge" onClose={onClose} wide>
@@ -3618,15 +3619,21 @@ function LeadDrawer({ id, onClose, onToast }: { id: string; onClose: () => void;
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, onToast]);
 
   const lead = data;
-  const messages = Array.isArray(lead?.messages) ? lead.messages : [];
-  const enrollments = Array.isArray(lead?.enrollments) ? lead.enrollments : [];
+  const leadLists = useMemo(
+    () => ({
+      messages: Array.isArray(lead?.messages) ? lead.messages : [],
+      enrollments: Array.isArray(lead?.enrollments) ? lead.enrollments : [],
+      activities: Array.isArray(lead?.activities) ? lead.activities : [],
+    }),
+    [lead]
+  );
+  const { messages, enrollments, activities } = leadLists;
 
   const notes = Array.isArray(lead?.notes) ? lead.notes : [];
   const tasks = Array.isArray(lead?.tasks) ? lead.tasks : [];
-  const activities = Array.isArray(lead?.activities) ? lead.activities : [];
 
   const timeline = useMemo(() => {
     const out: Array<{ at: string; type: string; text: string }> = [];

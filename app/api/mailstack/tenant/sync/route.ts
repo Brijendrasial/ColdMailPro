@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 async function readTenantId(req: NextRequest): Promise<{ tenantId: string; wantsJson: boolean }> {
   const accept = (req.headers.get("accept") || "").toLowerCase();
   const ct = (req.headers.get("content-type") || "").toLowerCase();

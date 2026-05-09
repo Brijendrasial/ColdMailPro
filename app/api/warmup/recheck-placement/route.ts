@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 // Enqueue an immediate warmup placement check (Inbox vs Spam/Junk) for mailboxes.
 // Options:
 //  - { mailboxId }: scope to a single mailbox

@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import React, { useMemo, useState } from "react";
 import { Button, Input, Modal, Pill } from "@/components/ui";
 
@@ -76,7 +77,7 @@ export default function TwoFactorCard(props: {
     setSetupToken("");
     setBusy(true);
     try {
-      const res = await fetch("/api/settings/2fa/start", { method: "POST" });
+      const res = await fetch("/api/settings/twofa/start", { method: "POST" });
       const j = await res.json();
       if (!res.ok || !j?.ok) throw new Error(j?.error || "Failed to start 2FA setup");
       setSetupQr(String(j.qrDataUrl || ""));
@@ -94,7 +95,7 @@ export default function TwoFactorCard(props: {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch("/api/settings/2fa/verify", {
+      const res = await fetch("/api/settings/twofa/verify", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token: setupToken.trim() }),
@@ -116,7 +117,7 @@ export default function TwoFactorCard(props: {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch("/api/settings/2fa/recovery/regenerate", {
+      const res = await fetch("/api/settings/twofa/recovery/regenerate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ password, token: token.trim() }),
@@ -138,7 +139,7 @@ export default function TwoFactorCard(props: {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch("/api/settings/2fa/disable", {
+      const res = await fetch("/api/settings/twofa/disable", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ password, token: token.trim(), recovery: recovery.trim() }),
@@ -248,9 +249,12 @@ export default function TwoFactorCard(props: {
                   <div className="text-sm font-medium text-slate-900">1) Scan QR code</div>
                   <div className="text-xs text-slate-600 mt-1">Open your authenticator app and scan this code.</div>
                   {setupQr ? (
-                    <img
+                    <Image
                       src={setupQr}
                       alt="2FA QR"
+                      width={220}
+                      height={220}
+                      unoptimized
                       className="mt-3 rounded-xl border border-slate-200 bg-white p-3"
                     />
                   ) : null}

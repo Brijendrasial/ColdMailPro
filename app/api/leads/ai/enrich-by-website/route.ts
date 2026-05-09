@@ -5,7 +5,9 @@ import { aiEnrichLeads, aiFindWebsiteEmailsByWebSearch } from "@/lib/ai";
 import { domainMatchers, normalizeWebsiteInput } from "@/lib/domain";
 import { env } from "@/lib/env";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 // Safety guard so a single click cannot trigger enormous AI spends.
 const MAX_MATCHED_LEADS = 500;

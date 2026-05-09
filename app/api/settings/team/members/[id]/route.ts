@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { normalizeRole, canChangeRole, canRemoveMember } from "@/lib/rbac";
 import { logAudit } from "@/lib/audit";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function reqMeta(req: NextRequest) {
   return {
     ip:

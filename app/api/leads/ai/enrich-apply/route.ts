@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { aiEnrichLeads } from "@/lib/ai";
 import { logLeadActivity } from "@/lib/lead-activity";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 const Body = z.object({
   ids: z.array(z.string().min(1)).min(1),
   hint: z.string().optional().default(""),

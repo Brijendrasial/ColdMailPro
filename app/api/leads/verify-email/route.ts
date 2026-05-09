@@ -13,7 +13,9 @@ import {
   riskScore,
 } from "@/lib/email-quality";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 const Body = z.object({
   email: z.string().email(),

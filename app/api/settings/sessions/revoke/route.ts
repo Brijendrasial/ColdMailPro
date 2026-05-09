@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { clearSessionCookie, requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const body = await req.json().catch(() => ({}));

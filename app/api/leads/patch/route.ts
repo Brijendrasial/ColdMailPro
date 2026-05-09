@@ -3,6 +3,9 @@ import { z } from "zod";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 const Update = z.object({
   id: z.string().min(1),
   firstName: z.string().max(80).nullable().optional(),

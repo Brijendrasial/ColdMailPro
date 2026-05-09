@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { execSync } from "node:child_process";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function isIPv4(ip: string) {
   return /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(ip);
 }

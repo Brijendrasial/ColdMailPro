@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 import { logAudit } from "@/lib/audit";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function reqMeta(req: NextRequest) {
   return {
     ip:

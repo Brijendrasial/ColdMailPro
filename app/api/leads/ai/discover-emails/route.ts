@@ -4,7 +4,9 @@ import { domainMatchers, normalizeWebsiteInput } from "@/lib/domain";
 import { aiAnalyzeWebsiteEmails, aiFindWebsiteEmailsByWebSearch } from "@/lib/ai";
 import { env } from "@/lib/env";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 type FoundEmail = { email: string; evidenceUrls: string[] };
 

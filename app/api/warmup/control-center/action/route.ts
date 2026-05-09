@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/crypto";
 import { ImapFlow } from "imapflow";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 type ActionName =
   | "pause_mailbox"
   | "resume_mailbox"

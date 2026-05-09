@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { aiSuggestLeadTags } from "@/lib/ai";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function splitTags(s?: string | null): string[] {
   return String(s || "")
     .split(",")

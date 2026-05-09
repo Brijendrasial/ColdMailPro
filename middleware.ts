@@ -34,6 +34,18 @@ function isAllowedOrigin(req: NextRequest) {
 export function middleware(req: NextRequest, event: any) {
   const { pathname } = req.nextUrl;
 
+  // Backward-compatible 2FA API aliases without creating virtual build routes.
+  if (pathname.startsWith("/api/auth/2fa/")) {
+    const url = req.nextUrl.clone();
+    url.pathname = pathname.replace("/api/auth/2fa/", "/api/auth/twofa/");
+    return NextResponse.rewrite(url);
+  }
+  if (pathname.startsWith("/api/settings/2fa/")) {
+    const url = req.nextUrl.clone();
+    url.pathname = pathname.replace("/api/settings/2fa/", "/api/settings/twofa/");
+    return NextResponse.rewrite(url);
+  }
+
   // Basic CSRF mitigation for cookie-authenticated API routes:
   // block cross-origin unsafe requests (POST/PUT/PATCH/DELETE) when Origin is present.
   if (pathname.startsWith("/api/") && !isSafeMethod(req.method)) {

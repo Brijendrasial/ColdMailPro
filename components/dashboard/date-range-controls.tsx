@@ -12,12 +12,13 @@ function hrefWith(path: string, params: URLSearchParams) {
 
 export default function DateRangeControls() {
   const sp = useSearchParams();
-  const pathname = usePathname();
+  const params = sp ?? new URLSearchParams();
+  const pathname = usePathname() || "/app/analytics";
   const router = useRouter();
 
-  const range = sp.get("range") || "7d";
-  const fromQ = sp.get("from") || "";
-  const toQ = sp.get("to") || "";
+  const range = params.get("range") || "7d";
+  const fromQ = params.get("from") || "";
+  const toQ = params.get("to") || "";
 
   const [customOpen, setCustomOpen] = useState(range === "custom");
   const [from, setFrom] = useState(fromQ);
@@ -33,7 +34,7 @@ export default function DateRangeControls() {
   );
 
   function presetHref(key: string) {
-    const p = new URLSearchParams(sp.toString());
+    const p = new URLSearchParams(params.toString());
     p.set("range", key);
     p.delete("from");
     p.delete("to");
@@ -42,7 +43,7 @@ export default function DateRangeControls() {
 
   function applyCustom() {
     if (!from || !to) return;
-    const p = new URLSearchParams(sp.toString());
+    const p = new URLSearchParams(params.toString());
     p.set("range", "custom");
     p.set("from", from);
     p.set("to", to);

@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { maybeAutoPauseCampaign } from "@/lib/deliverability";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 /**
  * Unsubscribe endpoint used in outbound emails:
  * /t/unsub?mb=<mailboxId>&email=<recipient_email>&m=<messageId>
@@ -18,12 +21,17 @@ export async function GET(req: Request) {
     if (msg) {
       await prisma.event.create({ data: { messageId: msg.id, type: "unsubscribe" } }).catch(() => {});
       await prisma.message.update({ where: { id: msg.id }, data: { status: "unsubscribed" } }).catch(() => {});
-      await maybeAutoPauseCampaign(msg.campaignId).catch(() => {});
 
-      // If campaign rule is enabled, stop the enrollment too
-      const camp: any = await prisma.campaign.findUnique({ where: { id: msg.campaignId } }).catch(() => null);
-      if (camp && Boolean(camp.stopOnUnsubscribe ?? true)) {
-        await prisma.enrollment.updateMany({ where: { campaignId: msg.campaignId, leadId: msg.leadId, status: { in: ["queued", "active"] } }, data: { status: "stopped", stopReason: "unsubscribe" } }).catch(() => {});
+      if (msg.campaignId) {
+        const campaignId = msg.campaignId;
+        await maybeAutoPauseCampaign(campaignId).catch(() => {});
+
+        // If campaign rule is enabled, stop the enrollment too
+        const camp: any = await prisma.campaign.findUnique({ where: { id: campaignId } }).catch(() => null);
+        if (camp && Boolean(camp.stopOnUnsubscribe ?? true) && msg.leadId) {
+          const leadId = msg.leadId;
+          await prisma.enrollment.updateMany({ where: { campaignId, leadId, status: { in: ["queued", "active"] } }, data: { status: "stopped", stopReason: "unsubscribe" } }).catch(() => {});
+        }
       }
     }
   }

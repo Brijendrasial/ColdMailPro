@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function deepMerge(base: any, patch: any) {
   if (Array.isArray(base) || Array.isArray(patch)) return patch;
   if (typeof base !== "object" || base === null) return patch;

@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { enqueueJob } from "@/worker/queue";
 import { absoluteUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const f = await req.formData();

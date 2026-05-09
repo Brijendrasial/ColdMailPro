@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 // Shared Team Inbox thread list (grouped by lead)
 // Prisma-only (no raw SQL) for maximum compatibility with MariaDB.
 

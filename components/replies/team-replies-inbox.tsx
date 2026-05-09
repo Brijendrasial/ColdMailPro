@@ -65,6 +65,8 @@ type AiAction = {
   draftSubject: string | null;
   draftBodyText: string | null;
   replyEventId: string;
+  scheduledEventId?: string | null;
+  scheduledMeetLink?: string | null;
   createdAt: string;
   updatedAt: string;
 } | null;
@@ -635,6 +637,7 @@ export default function TeamRepliesInbox(props: {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threads, selectedLeadId, detail]);
 
   async function patchState(leadId: string, patch: any) {

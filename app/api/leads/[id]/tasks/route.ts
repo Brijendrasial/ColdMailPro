@@ -4,6 +4,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { logLeadActivity } from "@/lib/lead-activity";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 const Create = z.object({
   title: z.string().min(1).max(200),
   dueAt: z.string().datetime().optional().nullable(),

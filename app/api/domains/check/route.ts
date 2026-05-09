@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 async function readBody(req: NextRequest): Promise<{ domainId?: string; domainIds?: string[] }> {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {

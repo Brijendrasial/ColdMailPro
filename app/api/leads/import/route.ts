@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { parse } from "csv-parse/sync";
 import { absoluteUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   const s = await requireSession();
   const form = await req.formData();

@@ -6,6 +6,9 @@ import { PingEmail } from "ping-email";
 import { emailDomain, hasMxRecord, isDisposable, isFreeProvider, isRoleBased, riskScore } from "@/lib/email-quality";
 import { logLeadActivity } from "@/lib/lead-activity";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 type Action =
   | "tag_add"
   | "tag_remove"

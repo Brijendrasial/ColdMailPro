@@ -5,7 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { domainMatchers, normalizeWebsiteInput } from "@/lib/domain";
 import { aiEnrichLeads } from "@/lib/ai";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 
 const Body = z.object({
   websiteUrl: z.string().min(1),

@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function GET(req: NextRequest) {
   const s = await getSession();
   if (s?.sid) {

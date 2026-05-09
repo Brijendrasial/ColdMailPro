@@ -24,6 +24,34 @@ function shortId(id: string) {
   return id ? id.slice(0, 8) : "—";
 }
 
+type IncidentActionRow = {
+  id: string;
+  kind: string | null;
+  actionType: string | null;
+  commandPreview: string | null;
+  outcome: string | null;
+  logs: string | null;
+  createdAt: Date;
+};
+
+type IncidentRow = {
+  id: string;
+  workspaceId: string;
+  severity: string;
+  source: string;
+  summary: string;
+  suggestedFixesJson: unknown;
+  evidenceJson: unknown;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+  occurrenceCount: number | null;
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+  needsHumanReview: boolean;
+  actions: IncidentActionRow[];
+};
+
 export default async function IncidentsCard() {
   const p: any = prisma as any;
   const incidentDelegate = p?.incident;
@@ -78,7 +106,7 @@ export default async function IncidentsCard() {
     },
   });
 
-  const rows = items;
+  const rows: IncidentRow[] = items as IncidentRow[];
 
   return (
     <Card
@@ -103,7 +131,7 @@ export default async function IncidentsCard() {
             const autoRemediated = remediation?.autoRemediated === true;
             const timeline = [
               ...remediationSteps.map((step) => ({ label: step, tone: "success" as const })),
-              ...((it as any).actions || []).map((action: any) => ({
+              ...(it.actions || []).map((action) => ({
                 label: action.commandPreview || action.actionType || "action",
                 tone: action.outcome === "failed" ? ("danger" as const) : action.outcome === "skipped" ? ("warning" as const) : ("info" as const),
               })),

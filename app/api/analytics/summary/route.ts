@@ -4,6 +4,9 @@ import { Prisma } from "@prisma/client";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function andAll(parts: Prisma.Sql[]): Prisma.Sql {
   if (parts.length === 0) return Prisma.sql`1=1`;
   let out = parts[0];

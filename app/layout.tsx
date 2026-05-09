@@ -16,7 +16,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${inter.variable} ${sora.variable}`}>
       <body className="min-h-screen font-sans antialiased">
         <ClientProviders>
-          {/* @ts-expect-error Server Component */}
           <AppShell>{children}</AppShell>
         </ClientProviders>
       </body>

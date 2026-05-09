@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function asTriBool(v: any): boolean | undefined {
   if (v === undefined || v === null || v === "") return undefined;
   if (typeof v === "boolean") return v;
@@ -20,7 +23,7 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({}));
   const mailboxIdsRaw = Array.isArray(body.mailboxIds) ? body.mailboxIds : [];
-  const mailboxIds = Array.from(new Set(mailboxIdsRaw.map((x: any) => String(x || "").trim()).filter(Boolean)));
+  const mailboxIds: string[] = Array.from(new Set(mailboxIdsRaw.map((x: any) => String(x || "").trim()).filter(Boolean)));
   if (!mailboxIds.length) return NextResponse.json({ error: "mailboxIds required" }, { status: 400 });
   if (mailboxIds.length > 200) return NextResponse.json({ error: "Too many mailboxes (max 200)" }, { status: 400 });
 

@@ -5,6 +5,9 @@ import { absoluteUrl } from "@/lib/url";
 import * as dns from "node:dns/promises";
 import crypto from "node:crypto";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 type Body = {
   domainId: string;
   tenantName: string;

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Button, Card, Input, Pill, Select, Kpi, Divider } from "@/components/ui";
 
 type WarmupProfileRow = {
@@ -310,7 +310,7 @@ export default function WarmupClient() {
     return () => clearInterval(id);
   }, []);
 
-  async function loadActivity() {
+  const loadActivity = useCallback(async function loadActivity() {
     setMsg(null);
     setActivityLoading(true);
     try {
@@ -330,7 +330,7 @@ export default function WarmupClient() {
     } finally {
       setActivityLoading(false);
     }
-  }
+  }, [activityDirection, activityMailboxId, activityPlacement, activityQuery]);
 
   async function recheckPlacementNow() {
     setMsg(null);
@@ -367,9 +367,9 @@ export default function WarmupClient() {
     if (tab !== "activity") return;
     const t = setTimeout(() => loadActivity(), 250);
     return () => clearTimeout(t);
-  }, [tab, activityMailboxId, activityPlacement, activityDirection, activityQuery]);
+  }, [tab, activityMailboxId, activityPlacement, activityDirection, activityQuery, loadActivity]);
 
-  async function loadRamp() {
+  const loadRamp = useCallback(async function loadRamp() {
     setRampLoading(true);
     try {
       const res = await fetch(`/api/warmup/ramp?days=${rampDays}`);
@@ -381,15 +381,15 @@ export default function WarmupClient() {
     } finally {
       setRampLoading(false);
     }
-  }
+  }, [rampDays]);
 
   useEffect(() => {
     if (tab !== "ramp") return;
     const t = setTimeout(() => loadRamp(), 200);
     return () => clearTimeout(t);
-  }, [tab, rampDays]);
+  }, [tab, rampDays, loadRamp]);
 
-  async function loadThreads() {
+  const loadThreads = useCallback(async function loadThreads() {
     setThreadsLoading(true);
     try {
       const params = new URLSearchParams();
@@ -406,7 +406,7 @@ export default function WarmupClient() {
     } finally {
       setThreadsLoading(false);
     }
-  }
+  }, [threadsMailboxId, threadsQuery]);
 
   async function openThread(id: string) {
     setSelectedThreadId(id);
@@ -427,7 +427,7 @@ export default function WarmupClient() {
     if (tab !== "threads") return;
     const t = setTimeout(() => loadThreads(), 200);
     return () => clearTimeout(t);
-  }, [tab, threadsMailboxId, threadsQuery]);
+  }, [tab, threadsMailboxId, threadsQuery, loadThreads]);
 
   async function runNow(mailboxId?: string) {
     setMsg(null);
@@ -1418,7 +1418,7 @@ export default function WarmupClient() {
         </div>
       }
     >
-      <div className="text-xs text-slate-500">Tip: if a mailbox is "weekdays only", Saturdays/Sundays will show 0 in the plan.</div>
+      <div className="text-xs text-slate-500">Tip: if a mailbox is &quot;weekdays only&quot;, Saturdays/Sundays will show 0 in the plan.</div>
       <div className="mt-3 overflow-x-auto">
         <table className="min-w-[1100px] w-full text-sm">
           <thead>

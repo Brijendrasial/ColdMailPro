@@ -26,7 +26,7 @@ export default function TwoFactor({
             <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm">❌ Invalid code. Try again.</div>
           ) : null}
 
-          <form action="/api/auth/2fa/verify" method="post" className="mt-6 grid gap-4">
+          <form action="/api/auth/twofa/verify" method="post" className="mt-6 grid gap-4">
             <div>
               <div className="text-sm font-medium text-slate-700 mb-1">Authenticator code</div>
               <Input name="token" inputMode="numeric" autoComplete="one-time-code" placeholder="123456" />

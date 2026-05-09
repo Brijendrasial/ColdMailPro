@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 async function usageCounts(workspaceId: string, mailboxId: string) {
   const [campaignLinks, poolLinks, throttles, messages, warmupProfile, warmupThreadsFrom] = await Promise.all([
     prisma.campaignMailbox.count({ where: { mailboxId } }).catch(() => 0),

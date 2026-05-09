@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function DELETE(_req: NextRequest, ctx: { params: { id: string } }) {
   const s = await requireSession();
   const id = String(ctx?.params?.id || "");

@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { absoluteUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 function bool(v: any) { return v === "on" || v === "true" || v === true; }
 function num(v: any, fallback: number) {
   const n = Number(v);

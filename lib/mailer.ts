@@ -14,6 +14,7 @@ export type SendEmailInput = {
   inReplyTo?: string;
   references?: string;
   messageId?: string;
+  log?: (message: string, meta?: Record<string, unknown>) => void | Promise<void>;
 };
 
 function cleanMsgId(v: any): string | null {
@@ -25,6 +26,8 @@ function cleanMsgId(v: any): string | null {
 
 export async function sendEmail(input: SendEmailInput) {
   const started = Date.now();
+  void Promise.resolve(input.log?.("send_start", { to: input.to, subject: input.subject?.slice(0, 200) })).catch(() => null);
+
   void appLogAsync({
     level: "info",
     category: "mail",
@@ -93,6 +96,16 @@ export async function sendEmail(input: SendEmailInput) {
 
     const canonicalMessageId = cleanMsgId((info as any).messageId || input.messageId);
 
+    void Promise.resolve(input.log?.("send_ok", {
+      to: input.to,
+      subject: input.subject?.slice(0, 200),
+      messageId: canonicalMessageId,
+      response: (info as any).response || null,
+      accepted: (info as any).accepted || [],
+      rejected: (info as any).rejected || [],
+      ms: Date.now() - started,
+    })).catch(() => null);
+
     void appLogAsync({
       level: "info",
       category: "mail",
@@ -118,6 +131,13 @@ export async function sendEmail(input: SendEmailInput) {
       rejected: (info as any).rejected || [],
     };
   } catch (e: any) {
+    void Promise.resolve(input.log?.("send_fail", {
+      to: input.to,
+      subject: input.subject?.slice(0, 200),
+      ms: Date.now() - started,
+      error: String(e?.message || e),
+    })).catch(() => null);
+
     void appLogAsync({
       level: "error",
       category: "mail",

@@ -4,6 +4,19 @@ import { requireSession } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 
+type MailstackTenantRow = {
+  id: string;
+  name: string;
+  serverIp: string | null;
+  status: string;
+  lastJobStatus: string | null;
+  domains: unknown[];
+  ips: unknown[];
+  users: unknown[];
+  mailboxes: unknown[];
+};
+
+
 export default async function MailstackPage() {
   const s = await requireSession();
 
@@ -65,7 +78,7 @@ Then restart:
     create: { workspaceId: s.wid },
   });
 
-  const tenants = await p.mailstackTenant.findMany({
+  const tenants: MailstackTenantRow[] = await p.mailstackTenant.findMany({
     where: { workspaceId: s.wid },
     orderBy: { createdAt: "desc" },
     include: { domains: true, ips: true, users: true, mailboxes: true },

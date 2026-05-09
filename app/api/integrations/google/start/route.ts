@@ -4,6 +4,9 @@ import { requireSession } from "@/lib/auth";
 import { randomToken } from "@/lib/crypto";
 import { googleOAuthClient, googleOauthEnabled, googleOauthScopes } from "@/lib/google-calendar";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 const STATE_COOKIE = "cm_google_oauth_state";
 const NEXT_COOKIE = "cm_google_oauth_next";
 
