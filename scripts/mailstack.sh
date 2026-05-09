@@ -355,7 +355,19 @@ EOH
 # -------------------------
 # Nginx
 # -------------------------
+roundcube_docroot() {
+  if [[ -f "${ROUNDCUBE_WEB_DIR}/index.php" ]]; then
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}"
+  elif [[ -f "${ROUNDCUBE_WEB_DIR}/public_html/index.php" ]]; then
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}/public_html"
+  elif [[ -f "${ROUNDCUBE_WEB_DIR}/public/index.php" ]]; then
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}/public"
+  else
+    printf '%s\n' "${ROUNDCUBE_WEB_DIR}"
+  fi
+}
 write_nginx_http_acme() {
+  local RC_DOCROOT; RC_DOCROOT="$(roundcube_docroot)"
   cat > "${NGINX_CONF}" <<EOF2
 server {
   listen 80;
@@ -373,6 +385,7 @@ EOF2
 }
 
 write_nginx_https_apps() {
+  local RC_DOCROOT; RC_DOCROOT="$(roundcube_docroot)"
   cat > "${NGINX_CONF}" <<EOF2
 server {
   listen 80;
@@ -382,6 +395,20 @@ server {
     root ${NGINX_ACME_ROOT};
     default_type "text/plain";
     try_files \$uri =404;
+  }
+
+  location = /roundcube { return 301 /roundcube/; }
+  location /roundcube/ {
+    alias ${RC_DOCROOT}/;
+    index index.php;
+    try_files \$uri \$uri/ /roundcube/index.php?\$query_string;
+  }
+  location ~ ^/roundcube/(.+\.php)(/.*)?\$ {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME ${RC_DOCROOT}/\$1;
+    fastcgi_param PATH_INFO \$2;
+    fastcgi_pass unix:/run/php-fpm/www.sock;
+    fastcgi_read_timeout 180;
   }
 
   location / { return 301 https://\$host\$request_uri; }
@@ -399,7 +426,7 @@ server {
   location = / { return 302 /roundcube/; }
 
   location /roundcube/ {
-    alias /usr/share/roundcubemail/;
+    alias ${RC_DOCROOT}/;
     index index.php;
   }
   location ~ ^/roundcube/(.+\.php)(/.*)?$ {
@@ -408,7 +435,7 @@ server {
     fastcgi_param REQUEST_SCHEME https;
     fastcgi_param SERVER_PORT 443;
     fastcgi_pass unix:/run/php-fpm/www.sock;
-    fastcgi_param SCRIPT_FILENAME /usr/share/roundcubemail/\$1;
+    fastcgi_param SCRIPT_FILENAME ${RC_DOCROOT}/\$1;
     fastcgi_param PATH_INFO \$2;
     fastcgi_read_timeout 180;
     fastcgi_connect_timeout 30;

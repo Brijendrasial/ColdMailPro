@@ -865,6 +865,28 @@ async function logJob(jobId: string, line: string) {
   }
 }
 
+
+async function updateJobSafe(jobId: string, data: any, label = "job update") {
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    try {
+      await prisma.job.update({ where: { id: jobId }, data });
+      return true;
+    } catch (e: any) {
+      lastErr = e;
+      const msg = String(e?.message || e);
+      console.warn(`[job ${jobId}] ${label} failed on attempt ${attempt}: ${msg}`);
+      // Package updates can restart MySQL/MariaDB underneath Prisma. Reconnect and retry instead of
+      // turning a successful maintenance run into a false failed job.
+      try { await prisma.$disconnect(); } catch {}
+      await sleep(Math.min(15000, attempt * 1500));
+      try { await prisma.$connect(); } catch {}
+    }
+  }
+  console.error(`[job ${jobId}] ${label} failed after reconnect retries: ${String(lastErr?.message || lastErr)}`);
+  return false;
+}
+
 async function runCmd(
   jobId: string,
   cmd: string,
@@ -1124,6 +1146,37 @@ async function handleMailstackJob(jobId: string, type: string, payload: any) {
     const acmeEmail = (env as any).MAILSTACK_ACME_EMAIL || process.env.MAILSTACK_ACME_EMAIL || "sales@bullten.com";
     out.MAILSTACK_ACME_EMAIL = String(acmeEmail);
     return out;
+  }
+
+  if (type === "mailstack:system-update") {
+    const mode = String(payload?.mode || "server").trim().toLowerCase();
+    const roundcubeChannel = String(payload?.roundcubeChannel || "stable").trim().toLowerCase();
+    const roundcubeVersion = String(payload?.roundcubeVersion || "").trim();
+    const [runner, ...prefixArgs] = sudoWrap(addon);
+    const roundcubeArgs = [
+      ...prefixArgs,
+      "roundcube-update",
+      "--channel",
+      roundcubeChannel === "package" || roundcubeChannel === "custom" ? roundcubeChannel : "stable",
+      ...(roundcubeChannel === "custom" && roundcubeVersion ? ["--version", roundcubeVersion] : []),
+    ];
+
+    if (mode === "roundcube") {
+      await runCmd(jobId, runner, roundcubeArgs, { cwd: "/root" });
+      await logJob(jobId, "✅ Roundcube update job completed");
+      return;
+    }
+
+    if (mode === "both") {
+      await runCmd(jobId, runner, [...prefixArgs, "server-update"], { cwd: "/root" });
+      await runCmd(jobId, runner, roundcubeArgs, { cwd: "/root" });
+      await logJob(jobId, "✅ Server + Roundcube update job completed");
+      return;
+    }
+
+    await runCmd(jobId, runner, [...prefixArgs, "server-update"], { cwd: "/root" });
+    await logJob(jobId, "✅ Server software update job completed");
+    return;
   }
 
   if (type === "mailstack:init-cloudflare") {
@@ -3806,7 +3859,7 @@ async function main() {
             payload = JSON.parse(job.payload || "{}");
       await executeJob(job, payload);
 
-      await prisma.job.update({ where: { id: job.id }, data: { status: "done" } });
+      await updateJobSafe(job.id, { status: "done", lockedAt: null, lastError: null }, "mark done");
     
 } catch (e: any) {
   // Risky: AI suggestions only (never auto-applied). Safe: deterministic fixes auto-applied.
@@ -3816,7 +3869,7 @@ async function main() {
   if (shouldRetry) {
     try {
       await executeJob(job, payload);
-      await prisma.job.update({ where: { id: job.id }, data: { status: "done" } }).catch(() => {});
+      await updateJobSafe(job.id, { status: "done", lockedAt: null, lastError: null }, "mark done after AutoFix retry").catch(() => false);
       await logJob(job.id, `✅ Job succeeded after AutoFix retry.`);
       if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
         await prisma.mailstackTenant
@@ -3905,16 +3958,16 @@ if (env.AIOPS_ENABLED) {
   }).catch(() => {});
 }
 
-await prisma.job
-    .update({
-      where: { id: job.id },
-      data: {
-        status: "failed",
-        attempts: { increment: 1 },
-        lastError: String(e?.message || e),
-      },
-    })
-    .catch(() => {});
+await updateJobSafe(
+    job.id,
+    {
+      status: "failed",
+      attempts: { increment: 1 },
+      lastError: String(e?.message || e),
+      lockedAt: null,
+    },
+    "mark failed"
+  ).catch(() => false);
 
   await logJob(job.id, `❌ FAILED: ${String(e?.message || e)}`);
 

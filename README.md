@@ -1010,7 +1010,31 @@ sudo scripts/mailstack-addon.sh tls-auto-install
 sudo scripts/mailstack-addon.sh tls-auto-run
 ```
 
-### 22. Final build status for this patch line
+
+### 22. Mailstack server + Roundcube updater buttons
+
+The Mailstack page now includes a **Server maintenance** card with three queued actions:
+
+- **Update all server software**: runs `mailstack-addon.sh server-update`, updates OS/server packages using the available package manager, reapplies safe MailStack permissions/fixes, then restarts MailStack-related services.
+- **Update Roundcube latest**: runs `mailstack-addon.sh roundcube-update`, updates Roundcube to the latest package available from enabled repositories, restores the MailStack Roundcube config layout, runs the Roundcube updater when available, then restarts services.
+- **Update server + Roundcube**: runs both actions in order.
+
+The update flow is queued as a worker job (`mailstack:system-update`) so the web request returns quickly while the worker streams progress into job logs.
+
+Services restarted automatically when present include:
+
+```bash
+exim dovecot nginx php-fpm mariadb mysql redis postfix
+```
+
+Manual server commands are also available:
+
+```bash
+sudo scripts/mailstack-addon.sh server-update
+sudo scripts/mailstack-addon.sh roundcube-update
+```
+
+### 23. Final build status for this patch line
 
 The expected successful build output should include:
 
@@ -1039,3 +1063,76 @@ npm install
 npm run build
 ```
 
+
+### fixed59: Mailstack live update popup
+
+The Mailstack **Server maintenance** card now opens a live popup for all maintenance actions instead of silently posting a form:
+
+- **Update all server software** opens a modal, queues `mailstack:system-update` with `mode=server`, polls job status, and streams job logs.
+- **Update Roundcube latest** opens the same modal with Roundcube-specific copy and progress stages using `mode=roundcube`.
+- **Update server + Roundcube** opens the modal and runs the combined queued job using `mode=both`.
+- Added `GET /api/mailstack/system/update/status?jobId=...` for permission-scoped live job status/log polling.
+- The popup includes progress stages, a progress bar, live terminal-style logs, copy-log support, retry on failure, and clear worker-running guidance.
+
+Keep the worker process running (`npm run worker:dev` or the production worker service) so queued update jobs advance from queued to running/done.
+
+## Patch fixed60 - MailStack update modal reliability
+
+- Fixed a false failure in the live MailStack update modal where package updates could restart MySQL/MariaDB and cause Prisma to report `Server has closed the connection` while marking the job complete.
+- The worker now reconnects Prisma and retries final job status updates after package/service restarts.
+- MailStack service restarts now run mail/web/cache services first and database services last, then wait briefly for the database to accept connections again.
+- The live popup remains the same: progress, stages, logs, copy logs, retry, and clear error state.
+
+## Patch fixed61 - Roundcube web route repair after latest update
+
+- Fixed the case where `http://SERVER_IP/roundcube/` could show a plain `ok` response after updating Roundcube instead of the Roundcube login page.
+- `mailstack-addon.sh roundcube-update` now also repairs the Nginx/PHP-FPM Roundcube route after package updates.
+- Added a manual repair command:
+
+```bash
+sudo scripts/mailstack-addon.sh roundcube-webfix
+```
+
+This command restores the Roundcube config symlink/permissions, detects the correct Roundcube document root (`/usr/share/roundcubemail`, `public_html`, or `public`), writes `/etc/nginx/conf.d/mailstack-roundcube.conf`, tests Nginx config, then restarts `php-fpm` and `nginx`.
+
+Use it immediately on an already-updated server if `/roundcube/` is not opening the login window.
+
+### fixed62 - Roundcube PHP download repair
+
+If `http://SERVER_IP/roundcube/` downloads `index.php` instead of opening the login page, run:
+
+```bash
+sudo scripts/mailstack-addon.sh roundcube-webfix
+```
+
+This version fixes the Roundcube Nginx route so PHP requests are passed to PHP-FPM instead of being served as static files. The repair command now detects the active PHP-FPM socket/TCP listener, writes the correct `fastcgi_pass`, avoids the `^~` Nginx prefix that blocks PHP regex handling, runs `nginx -t`, and restarts `php-fpm` plus `nginx`.
+
+### fixed63 - Roundcube build selector and upstream stable installer
+
+MailStack maintenance now lets the user choose which Roundcube build should be installed when running **Update Roundcube** or **Update server + Roundcube**.
+
+Available choices:
+
+- **Stable latest from Roundcube.net**: detects the latest upstream stable Roundcube release from GitHub/Roundcube and installs the complete upstream build, such as `1.6.15` when that is the current stable release.
+- **Custom upstream version**: installs a specific upstream Roundcube version, for example `1.6.15`.
+- **OS package repository**: keeps the older distro-managed behavior for admins who want the repository-provided package, even if that is behind upstream stable.
+
+The worker passes the selected build choice into `scripts/mailstack-addon.sh roundcube-update` and the live update modal shows the chosen build in the job log/popup. The script now supports:
+
+```bash
+sudo scripts/mailstack-addon.sh roundcube-update --channel stable
+sudo scripts/mailstack-addon.sh roundcube-update --channel custom --version 1.6.15
+sudo scripts/mailstack-addon.sh roundcube-update --channel package
+```
+
+For upstream installs, the script downloads the `roundcubemail-<version>-complete.tar.gz` release archive, backs up the existing `/usr/share/roundcubemail` directory, syncs the selected build into place, restores the MailStack `/etc/roundcubemail` config layout, runs Roundcube migrations, repairs the Nginx/PHP-FPM `/roundcube/` route, and restarts MailStack services.
+
+### Patch fixed64 - Lead enrichment modal cleanup
+
+- Rebuilt the "Enrich all leads by company website" modal into a cleaner, wider two-column workflow.
+- Added clearer step buttons: discover, verify selected, import valid.
+- Added stats cards for found, selected, valid, failed, and pending emails.
+- Added selection tools: select all, clear, select valid, and remove failed.
+- Changed import behavior so it imports only verified-valid selected emails and automatically skips failed or pending selected emails. Users no longer need to manually deselect failed leads after verification.
+- Grouped results into clean cards for website-published emails, AI suggestions, manual emails, and generated patterns.
+- Moved manual checking, verification settings, and fallback pattern generation into aligned side panels.

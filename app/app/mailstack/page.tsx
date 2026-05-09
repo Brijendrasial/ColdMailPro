@@ -1,4 +1,5 @@
 import { Container, Card, Input, Button, Badge } from "@/components/ui";
+import MailstackMaintenanceClient from "./MailstackMaintenanceClient";
 import Link from "next/link";
 import { requireSession } from "@/lib/auth";
 import { redirect } from "next/navigation";
@@ -127,6 +128,16 @@ Then restart:
 
           <div className="mt-4 flex gap-3">
             <Link href="/app/mailstack/new"><Button>Create tenant</Button></Link>
+          </div>
+        </Card>
+
+
+        <Card title="Server maintenance" subtitle="Beautiful one-click updates with a live popup, progress stages, and worker logs.">
+          <div className="grid gap-4 text-sm">
+            <p className="text-slate-600">
+              Update OS packages and MailStack-installed services. After updates finish, the script automatically restarts Exim, Dovecot, Nginx, PHP-FPM, database/cache services when present, and reapplies safe MailStack permissions/fixes.
+            </p>
+            <MailstackMaintenanceClient />
           </div>
         </Card>
 
