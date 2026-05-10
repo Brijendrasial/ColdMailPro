@@ -1,46 +1,76 @@
 # ColdMail Pro
 
-**Version:** v1.75
+**Version:** v2.0.0  
+**Release:** Full Redesigned Command Center Release
 
-## What's new in v1.75
-- **AIOps-managed services**: system-level health checks + safe auto-remediation for Exim, Dovecot, MariaDB, ColdMail app, and worker via `coldmail-aiops.timer`.
-- **AutoFix**: safe fixes auto-applied; risky fixes are AI suggestions only (never executed automatically).
-- **Incidents UI**: Settings → System shows open incidents + Apply Safe Fixes action.
-- **AlmaLinux 9 SELinux hardening**: `/var/vmail` relabel + Exim DB boolean + Exim maps restorecon.
-- **Tenant delete DNS cleanup**: optional Cloudflare DNS purge on tenant reset/delete.
+ColdMail Pro v2.0.0 is a major product release focused on a full premium UI/UX redesign, stronger MailStack operations, safer DNS workflows, improved lead enrichment, and better production deployment guidance.
 
+## What's new in v2.0.0
 
+### Full app redesign
+- Redesigned the app into a premium **command-center style workspace** with cleaner spacing, stronger hierarchy, glass panels, modern cards, improved badges, and better responsive layouts.
+- Added a shared visual system for page heroes, KPI cards, tables, filters, command bars, modals, empty states, and operational panels.
+- Improved page alignment and long-content handling across DNS records, logs, DKIM keys, mailbox cards, forms, and data tables.
 
-## Patch fixed76 - Replies command center redesign
-- Redesigned the Replies page into a polished shared inbox command center with a premium hero, inbox stats, global search, mailbox/campaign filters, and refresh/AI controls.
-- Rebuilt the thread list with stronger conversation cards, avatars, unread badges, status chips, assignment chips, pinned/starred/snoozed indicators, and better empty states.
-- Redesigned the conversation workspace with lead summary cards, triage controls, AI draft panel, suggested actions, labels, timeline messages, and a cleaner reply composer.
-- Preserved existing reply APIs and behavior: thread loading, state updates, bulk read/unread, assignment, snooze, AI drafts, Google scheduling, and send reply.
-- Kept the corrected `coldmail-pro/` project folder structure for direct deployment.
+### Dashboard Command Center
+- Redesigned Dashboard with a premium hero, date range controls, deliverability score, sending pulse, queue health, setup checklist, alerts, recent campaigns, and live activity sections.
+- Reorganized metrics so operators can quickly see what needs action before campaigns run.
 
-## Patch fixed73 - Domains DNS command center redesign
-- Rebuilt the Domains page into a cleaner DNS command center with a premium hero, workflow cards, domain launchpad, SPF preview panel, and card-based domain fleet.
-- Redesigned the Add domain flow into focused sections for tenant/domain batch, outbound IP pool, SPF preview, and advanced Cloudflare/server defaults.
-- Replaced the cramped domain table with responsive domain health cards showing score, SPF/DKIM/DMARC/MX status, issues, Mailstack linkage, and actions.
-- Redesigned the domain detail workspace with a dark hero, DNS health radar, record status panels, Cloudflare/manual DNS cockpit, provisioning area, DKIM rotation studio, tracking CNAME, and danger zone.
-- Preserved existing APIs and behavior for DKIM generation, DNS checks, Cloudflare sync, Mailstack provisioning, DKIM rotation, IP rotation, and deletion.
+### Campaigns Command Center
+- Redesigned Campaigns into a campaign fleet view with health signals, running/draft/reply stats, ops alerts, DNS/capacity warnings, and cleaner campaign cards.
+- Redesigned relevant campaign inner pages with a consistent campaign workspace shell for overview, mailboxes, settings, analytics, deliverability, funnel, sequence editing, and lead enrollment.
 
+### Leads Command Center + enrichment upgrade
+- Redesigned Leads into a CRM-style command center with cleaner filters, KPI cards, lead table, saved views, bulk actions, and a better lead management flow.
+- Redesigned the **Enrich by website** modal into a guided discover → verify → import workflow.
+- Added valid-only import behavior so failed/pending emails are skipped automatically after verification.
 
-## Patch fixed70 - Campaigns command center + campaign workspace redesign
-- Rebuilt the Campaigns list screen into a full command center with a dark gradient hero, deliverability score ring, quick actions, fleet metrics, ops radar, and a card-style campaign fleet.
-- Replaced the cramped table-first layout with searchable/filterable campaign cards that show schedule, sender load, lead progress, engagement, status, health, and actions in a cleaner responsive flow.
-- Preserved existing campaign actions: run/pause, duplicate, settings, analytics, bulk actions, DNS checks, and pre-send QA validation modal.
-- Added a shared premium campaign inner-page hero and tab bar across overview, mailboxes, settings, analytics, deliverability, funnel, edit sequence, and enroll leads pages.
-- Kept backend/API logic intact; this patch is focused on UX, layout, and visual clarity.
+### Mailboxes Command Center
+- Redesigned Mailboxes with a cleaner add-mailbox form, SMTP/IMAP sections, mailbox health cards, daily usage progress, bounce/reply stats, SMTP/IMAP health pills, and better sender actions.
+- Redesigned related mailbox pool and warmup screens for better operational clarity.
 
-## Patch fixed65 - Leads command center redesign
-- Rebuilt the Leads page into a wide CRM-style command center with a premium gradient hero, cleaner action buttons, and stronger stats.
-- Removed the duplicate cramped page header so the Leads screen opens directly into the new workspace.
-- Added a sticky left workspace rail for quick tools, presets, saved views, lists, suppressions, and duplicates.
-- Reorganized filters into a calm two-row “Find and focus” panel with better spacing and larger controls.
-- Redesigned the bulk-action area into a highlighted command bar with grouped actions and aligned stage/owner/list controls.
-- Restyled the lead table with better spacing, avatars, status pills, clearer company/activity columns, and a polished pagination footer.
-- Kept the fixed64 enrichment modal and valid-only import behavior intact.
+### Domains + DNS cockpit
+- Redesigned Domains into a DNS control center with tenant/domain batching, outbound IP pool controls, SPF preview, Cloudflare/server defaults, and card-based domain health.
+- Redesigned domain detail pages with DNS health radar, Cloudflare cockpit, manual DNS view, MailStack provisioning, DKIM rotation studio, tracking CNAME, and danger zone.
+- Fixed domain detail layout overlap/alignment issues and made long DNS/DKIM/SPF values scroll-safe.
+- Improved DNS check completion handling with live status polling and preserved DNS result storage.
+
+### Replies shared inbox
+- Redesigned Replies into a team inbox with thread cards, unread/status chips, lead context, AI assistance, conversation timeline, suggested actions, labels, and a cleaner reply composer.
+
+### Analytics mission control
+- Redesigned Analytics with a dark premium hero, performance score, cleaner filters, KPI cards, insights, trend charts, campaign/mailbox leaderboards, deliverability views, funnel views, heatmaps, and event streams.
+
+### Logs observability cockpit
+- Redesigned Logs into an observability cockpit with health counters, severity filters, event streams, selected-event inspector, JSON inspection, and a message flight recorder.
+
+### MailStack Control Center
+- Redesigned MailStack into an infrastructure control center with fleet metrics, integration vault, Cloudflare bootstrap, tenant fleet cards, tenant operations cockpit, action console, CSV export, and danger zone.
+- Added live server maintenance/update modal with progress stages and logs.
+- Added one-click server software updates with automatic MailStack service restarts.
+- Added Roundcube build selector so users can install the latest upstream stable build, a custom upstream version, or the OS package version.
+- Added Roundcube web-route/PHP-FPM repair workflow for `/roundcube/` issues.
+
+### Settings Control Center
+- Redesigned Settings with a dark premium hero, grouped sidebar, account/workspace panels, security vault, 2FA controls, sessions, notifications, deliverability defaults, team, audit log, integrations, developer tools, system incidents, and danger zone.
+
+### Production/deployment fixes
+- Updated Tailwind opacity support for the redesigned UI.
+- Preserved executable permissions for deployment scripts.
+- Added clearer MariaDB setup instructions for both the main Prisma database and the Prisma shadow database.
+- Versioned this release as **v2.0.0**.
+
+## Upgrade notes for v2.0.0
+
+- Run `npm install` or `npm ci` after pulling this release.
+- Run `npx prisma migrate deploy` before restarting the app and worker.
+- Make sure both MariaDB databases exist before Prisma migration:
+  - `coldmail`
+  - `coldmail_shadow`
+- Keep `.env` updated with both `DATABASE_URL` and `SHADOW_DATABASE_URL`.
+- Restart both services after build:
+  - `coldmail-pro-dev`
+  - `coldmail-worker`
 
 Self-hosted **cold email + warmup** app built with **Next.js 14**, **Prisma**, and **MariaDB**.
 
@@ -208,18 +238,63 @@ npm run build
 ```
 
 2) Database + migrations (production)
-```bash
-# Create the database if it doesn't exist
-mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS coldmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
-# Apply migrations
-npx prisma migrate deploy
+ColdMail Pro uses two MariaDB databases when Prisma migrations run:
+
+- `coldmail` — the main application database used by `DATABASE_URL`
+- `coldmail_shadow` — the Prisma shadow database used by `SHADOW_DATABASE_URL` during migration checks
+
+Create both databases and grant the app user access to both:
+
+```bash
+mysql -u root -p <<'SQL'
+CREATE DATABASE IF NOT EXISTS coldmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS coldmail_shadow CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS 'coldmail'@'127.0.0.1' IDENTIFIED BY 'ColdmailPass123';
+CREATE USER IF NOT EXISTS 'coldmail'@'localhost' IDENTIFIED BY 'ColdmailPass123';
+
+GRANT ALL PRIVILEGES ON coldmail.* TO 'coldmail'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON coldmail_shadow.* TO 'coldmail'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON coldmail.* TO 'coldmail'@'localhost';
+GRANT ALL PRIVILEGES ON coldmail_shadow.* TO 'coldmail'@'localhost';
+
+FLUSH PRIVILEGES;
+SQL
 ```
 
-> Fresh re-install? Drop + recreate the DB first:
+Your `.env` should include both URLs:
+
+```env
+# Database (MariaDB)
+DATABASE_URL="mysql://coldmail:ColdmailPass123@127.0.0.1:3306/coldmail"
+
+# Shadow database (Prisma migrate)
+SHADOW_DATABASE_URL="mysql://coldmail:ColdmailPass123@127.0.0.1:3306/coldmail_shadow"
+```
+
+Then apply migrations:
+
 ```bash
-mysql -u root -p -e "DROP DATABASE IF EXISTS coldmail; CREATE DATABASE coldmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 npx prisma migrate deploy
+npx prisma generate
+```
+
+> Fresh re-install? Drop + recreate both databases first:
+```bash
+mysql -u root -p <<'SQL'
+DROP DATABASE IF EXISTS coldmail;
+DROP DATABASE IF EXISTS coldmail_shadow;
+CREATE DATABASE coldmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE coldmail_shadow CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+GRANT ALL PRIVILEGES ON coldmail.* TO 'coldmail'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON coldmail_shadow.* TO 'coldmail'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON coldmail.* TO 'coldmail'@'localhost';
+GRANT ALL PRIVILEGES ON coldmail_shadow.* TO 'coldmail'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+npx prisma migrate deploy
+npx prisma generate
 ```
 
 3) Start web + worker (separate processes)
