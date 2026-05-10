@@ -17,6 +17,12 @@ function pickEmailAddress(v: any): string | null {
   return m ? m[0].toLowerCase() : null;
 }
 
+function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
+  const raw = String(subject || fallbackSubject || '').trim();
+  const base = raw || 'Re:';
+  return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
+}
+
 export async function POST(
   req: Request,
   ctx: { params: { eventId: string } }
@@ -32,7 +38,7 @@ export async function POST(
   }
 
   const to = String(body.to || "").trim();
-  const subject = clip(String(body.subject || "Re:").trim() || "Re:", 200);
+  let subject = clip(String(body.subject || "Re:").trim() || "Re:", 200);
   const text = clip(String(body.text || "").trim(), 40_000);
 
   if (!to || !to.includes("@")) {
@@ -72,8 +78,10 @@ export async function POST(
   const defaultTo = pickEmailAddress(meta.fromAddress || meta.from || ev.message.lead?.email) || to.toLowerCase();
   const finalTo = pickEmailAddress(to) || defaultTo;
 
+  subject = clip(normalizeReplySubject(subject, meta.subject || ev.message.subject || "Re:"), 200);
+
   const inReplyTo = String(meta.replyMessageId || meta.messageId || ev.message.messageId || "").trim() || undefined;
-  const references = [ev.message.messageId, meta.replyMessageId]
+  const references = [ev.message.messageId, meta.references, meta.replyMessageId]
     .filter(Boolean)
     .map((x) => String(x))
     .join(" ") || undefined;

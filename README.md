@@ -934,7 +934,7 @@ ColdMailPro v2.0.0 is the full redesigned command-center release.
 
 ## Patch history
 
-This section summarizes the important patch line that led to v2.0.0.
+This section summarizes the important patch line that led to the v2 series.
 
 ### v1.75 foundation
 
@@ -988,7 +988,30 @@ This section summarizes the important patch line that led to v2.0.0.
 - Added complete MariaDB + shadow database setup.
 - Added MailStack, Roundcube, AI, verification, warmup, upgrade, troubleshooting, and operational documentation.
 
----
+### v2.0.1 — Leads export UI
+
+- Added visible **Export leads** actions to the Leads Command Center.
+- Export selected leads, current filtered view, or all workspace leads as CSV.
+- Export respects search, status, stage, list, owner, task, tag, contacted, and snooze filters.
+- CSV export includes owner and list columns.
+
+### v2.0.2 — SMTP-required lead verification
+
+- Updated bulk lead verification to require SMTP mailbox confirmation.
+- Changed bulk verify action wording to **Verify SMTP**.
+- Prevented syntax-only checks from being shown as valid SMTP-confirmed leads.
+
+### v2.0.3 — Replies AI threading fix
+
+- Added reply threading headers for AI/manual reply sending.
+- AI replies use inbound reply Message-ID for `In-Reply-To` and preserve `References`.
+- Reply subjects are normalized to `Re:`.
+
+### v2.0.4 — Replies inbox ingestion safety fix
+
+- Restored the previous reply ingestion/display path so new inbound replies appear in the Replies tab again.
+- Kept the safe send-time threading fix for AI/manual replies.
+- Avoided changing inbound reply event metadata during IMAP polling.
 
 ---
 
@@ -1061,11 +1084,3 @@ This project is governed by the **ColdMailPro Proprietary License (MTA)** in `LI
 ## Disclaimer
 
 ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare, Google, OpenAI, or any mail provider. Product names are used only to describe integrations or workflow compatibility.
-
-### v2.0.1 — Leads export UI
-
-- Added visible **Export leads** actions to the Leads Command Center.
-- Export selected leads, current filtered view, or all workspace leads as CSV.
-- Export now respects search, status, stage, list, owner, task, tag, contacted, and snooze filters.
-- CSV export now includes owner and list columns.
-

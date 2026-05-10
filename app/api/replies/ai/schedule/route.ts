@@ -8,6 +8,48 @@ import { sendEmail } from "@/lib/mailer";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+function cleanMsgId(v: any): string | null {
+  if (!v) return null;
+  const s = String(v).trim();
+  const m = s.match(/<[^>]+>/);
+  return (m ? m[0] : s) || null;
+}
+
+function collectMsgIds(...values: any[]): string[] {
+  const out: string[] = [];
+  const add = (value: any) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) add(item);
+      return;
+    }
+    const raw = String(value);
+    const matches = raw.match(/<[^>]+>/g);
+    if (matches?.length) {
+      for (const m of matches) {
+        const id = cleanMsgId(m);
+        if (id && !out.includes(id)) out.push(id);
+      }
+      return;
+    }
+    const id = cleanMsgId(raw);
+    if (id && !out.includes(id)) out.push(id);
+  };
+  for (const value of values) add(value);
+  return out;
+}
+
+function safeJsonParse(s: string | null | undefined): any {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch { return {}; }
+}
+
+function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
+  const raw = String(subject || fallbackSubject || '').trim();
+  const base = raw || 'Re:';
+  return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
+}
+
 function getGcalCfg(settingsJson: any) {
   const gc = (settingsJson || {})?.repliesAi?.googleCalendar || {};
   return {
@@ -76,7 +118,7 @@ export async function POST(req: NextRequest) {
     const meetLink = ev.meetLink || null;
     const when = mt.startIso;
     const tz = mt.timezone || cfg.timezone || "";
-    const subject = ai.draftSubject || (inboundSubject ? `Re: ${inboundSubject}` : "Re:");
+    const subject = normalizeReplySubject(ai.draftSubject, inboundSubject || "Re:");
     const replyText = `Perfect — I’ve sent a calendar invite for ${when}${tz ? " (" + tz + ")" : ""}.` +
       (meetLink ? `\n\nGoogle Meet: ${meetLink}` : "") +
       `\n\nIf you need a different time, just reply with your availability.`;
@@ -115,8 +157,11 @@ export async function POST(req: NextRequest) {
     const threadMsg = ai.replyEvent.message;
     if (!threadMsg.mailboxId) return NextResponse.json({ ok: false, error: "NO_MAILBOX" }, { status: 400 });
 
-    const inReplyTo = threadMsg.messageId || threadMsg.inReplyTo || null;
-    const references = threadMsg.messageId || null;
+    const replyMeta = safeJsonParse((ai.replyEvent as any).meta || null);
+    const inboundReplyMessageId = cleanMsgId(replyMeta.replyMessageId || replyMeta.messageId || null);
+    const originalOutboundMessageId = cleanMsgId(threadMsg.messageId || threadMsg.inReplyTo || null);
+    const inReplyTo = inboundReplyMessageId || originalOutboundMessageId || null;
+    const references = collectMsgIds(originalOutboundMessageId, replyMeta.references, inboundReplyMessageId).join(" ") || undefined;
 
     const info = await sendEmail({
       mailboxId: threadMsg.mailboxId,
@@ -124,7 +169,12 @@ export async function POST(req: NextRequest) {
       subject,
       text: replyText,
       inReplyTo: inReplyTo || undefined,
-      references: references || undefined,
+      references,
+      headers: {
+        "X-ColdMailPro-AIReply": "1",
+        "X-ColdMailPro-ReplyEvent": ai.replyEventId,
+        "X-ColdMailPro-AIAction": ai.id,
+      },
     });
 
     const now = new Date();

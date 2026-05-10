@@ -282,13 +282,18 @@ If you need a different time, just reply with your availability.`;
     if (!shouldSend) return;
 
     try {
+      const replySubject = normalizeReplySubject(draftSubject || cls.draftSubject, args.inboundSubject || args.lastOutboundSubject || "Re:");
       const sendRes = await sendEmail({
         mailboxId: args.mailboxId,
         to: args.leadEmail,
-        subject: draftSubject || cls.draftSubject || "Re:",
+        subject: replySubject,
         text: draftBodyText || cls.draftBodyText || "",
         inReplyTo: args.inReplyTo || undefined,
         references: args.references || undefined,
+        headers: {
+          "X-ColdMailPro-AIReply": "1",
+          "X-ColdMailPro-ReplyEvent": args.replyEventId,
+        },
       });
 
       const now = new Date();
@@ -297,7 +302,7 @@ If you need a different time, just reply with your availability.`;
           workspaceId: args.workspaceId,
           mailboxId: args.mailboxId,
           leadId: args.leadId,
-          subject: draftSubject || cls.draftSubject || "Re:",
+          subject: replySubject,
           bodyText: draftBodyText || cls.draftBodyText || "",
           bodyHtml: null,
           messageId: sendRes.messageId,
@@ -3077,6 +3082,36 @@ function cleanMsgId(v: any): string | null {
   return (m ? m[0] : s) || null;
 }
 
+function collectMsgIds(...values: any[]): string[] {
+  const out: string[] = [];
+  const add = (value: any) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) add(item);
+      return;
+    }
+    const raw = String(value);
+    const matches = raw.match(/<[^>]+>/g);
+    if (matches?.length) {
+      for (const m of matches) {
+        const id = cleanMsgId(m);
+        if (id && !out.includes(id)) out.push(id);
+      }
+      return;
+    }
+    const id = cleanMsgId(raw);
+    if (id && !out.includes(id)) out.push(id);
+  };
+  for (const value of values) add(value);
+  return out;
+}
+
+function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
+  const raw = String(subject || fallbackSubject || '').trim();
+  const base = raw || 'Re:';
+  return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
+}
+
 function keywordList(v: any): string[] {
   if (!v) return [];
   return String(v)
@@ -3586,8 +3621,9 @@ async function handleSyncImap(payload: any) {
                 inboundBodyText: clip(bodyText || snippet || "", 20_000),
                 lastOutboundSubject: out.subject || null,
                 lastOutboundBody: clip(out.bodyText || stripHtml(out.bodyHtml || "") || "", 20_000),
+                // Thread AI autopilot replies to the exact inbound reply without changing reply ingestion/display metadata.
                 inReplyTo: cleanMsgId((parsed as any)?.messageId) || out.messageId || null,
-                references: out.messageId || null,
+                references: collectMsgIds(out.messageId, (parsed as any)?.references, getHeader(parsed, "references"), cleanMsgId((parsed as any)?.messageId)).join(" ") || out.messageId || null,
               }).catch(() => {});
             }
 
