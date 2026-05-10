@@ -140,6 +140,7 @@ export function LeadsClient() {
 
   // Bulk helpers
   const [bulkBusy, setBulkBusy] = useState<boolean>(false);
+  const [exportBusy, setExportBusy] = useState<boolean>(false);
   const [bulkStage, setBulkStage] = useState<string>("");
   const [bulkOwner, setBulkOwner] = useState<string>("");
   const [bulkList, setBulkList] = useState<string>("");
@@ -482,6 +483,61 @@ export function LeadsClient() {
 
   function toggleOne(id: string) {
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function currentLeadFilters() {
+    return {
+      q: q.trim(),
+      status,
+      stage,
+      listId,
+      ownerUserId,
+      tasks: tasksFilter,
+      tag: tag.trim(),
+      contacted,
+      snoozed: snoozedFilter,
+    };
+  }
+
+  async function downloadLeadExport(scope: "selected" | "filtered" | "all" = selectedIds.length ? "selected" : "filtered") {
+    if (exportBusy) return;
+    if (scope === "selected" && !selectedIds.length) {
+      notify("⚠️ Select at least one lead, or use Export filtered/all.");
+      return;
+    }
+
+    const label = scope === "selected"
+      ? `${selectedIds.length} selected lead${selectedIds.length === 1 ? "" : "s"}`
+      : scope === "all"
+        ? "all leads"
+        : `${total || 0} filtered lead${total === 1 ? "" : "s"}`;
+
+    try {
+      setExportBusy(true);
+      const body = scope === "selected"
+        ? { ids: selectedIds, scope }
+        : { scope, filters: scope === "all" ? {} : currentLeadFilters() };
+      const r = await fetch("/api/leads/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `leads-${scope}-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      notify(`✅ Exported ${label}`);
+    } catch (e: any) {
+      notify(`❌ Export failed: ${clip(String(e?.message || e), 180)}`);
+    } finally {
+      setExportBusy(false);
+    }
   }
 
   async function loadMailboxes() {
@@ -1152,6 +1208,15 @@ export function LeadsClient() {
               <Button variant="ghost" className="bg-white/15 text-white border-white/25 hover:bg-white/25" onClick={openAiSegmentsModal}>
                 ✨ AI segments
               </Button>
+              <Button
+                variant="ghost"
+                className="bg-white/15 text-white border-white/25 hover:bg-white/25"
+                disabled={exportBusy}
+                onClick={() => downloadLeadExport(selectedIds.length ? "selected" : "filtered")}
+                title={selectedIds.length ? "Export selected leads as CSV" : "Export current filtered leads as CSV"}
+              >
+                {exportBusy ? "Exporting…" : selectedIds.length ? "⬇ Export selected" : "⬇ Export filtered"}
+              </Button>
             </div>
           </div>
 
@@ -1186,6 +1251,10 @@ export function LeadsClient() {
             <div className="mt-4 grid gap-2">
               <Button variant="primary" className="w-full justify-center" onClick={openAddModal}>+ Add lead</Button>
               <Button variant="ghost" className="w-full justify-center" onClick={() => setShowImport(true)}>Import wizard</Button>
+              <Button variant="ghost" className="w-full justify-center" disabled={exportBusy} onClick={() => downloadLeadExport(selectedIds.length ? "selected" : "filtered")}>
+                {exportBusy ? "Exporting…" : selectedIds.length ? "Export selected" : "Export filtered"}
+              </Button>
+              <Button variant="ghost" className="w-full justify-center" disabled={exportBusy || !total} onClick={() => downloadLeadExport("all")}>Export all leads</Button>
               <Button variant="ghost" className="w-full justify-center" onClick={() => setShowLists(true)}>Lists</Button>
               <Button variant="ghost" className="w-full justify-center" onClick={() => setShowDuplicates(true)}>Duplicates</Button>
               <Button variant="ghost" className="w-full justify-center" onClick={() => setShowSuppressions(true)}>Suppressions</Button>
@@ -1251,6 +1320,9 @@ export function LeadsClient() {
           <Card className="rounded-[1.5rem] border border-slate-200/80 bg-white/90 shadow-xl shadow-slate-200/70" title="Find and focus" subtitle="Filters are grouped so the table stays calm, even when the workflow gets busy." right={
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="ghost" onClick={saveCurrentView}>Save view</Button>
+              <Button variant="ghost" disabled={exportBusy || !total} onClick={() => downloadLeadExport("filtered")}>
+                {exportBusy ? "Exporting…" : "Export filtered"}
+              </Button>
               <Select
                 value={pageSize}
                 onChange={(e) => {
@@ -1420,14 +1492,7 @@ export function LeadsClient() {
                   <Button variant="ghost" onClick={() => { const t = prompt("Remove tags (comma separated):", ""); if (t === null) return; bulk("tag_remove", { tags: t }); }}>− Tag</Button>
                   <Button variant="ghost" onClick={() => { const s = prompt("Set status (active/replied/unsubscribed/bounced/suppressed):", "active"); if (s === null) return; bulk("set_status", { status: s }); }}>Set status</Button>
                   <Button variant="ghost" onClick={() => { if (confirm("Stop ALL campaign enrollments for selected leads?")) bulk("stop_campaigns"); }}>Stop campaigns</Button>
-                  <Button variant="ghost" onClick={async () => {
-                    try {
-                      const r = await fetch("/api/leads/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: selectedIds }) });
-                      if (!r.ok) throw new Error(await r.text());
-                      const blob = await r.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a");
-                      a.href = url; a.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-                    } catch (e: any) { notify(`❌ Export failed: ${clip(String(e?.message || e), 140)}`); }
-                  }}>Export CSV</Button>
+                  <Button variant="ghost" disabled={exportBusy} onClick={() => downloadLeadExport("selected")}>{exportBusy ? "Exporting…" : "Export CSV"}</Button>
                   <Button variant="ghost" onClick={() => { if (confirm("Unsuppress selected leads (remove from suppression list)?")) bulk("unsuppress"); }}>Unsuppress</Button>
                   <Button variant="danger" onClick={() => { if (confirm("Delete selected leads? This cannot be undone.")) bulk("delete"); }}>Delete</Button>
                 </div>

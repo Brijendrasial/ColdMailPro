@@ -1061,3 +1061,11 @@ This project is governed by the **ColdMailPro Proprietary License (MTA)** in `LI
 ## Disclaimer
 
 ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare, Google, OpenAI, or any mail provider. Product names are used only to describe integrations or workflow compatibility.
+
+### v2.0.1 — Leads export UI
+
+- Added visible **Export leads** actions to the Leads Command Center.
+- Export selected leads, current filtered view, or all workspace leads as CSV.
+- Export now respects search, status, stage, list, owner, task, tag, contacted, and snooze filters.
+- CSV export now includes owner and list columns.
+
