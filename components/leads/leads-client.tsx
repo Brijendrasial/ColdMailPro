@@ -1458,7 +1458,7 @@ export function LeadsClient() {
                         notify(`❌ Bulk enrich failed: ${clip(String(e?.message || e), 140)}`);
                       } finally { setBulkBusy(false); }
                     }}>{bulkBusy ? "Enriching…" : "⚡ Bulk enrich"}</Button>
-                    <Button variant="ghost" onClick={() => bulk("verify_email", { verifyMode: "no_smtp", requireMailbox: false })}>Verify emails</Button>
+                    <Button variant="ghost" onClick={() => bulk("verify_email", { verifyMode: "smtp", requireMailbox: true })}>Verify SMTP</Button>
                     <Button variant="ghost" onClick={() => { setBulkTaskTitle(""); setBulkTaskDueDate(""); setShowBulkTask(true); }}>+ Task</Button>
                     <Button variant="ghost" onClick={() => { setBulkSnoozeUntil(plusDaysISOLocal(3).slice(0, 10)); setBulkSnoozeReason(""); setShowBulkSnooze(true); }}>Snooze</Button>
                     <Button variant="ghost" onClick={openEnrollModal}>Add to campaign</Button>

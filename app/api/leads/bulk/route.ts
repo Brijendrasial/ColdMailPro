@@ -218,8 +218,10 @@ export async function POST(req: NextRequest) {
     if (!fqdn || !sender) {
       return NextResponse.json({ ok: false, error: "PING_EMAIL_FQDN and PING_EMAIL_SENDER are required." }, { status: 400 });
     }
-    const verifyMode = String(body.verifyMode || "no_smtp");
-    const requireMailbox = !!body.requireMailbox;
+    const verifyMode = String(body.verifyMode || "smtp");
+    // Bulk verify from the Leads page must require explicit SMTP mailbox confirmation by default.
+    // Syntax/MX-only checks can mark addresses as valid even when the mailbox was never confirmed.
+    const requireMailbox = body.requireMailbox === undefined ? true : !!body.requireMailbox;
     const ignoreSMTPVerify = verifyMode === "no_smtp";
     if (requireMailbox && ignoreSMTPVerify) {
       return NextResponse.json({ ok: false, error: "Mailbox verification requires SMTP mode" }, { status: 400 });
@@ -269,7 +271,7 @@ export async function POST(req: NextRequest) {
         const risk = { score, flags, domain: dom, mx: mxOk };
 
         const finalValid = requireMailbox ? !!(valid && mailboxConfirmed) : valid;
-        const finalMsg = requireMailbox && !mailboxConfirmed ? `Not confirmed: ${message}` : message;
+        const finalMsg = requireMailbox && !mailboxConfirmed ? `Not SMTP-confirmed: ${message}` : message;
         results.push({ leadId: l.id, email, valid: finalValid, message: finalMsg, risk });
         await logLeadActivity({ workspaceId: s.wid, leadId: l.id, actorUserId: s.uid || null, type: "verify", text: `${finalValid ? "Valid" : "Invalid"}: ${finalMsg}`, meta: { email, valid: finalValid, risk } });
       } catch (e: any) {
