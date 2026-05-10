@@ -28,7 +28,6 @@ ColdMailPro v2.0.0 is the redesigned command-center release. It includes a full 
 16. [Security checklist](#security-checklist)
 17. [v2.0.0 release notes](#v200-release-notes)
 18. [Patch history](#patch-history)
-19. [GitHub release workflow](#github-release-workflow)
 20. [License](#license)
 
 ---
@@ -987,79 +986,9 @@ This section summarizes the important patch line that led to v2.0.0.
 - Reorganized README with installation first.
 - Added professional production setup instructions.
 - Added complete MariaDB + shadow database setup.
-- Added MailStack, Roundcube, AI, verification, warmup, upgrade, troubleshooting, and release workflow documentation.
+- Added MailStack, Roundcube, AI, verification, warmup, upgrade, troubleshooting, and operational documentation.
 
 ---
-
-## GitHub release workflow
-
-Use this flow to publish v2.0.0 on GitHub.
-
-### 1. Build and commit
-
-```bash
-cd /root/coldmail-pro
-npm ci
-npm run build
-
-git status
-git add .
-git commit -m "Release ColdMailPro v2.0.0"
-```
-
-### 2. Push to main
-
-```bash
-git fetch origin
-git checkout main
-git pull origin main
-git push origin main
-```
-
-If you are working on a release branch:
-
-```bash
-git checkout -b release/v2.0.0
-git push -u origin release/v2.0.0
-```
-
-Then create a pull request:
-
-```text
-release/v2.0.0 → main
-```
-
-### 3. Create tag
-
-After `main` has the release:
-
-```bash
-git checkout main
-git pull origin main
-git tag -a v2.0.0 -m "ColdMailPro v2.0.0 - full redesigned command center release"
-git push origin v2.0.0
-```
-
-### 4. GitHub release title
-
-```text
-ColdMailPro v2.0.0 — Full Redesigned Command Center Release
-```
-
-Suggested release body:
-
-```markdown
-ColdMailPro v2.0.0 is a major full-app redesign and infrastructure operations release.
-
-Highlights:
-- Full command-center UI redesign
-- Redesigned Dashboard, Campaigns, Leads, Mailboxes, Domains, Replies, Analytics, Logs, MailStack, and Settings
-- Improved MailStack server updates
-- Roundcube upstream stable/custom version selector
-- Improved DNS check status and domain cockpit
-- Improved lead enrichment and valid-only import
-- Professional production install documentation
-```
 
 ---
 
