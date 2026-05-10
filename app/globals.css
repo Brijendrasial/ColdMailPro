@@ -9,7 +9,7 @@ body {
   font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: radial-gradient(1200px circle at 20% -10%, rgba(99,102,241,0.10), transparent 55%), radial-gradient(900px circle at 80% -10%, rgba(16,185,129,0.08), transparent 55%), #f8fafc; /* slate-50 */
+  background: radial-gradient(1100px circle at 12% -10%, rgba(99,102,241,0.14), transparent 58%), radial-gradient(950px circle at 92% 0%, rgba(20,184,166,0.12), transparent 54%), linear-gradient(180deg,#f8fbff 0%,#f8fafc 45%,#eef4ff 100%);
   color: #0f172a;      /* slate-900 */
 }
 a { color: inherit; text-decoration: none; }
@@ -34,14 +34,16 @@ a { color: inherit; text-decoration: none; }
 
 @layer components {
   .font-display { font-family: var(--font-sora), var(--font-inter), ui-sans-serif, system-ui; }
-  .glass { @apply rounded-2xl border border-slate-200 bg-white/70 backdrop-blur shadow-soft; }
+  .glass { @apply rounded-[1.6rem] border border-white/70 bg-white/75 backdrop-blur-xl shadow-soft; }
+  .premium-card { @apply relative overflow-hidden rounded-[1.7rem] border border-white/70 bg-white/78 backdrop-blur-xl shadow-[0_22px_70px_rgba(15,23,42,0.07)]; }
   .muted { @apply text-slate-600; }
-  .table-wrap { @apply rounded-2xl border border-slate-200 bg-white/70 backdrop-blur overflow-hidden; }
-  .table-head { @apply text-xs uppercase tracking-wider text-slate-600 bg-slate-50/70; }
-  .table-row { @apply border-t border-slate-200/60 hover:bg-slate-50/60; }
-  .table-cell { @apply p-3 align-top; }
-  .card-title { @apply text-lg font-semibold tracking-tight text-slate-900; }
-  .card-subtitle { @apply text-sm text-slate-600 mt-0.5; }
+  .table-wrap { @apply rounded-[1.5rem] border border-slate-200/80 bg-white/80 backdrop-blur-xl overflow-hidden shadow-[0_18px_50px_rgba(15,23,42,0.06)]; }
+  .table-head { @apply text-xs uppercase tracking-[0.16em] font-semibold text-slate-500 bg-slate-50/90; }
+  .table-row { @apply border-t border-slate-200/60 hover:bg-indigo-50/30 transition; }
+  .table-cell { @apply p-3.5 align-top; }
+  .card-title { @apply text-lg font-semibold tracking-tight text-slate-950 font-display; }
+  .card-subtitle { @apply text-sm text-slate-600 mt-1 leading-6; }
+  .soft-grid { background-image: linear-gradient(rgba(15,23,42,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.035) 1px, transparent 1px); background-size: 28px 28px; }
 }
 
 input[type="checkbox"]{ accent-color: rgb(79 70 229); }

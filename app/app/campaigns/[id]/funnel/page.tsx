@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { Container, Card, Button, Pill, Badge } from "@/components/ui";
@@ -106,17 +107,16 @@ export default async function CampaignFunnelPage({ params }: { params: { id: str
 
   return (
     <Container>
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className="text-xl font-semibold tracking-tight">Funnel · {camp.name}</div>
-          <div className="text-sm opacity-70">A quick stage-by-stage view (enrolled → sent → delivered → opened → clicked → replied).</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Link href={`/app/campaigns/${camp.id}`}><Button variant="ghost">Back</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/deliverability`}><Button variant="ghost">Deliverability</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/analytics`}><Button>Analytics</Button></Link>
-        </div>
-      </div>
+      <CampaignInnerHero
+        campaignId={camp.id}
+        campaignName={camp.name}
+        status={camp.status}
+        active="funnel"
+        title={`Funnel · ${camp.name}`}
+        subtitle="See enrolled, sent, opened, clicked, replied, bounced, and unsubscribed leads as a clean campaign journey."
+        primaryHref={`/app/campaigns/${camp.id}/analytics`}
+        primaryLabel="Analytics"
+      />
 
       <div className="grid lg:grid-cols-3 gap-4 mt-4">
         <Card title="Stage counts" subtitle="Distinct leads per stage (approx).">

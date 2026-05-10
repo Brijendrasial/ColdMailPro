@@ -1,4 +1,5 @@
-import { Container, Card, Pill } from "@/components/ui";
+import Link from "next/link";
+import { Container, Card, Pill, Button } from "@/components/ui";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import ProvisionMailstackClient from "./ProvisionMailstackClient";
@@ -151,43 +152,88 @@ export default async function DomainDetail({ params }: { params: { id: string } 
   ];
 
   return (
-    <Container>
-      <div className="grid gap-4">
-        <Card title={`Domain: ${d.name}`}>
-          <div className="text-sm opacity-80">
-            Below are suggested DNS records. Adjust SPF to include your real sending IP(s) and provider rules.
+    <Container wide className="max-w-[1500px]">
+      <div className="grid gap-6">
+        <section className="relative overflow-hidden rounded-[2rem] border border-white/70 bg-slate-950 text-white shadow-[0_30px_100px_rgba(15,23,42,0.24)]">
+          <div className="absolute inset-0 bg-[radial-gradient(900px_circle_at_0%_0%,rgba(99,102,241,0.32),transparent_42%),radial-gradient(760px_circle_at_100%_0%,rgba(20,184,166,0.25),transparent_40%)]" />
+          <div className="relative p-6 sm:p-8">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-200">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Domain workspace
+                </div>
+                <h1 className="mt-4 font-display text-3xl font-semibold tracking-tight sm:text-5xl">{d.name}</h1>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+                  Publish DNS records, verify propagation, provision mailboxes, and rotate DKIM without breaking active sending.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap lg:justify-end">
+                {healthPill(String(summary?.status || "unknown"), pending)}
+                <Pill tone="info">score {Math.round(Number(summary?.score || 0))}/100</Pill>
+                {existingTenantName ? <Pill tone="success">tenant {existingTenantName}</Pill> : <Pill tone="neutral">no tenant linked</Pill>}
+                <Link href="/app/domains"><Button variant="ghost" className="bg-white/10 text-white border-white/15 hover:bg-white/15">Back to domains</Button></Link>
+              </div>
+            </div>
           </div>
-        </Card>
+        </section>
 
-        <Card
-          title="DNS Health Check"
-          right={
-            <DnsCheckButton domainId={d.id} disabled={pending} />
-          }
-        >
-          <div className="flex items-center gap-2 flex-wrap">
-            {healthPill(String(summary?.status || "unknown"), pending)}
-            <div className="text-sm opacity-70">score: {Math.round(Number(summary?.score || 0))}/100</div>
-            <div className="text-sm opacity-70">last: {latest?.checkedAt ? new Date(latest.checkedAt).toLocaleString() : "—"}</div>
+        <div className="grid gap-4 lg:grid-cols-4">
+          <div className="rounded-[1.6rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)]">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Health score</div>
+            <div className="mt-2 font-display text-4xl font-semibold text-slate-950">{Math.round(Number(summary?.score || 0))}</div>
+            <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-400" style={{ width: `${Math.max(0, Math.min(100, Math.round(Number(summary?.score || 0))))}%` }} />
+            </div>
           </div>
-          {Array.isArray(summary?.issues) && summary.issues.length ? (
-            <div className="mt-2 text-sm">
-              <div className="font-medium mb-1">Issues</div>
-              <ul className="list-disc pl-5 opacity-80">
-                {summary.issues.slice(0, 8).map((x: string, i: number) => <li key={i}>{x}</li>)}
-              </ul>
+          <div className="rounded-[1.6rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)]">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">DKIM selector</div>
+            <div className="mt-2 font-mono text-2xl font-semibold text-slate-950">{selector}</div>
+            <div className="mt-1 text-xs text-slate-500">{hasPendingDkim ? "staged key waiting" : "active key"}</div>
+          </div>
+          <div className="rounded-[1.6rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)]">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Outbound IPs</div>
+            <div className="mt-2 font-display text-4xl font-semibold text-slate-950">{spfBaseIps.length}</div>
+            <div className="mt-1 text-xs text-slate-500">used in SPF suggestion</div>
+          </div>
+          <div className="rounded-[1.6rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)]">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Last check</div>
+            <div className="mt-2 text-lg font-semibold text-slate-950">{latest?.checkedAt ? new Date(latest.checkedAt).toLocaleString() : "—"}</div>
+            <div className="mt-2"><DnsCheckButton domainId={d.id} disabled={pending} /></div>
+          </div>
+        </div>
+
+        <Card title="DNS health radar" subtitle="A quick read on the required records before provisioning or sending.">
+          <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
+            <div className="rounded-[1.6rem] border border-slate-200/80 bg-slate-50/80 p-5">
+              <div className="flex items-center gap-2 flex-wrap">
+                {healthPill(String(summary?.status || "unknown"), pending)}
+                <span className="text-sm text-slate-500">Required records must pass before mailbox provisioning unlocks.</span>
+              </div>
+              {Array.isArray(summary?.issues) && summary.issues.length ? (
+                <div className="mt-4">
+                  <div className="text-sm font-semibold text-slate-950">What needs attention</div>
+                  <ul className="mt-2 grid gap-2 text-sm leading-6 text-slate-700">
+                    {summary.issues.slice(0, 8).map((x: string, i: number) => <li key={i} className="rounded-2xl border border-amber-200 bg-amber-50/80 px-3 py-2">{x}</li>)}
+                  </ul>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 text-sm text-emerald-800">No issues found, or DNS has not been checked yet.</div>
+              )}
             </div>
-          ) : (
-            <div className="mt-2 text-sm opacity-70">No issues found (or not checked yet).</div>
-          )}
-          {rec ? (
-            <div className="mt-3 text-xs opacity-80 grid gap-1">
-              <div><b>SPF</b>: {rec?.spf?.detail || "—"}</div>
-              <div><b>DKIM</b>: {rec?.dkim?.detail || "—"}</div>
-              <div><b>DMARC</b>: {rec?.dmarc?.detail || "—"}</div>
-              <div><b>MX</b>: {rec?.mx?.detail || "—"}</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                ["SPF", rec?.spf?.detail || "—"],
+                ["DKIM", rec?.dkim?.detail || "—"],
+                ["DMARC", rec?.dmarc?.detail || "—"],
+                ["MX", rec?.mx?.detail || "—"],
+              ].map(([label, detail]) => (
+                <div key={label} className="rounded-[1.4rem] border border-slate-200/80 bg-white/80 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+                  <div className="mt-2 text-sm leading-6 text-slate-700 break-words">{detail}</div>
+                </div>
+              ))}
             </div>
-          ) : null}
+          </div>
         </Card>
 
         <DomainDnsTabs
@@ -201,9 +247,9 @@ export default async function DomainDetail({ params }: { params: { id: string } 
           tenantName={existingTenantName || undefined}
           dnsRows={dnsRows as any}
         >
-          <Card title="Mailstack provisioning">
+          <Card title="Mailstack provisioning" subtitle="Create or update the tenant, outbound IP pool, mailbox users, HELO, and DMARC defaults.">
             {!hasMailstackModels ? (
-              <div className="text-sm opacity-80">Mailstack models are not available in this build.</div>
+              <div className="text-sm text-slate-600">Mailstack models are not available in this build.</div>
             ) : (
               <ProvisionMailstackClient
                 domainId={d.id}
@@ -228,31 +274,29 @@ export default async function DomainDetail({ params }: { params: { id: string } 
             )}
           </Card>
 
-          <Card title="DKIM rotation (zero‑downtime)">
-            <div className="grid gap-3">
-              <div>
-                <div className="text-sm opacity-80 mb-2">
-                  <b>Active</b>: selector <b>{selector}</b> &nbsp;•&nbsp; TXT <b>{dkimName}</b>
-                </div>
-                <pre className="text-xs whitespace-pre-wrap break-words">{dkimValue}</pre>
+          <Card title="DKIM rotation studio" subtitle="Stage a fresh selector, publish it, then activate without breaking the current key.">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-[1.5rem] border border-slate-200/80 bg-white/80 p-4">
+                <div className="text-sm font-semibold text-slate-950">Active DKIM</div>
+                <div className="mt-1 text-xs text-slate-500">selector <b>{selector}</b> · TXT <b>{dkimName}</b></div>
+                <pre className="mt-3 max-h-44 overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-3 text-xs text-slate-100 whitespace-pre-wrap break-words">{dkimValue}</pre>
               </div>
 
-              {hasPendingDkim ? (
-                <div>
-                  <div className="text-sm opacity-80 mb-2">
-                    <b>Staged</b>: selector <b>{pendingSelector}</b> &nbsp;•&nbsp; TXT <b>{pendingName}</b>
-                  </div>
-                  <pre className="text-xs whitespace-pre-wrap break-words">{pendingValue}</pre>
-                  <div className="text-xs opacity-70 mt-1">
-                    Publish this staged TXT record in DNS first (Manual DNS tab). When it resolves, click Activate.
-                  </div>
-                </div>
-              ) : (
-                <div className="text-xs opacity-70">
-                  No staged DKIM yet. Use <b>Stage DKIM (safe)</b> to generate a new selector without breaking Gmail DKIM.
-                </div>
-              )}
+              <div className="rounded-[1.5rem] border border-slate-200/80 bg-white/80 p-4">
+                <div className="text-sm font-semibold text-slate-950">Staged DKIM</div>
+                {hasPendingDkim ? (
+                  <>
+                    <div className="mt-1 text-xs text-slate-500">selector <b>{pendingSelector}</b> · TXT <b>{pendingName}</b></div>
+                    <pre className="mt-3 max-h-44 overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-3 text-xs text-slate-100 whitespace-pre-wrap break-words">{pendingValue}</pre>
+                    <div className="mt-2 text-xs text-slate-500">Publish this staged TXT record first. When it resolves, activate it.</div>
+                  </>
+                ) : (
+                  <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No staged DKIM yet.</div>
+                )}
+              </div>
+            </div>
 
+            <div className="mt-4">
               {hasMailstackModels && existingTenantId ? (
                 <DkimRotationPanel
                   domainId={d.id}
@@ -264,7 +308,7 @@ export default async function DomainDetail({ params }: { params: { id: string } 
                   hasCloudflareToken={hasCloudflareToken}
                 />
               ) : (
-                <div className="text-xs opacity-70">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-600">
                   To stage/activate DKIM from the app, first provision this domain into a Mailstack tenant.
                 </div>
               )}
@@ -272,27 +316,24 @@ export default async function DomainDetail({ params }: { params: { id: string } 
           </Card>
         </DomainDnsTabs>
 
-        {d.trackingSubdomain ? (
-          <Card title="Tracking CNAME (suggested)">
-            <div className="text-sm opacity-80 mb-2"><b>Name</b>: {d.trackingSubdomain}</div>
-            <pre className="text-xs whitespace-pre-wrap break-words">{process.env.PUBLIC_APP_URL ?? "https://app.yourdomain.com"}</pre>
-            <div className="text-xs opacity-70 mt-2">
-              Better approach: point tracking subdomain to your app domain (CNAME to app host).
-            </div>
-          </Card>
-        ) : null}
+        <div className="grid gap-6 lg:grid-cols-2">
+          {d.trackingSubdomain ? (
+            <Card title="Tracking CNAME" subtitle="Point tracking to the app host for click/open tracking.">
+              <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 text-sm">
+                <div><b>Name:</b> {d.trackingSubdomain}</div>
+                <pre className="mt-3 whitespace-pre-wrap break-words rounded-2xl bg-slate-950 p-3 text-xs text-slate-100">{process.env.PUBLIC_APP_URL ?? "https://app.yourdomain.com"}</pre>
+              </div>
+            </Card>
+          ) : null}
 
-        <Card title="Danger zone">
-          <div className="text-sm opacity-80">
-            This removes the domain from the app and deletes any mailboxes whose email ends with <b>@{d.name}</b>.
-          </div>
-          <div className="mt-3">
-            <DeleteDomainButton domainId={d.id} domainName={d.name} />
-          </div>
-          <div className="text-xs opacity-70 mt-2">
-            Note: this does not automatically delete the mailbox accounts from the Mailstack server OS. It unlinks and removes them from the app.
-          </div>
-        </Card>
+          <Card title="Danger zone" subtitle="Remove this domain from the app only when you are sure.">
+            <div className="rounded-2xl border border-red-200 bg-red-50/70 p-4 text-sm text-red-900">
+              This removes the domain from the app and deletes mailboxes whose email ends with <b>@{d.name}</b> from the app database.
+            </div>
+            <div className="mt-4"><DeleteDomainButton domainId={d.id} domainName={d.name} /></div>
+            <div className="mt-2 text-xs text-slate-500">It does not automatically delete operating-system mailbox accounts on the Mailstack server.</div>
+          </Card>
+        </div>
       </div>
     </Container>
   );

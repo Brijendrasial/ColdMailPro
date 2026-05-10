@@ -1,29 +1,6 @@
-import Link from "next/link";
-import { Container, Card } from "@/components/ui";
+import { Container, Card, PageHeader, SegmentedNav, Pill } from "@/components/ui";
 import { requireSession } from "@/lib/auth";
 import WarmupControlCenterClient from "./WarmupControlCenterClient";
-
-function SubTabs({ active }: { active: "mailboxes" | "pools" | "warmup" | "control" }) {
-  const base = "px-3 py-1.5 rounded-xl text-sm border transition";
-  const on = "bg-slate-900 text-white border-slate-900/20";
-  const off = "bg-white text-slate-700 border-slate-200 hover:bg-slate-50";
-  return (
-    <div className="inline-flex items-center gap-2 flex-wrap">
-      <Link className={`${base} ${active === "mailboxes" ? on : off}`} href="/app/mailboxes">
-        📮 Mailboxes
-      </Link>
-      <Link className={`${base} ${active === "pools" ? on : off}`} href="/app/mailboxes/pools">
-        🧺 Pools
-      </Link>
-      <Link className={`${base} ${active === "warmup" ? on : off}`} href="/app/mailboxes/warmup">
-        🔥 Warmup
-      </Link>
-      <Link className={`${base} ${active === "control" ? on : off}`} href="/app/mailboxes/warmup/control-center">
-        🧭 Control Center
-      </Link>
-    </div>
-  );
-}
 
 export default async function WarmupControlCenterPage() {
   try {
@@ -40,15 +17,35 @@ export default async function WarmupControlCenterPage() {
 
   return (
     <Container wide>
-      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
-        <div>
-          <div className="text-2xl font-semibold">🧭 Warmup Control Center</div>
-          <div className="text-sm text-slate-500">Worker health, mailbox warmup health, placement and logs.</div>
-        </div>
-        <SubTabs active="control" />
-      </div>
+      <PageHeader
+        title="Warmup Control Center"
+        subtitle="Monitor worker health, mailbox warmup status, placement, logs, and emergency controls from one operator screen."
+        right={
+          <SegmentedNav
+            active="control"
+            items={[
+              { value: "mailboxes", label: "📮 Mailboxes", href: "/app/mailboxes" },
+              { value: "pools", label: "🧺 Pools", href: "/app/mailboxes/pools" },
+              { value: "warmup", label: "🔥 Warmup", href: "/app/mailboxes/warmup" },
+              { value: "control", label: "🧭 Control", href: "/app/mailboxes/warmup/control-center" },
+            ]}
+          />
+        }
+      />
 
-      <WarmupControlCenterClient />
+      <div className="mt-6 grid grid-cols-1 2xl:grid-cols-[360px_minmax(0,1fr)] gap-6 items-start">
+        <aside className="2xl:sticky 2xl:top-6 relative overflow-hidden rounded-[2rem] border border-slate-900/10 bg-slate-950 p-6 text-white shadow-[0_30px_90px_rgba(15,23,42,0.22)]">
+          <div className="absolute -right-16 -top-16 h-44 w-44 rounded-full bg-cyan-500/30 blur-3xl" />
+          <div className="relative">
+            <Pill tone="info">Operations</Pill>
+            <h2 className="mt-4 text-2xl font-semibold tracking-tight font-display">Diagnose warmup before deliverability slips.</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-300">
+              Use this page when warmup volume stalls, placement drops, or senders need manual intervention.
+            </p>
+          </div>
+        </aside>
+        <WarmupControlCenterClient />
+      </div>
     </Container>
   );
 }

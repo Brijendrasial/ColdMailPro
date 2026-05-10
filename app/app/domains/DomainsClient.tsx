@@ -8,7 +8,7 @@ type DomainHealth = {
   pending: boolean;
   checkedAt: string | null;
   status: "unknown" | "healthy" | "warning" | "fail";
-  score: number; // 0..100
+  score: number;
   issues: string[];
   spf: { ok: boolean; detail?: string } | null;
   dkim: { ok: boolean; selector?: string; detail?: string } | null;
@@ -45,6 +45,14 @@ function clip(s: string, n: number) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
+function statusText(h: DomainHealth) {
+  if (h.pending) return "Checking";
+  if (h.status === "healthy") return "Healthy";
+  if (h.status === "warning") return "Needs work";
+  if (h.status === "fail") return "Misconfigured";
+  return "Not checked";
+}
+
 function statusPill(h: DomainHealth) {
   if (h.pending) return <Pill tone="info">checking…</Pill>;
   if (h.status === "healthy") return <Pill tone="success">healthy</Pill>;
@@ -53,31 +61,32 @@ function statusPill(h: DomainHealth) {
   return <Pill tone="neutral">not checked</Pill>;
 }
 
-function scoreBar(score: number, status: DomainHealth["status"], pending: boolean) {
-  const s = Math.max(0, Math.min(100, Math.round(score || 0)));
-  const tone = pending
-    ? "bg-indigo-500"
-    : status === "healthy"
-      ? "bg-emerald-500"
-      : status === "warning"
-        ? "bg-amber-500"
-        : status === "fail"
-          ? "bg-red-500"
-          : "bg-slate-400";
+function scoreClass(status: DomainHealth["status"], pending: boolean) {
+  if (pending) return "from-indigo-500 to-sky-400";
+  if (status === "healthy") return "from-emerald-500 to-teal-400";
+  if (status === "warning") return "from-amber-500 to-orange-400";
+  if (status === "fail") return "from-red-500 to-rose-500";
+  return "from-slate-400 to-slate-300";
+}
 
+function scoreBar(h: DomainHealth) {
+  const s = Math.max(0, Math.min(100, Math.round(h.score || 0)));
   return (
-    <div className="mt-2">
-      <div className="h-2 w-28 rounded-full bg-slate-200/80 overflow-hidden">
-        <div className={`${tone} h-full`} style={{ width: `${s}%` }} />
+    <div className="mt-3">
+      <div className="flex items-center justify-between text-xs text-slate-500">
+        <span>DNS score</span>
+        <span className="font-semibold text-slate-700">{s}/100</span>
       </div>
-      <div className="text-[11px] text-slate-600 mt-1">score {s}/100</div>
+      <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-slate-200/80">
+        <div className={`h-full rounded-full bg-gradient-to-r ${scoreClass(h.status, h.pending)}`} style={{ width: `${s}%` }} />
+      </div>
     </div>
   );
 }
 
 function recPill(label: string, ok: boolean | null | undefined, detail?: string) {
   const tone = ok === true ? "success" : ok === false ? "danger" : "neutral";
-  const text = ok === true ? `${label}: ok` : ok === false ? `${label}: fail` : `${label}: —`;
+  const text = ok === true ? `${label} ok` : ok === false ? `${label} fail` : `${label} —`;
   return (
     <span title={detail || ""}>
       <Pill tone={tone as any}>{text}</Pill>
@@ -113,7 +122,6 @@ export default function DomainsClient() {
     refresh();
   }, []);
 
-  // auto-refresh so pending checks update
   useEffect(() => {
     const t = setInterval(() => refresh(), 30_000);
     return () => clearInterval(t);
@@ -132,7 +140,10 @@ export default function DomainsClient() {
     if (needle) {
       out = out.filter((r) => r.name.toLowerCase().includes(needle) || (r.trackingSubdomain || "").toLowerCase().includes(needle));
     }
-    out.sort((a, b) => a.name.localeCompare(b.name));
+    out.sort((a, b) => {
+      const rank: Record<string, number> = { fail: 0, warning: 1, unknown: 2, healthy: 3 };
+      return (rank[a.health?.status || "unknown"] ?? 2) - (rank[b.health?.status || "unknown"] ?? 2) || a.name.localeCompare(b.name);
+    });
     return out;
   }, [rows, q, filter]);
 
@@ -157,7 +168,7 @@ export default function DomainsClient() {
         body: JSON.stringify({ domainId }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setNotice("DNS check enqueued.");
+      setNotice("DNS check enqueued. This page auto-refreshes while checks complete.");
       await refresh();
     } catch (e: any) {
       setError(String(e?.message || e || "FAILED"));
@@ -177,7 +188,7 @@ export default function DomainsClient() {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(String(j?.error || j?.message || (await res.text())));
-      setNotice("Rotate-now queued.");
+      setNotice("Rotate-now queued. Worker will apply the new outbound IP.");
       await refresh();
     } catch (e: any) {
       setError(String(e?.message || e || "FAILED"));
@@ -210,160 +221,145 @@ export default function DomainsClient() {
   if (loading) {
     return (
       <div className="grid gap-4">
-        <div className="grid sm:grid-cols-4 gap-3 animate-pulse">
-          <div className="glass p-5 h-[90px]" />
-          <div className="glass p-5 h-[90px]" />
-          <div className="glass p-5 h-[90px]" />
-          <div className="glass p-5 h-[90px]" />
+        <div className="grid gap-3 sm:grid-cols-4 animate-pulse">
+          <div className="glass h-[112px]" />
+          <div className="glass h-[112px]" />
+          <div className="glass h-[112px]" />
+          <div className="glass h-[112px]" />
         </div>
-        <div className="glass p-5 h-[220px] animate-pulse" />
+        <div className="glass h-[260px] animate-pulse" />
       </div>
     );
   }
 
   return (
-    <div className="grid gap-4">
-      <div className="grid sm:grid-cols-4 gap-3">
+    <div className="grid gap-5">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <button type="button" onClick={() => setFilter("all")} className="text-left">
-          <Kpi label="Domains" value={counts.all} hint="All domains" tone={filter === "all" ? "info" : "neutral"} />
+          <Kpi label="Domains" value={counts.all} hint="Total domain fleet" tone={filter === "all" ? "info" : "neutral"} />
         </button>
         <button type="button" onClick={() => setFilter("healthy")} className="text-left">
           <Kpi label="Healthy" value={counts.healthy} hint="Ready to send" tone={filter === "healthy" ? "success" : "neutral"} />
         </button>
         <button type="button" onClick={() => setFilter("warning")} className="text-left">
-          <Kpi label="Needs work" value={counts.warning} hint="Fix DNS" tone={filter === "warning" ? "warning" : "neutral"} />
+          <Kpi label="Needs work" value={counts.warning} hint="Fix DNS warnings" tone={filter === "warning" ? "warning" : "neutral"} />
         </button>
         <button type="button" onClick={() => setFilter("fail")} className="text-left">
           <Kpi label="Misconfigured" value={counts.fail} hint="Blocking issues" tone={filter === "fail" ? "danger" : "neutral"} />
         </button>
       </div>
 
-      {error ? (
-        <div className="rounded-2xl border border-red-200 bg-red-50/60 p-3 text-sm text-red-800">{clip(error, 300)}</div>
-      ) : null}
-      {notice ? (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 text-sm text-emerald-800">{notice}</div>
-      ) : null}
+      {error ? <div className="rounded-2xl border border-red-200 bg-red-50/80 p-3 text-sm text-red-800">{clip(error, 300)}</div> : null}
+      {notice ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-3 text-sm text-emerald-800">{notice}</div> : null}
 
-      <div className="flex items-center gap-2 flex-wrap">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search domains…" className="max-w-sm" />
-        <div className="flex items-center gap-2 flex-wrap">
-          <button type="button" onClick={() => setFilter("all")}>
-            <Pill tone={filter === "all" ? "info" : "neutral"}>All</Pill>
-          </button>
-          <button type="button" onClick={() => setFilter("pending")}>
-            <Pill tone={filter === "pending" ? "info" : "neutral"}>Checking ({counts.pending})</Pill>
-          </button>
-          <button type="button" onClick={() => setFilter("healthy")}>
-            <Pill tone={filter === "healthy" ? "success" : "neutral"}>Healthy</Pill>
-          </button>
-          <button type="button" onClick={() => setFilter("warning")}>
-            <Pill tone={filter === "warning" ? "warning" : "neutral"}>Needs work</Pill>
-          </button>
-          <button type="button" onClick={() => setFilter("fail")}>
-            <Pill tone={filter === "fail" ? "danger" : "neutral"}>Misconfigured</Pill>
-          </button>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" onClick={() => refresh()}>Refresh</Button>
+      <div className="rounded-[1.5rem] border border-slate-200/80 bg-white/78 p-3 shadow-sm backdrop-blur-xl">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search domains, tracking subdomains…" className="xl:max-w-md" />
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 xl:pb-0">
+            {[
+              ["all", `All ${counts.all}`, "info"],
+              ["pending", `Checking ${counts.pending}`, "info"],
+              ["healthy", "Healthy", "success"],
+              ["warning", "Needs work", "warning"],
+              ["fail", "Misconfigured", "danger"],
+            ].map(([key, label, tone]) => (
+              <button key={key} type="button" onClick={() => setFilter(key as any)} className="shrink-0">
+                <Pill tone={filter === key ? (tone as any) : "neutral"}>{label}</Pill>
+              </button>
+            ))}
+          </div>
+          <div className="xl:ml-auto">
+            <Button variant="ghost" onClick={() => refresh()}>Refresh</Button>
+          </div>
         </div>
       </div>
 
-      <Divider />
-
-      <div className="table-wrap overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="table-head">
-            <tr className="text-left">
-              <th className="table-cell">Domain</th>
-              <th className="table-cell">Health</th>
-              <th className="table-cell">Mailstack</th>
-              <th className="table-cell">Records</th>
-              <th className="table-cell">Issues</th>
-              <th className="table-cell">Last check</th>
-              <th className="table-cell">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {view.map((r) => (
-              <tr key={r.id} className="table-row">
-                <td className="table-cell">
-                  <div className="font-medium">{r.name}</div>
-                  <div className="text-xs text-slate-600 mt-0.5">
-                    selector: <span className="font-mono">{r.dkimSelector}</span>
-                    {r.trackingSubdomain ? (
-                      <>
-                        <span className="mx-1">•</span>
-                        tracking: <span className="font-mono">{r.trackingSubdomain}</span>
-                      </>
-                    ) : null}
+      <div className="grid gap-4">
+        {view.map((r) => (
+          <article key={r.id} className="group relative overflow-hidden rounded-[1.8rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:shadow-[0_24px_90px_rgba(15,23,42,0.1)]">
+            <div className={`absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r ${scoreClass(r.health.status, r.health.pending)}`} />
+            <div className="grid gap-5 xl:grid-cols-[1fr_1.25fr_0.95fr] xl:items-start">
+              <div>
+                <div className="flex items-start gap-3">
+                  <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-slate-950 text-lg font-semibold text-white shadow-lg">
+                    {r.name.slice(0, 1).toUpperCase()}
                   </div>
-                </td>
-                <td className="table-cell">
-                  {statusPill(r.health)}
-                  {scoreBar(r.health.score, r.health.status, r.health.pending)}
-                </td>
-                <td className="table-cell">
-                  {r.mailstack ? (
-                    <div className="text-xs">
-                      <div className="font-medium">{r.mailstack.tenantName || "(tenant)"}</div>
-                      <div className="text-slate-600 mt-0.5">IPs: {r.mailstack.ipCount}</div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Link href={`/app/domains/${r.id}`} className="font-display text-lg font-semibold text-slate-950 hover:text-indigo-700">
+                        {r.name}
+                      </Link>
+                      {statusPill(r.health)}
                     </div>
-                  ) : (
-                    <div className="text-xs text-slate-500">—</div>
-                  )}
-                </td>
-                <td className="table-cell">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {recPill("SPF", r.health.spf?.ok ?? null, r.health.spf?.detail)}
-                    {recPill("DKIM", r.health.dkim?.ok ?? null, r.health.dkim?.detail)}
-                    {recPill("DMARC", r.health.dmarc?.ok ?? null, r.health.dmarc?.detail)}
-                    {recPill("MX", r.health.mx?.ok ?? null, r.health.mx?.detail)}
+                    <div className="mt-1 text-xs leading-5 text-slate-500">
+                      selector <span className="font-mono text-slate-700">{r.dkimSelector}</span>
+                      {r.trackingSubdomain ? <span> · tracking <span className="font-mono text-slate-700">{r.trackingSubdomain}</span></span> : null}
+                    </div>
+                    {scoreBar(r.health)}
                   </div>
-                </td>
-                <td className="table-cell">
-                  <div className="text-xs text-slate-700">
-                    {r.health.issues?.length ? clip(r.health.issues.join(" • "), 140) : "—"}
+                </div>
+              </div>
+
+              <div className="grid gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {recPill("SPF", r.health.spf?.ok ?? null, r.health.spf?.detail)}
+                  {recPill("DKIM", r.health.dkim?.ok ?? null, r.health.dkim?.detail)}
+                  {recPill("DMARC", r.health.dmarc?.ok ?? null, r.health.dmarc?.detail)}
+                  {recPill("MX", r.health.mx?.ok ?? null, r.health.mx?.detail)}
+                </div>
+                <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-3 text-sm leading-6 text-slate-700">
+                  {r.health.issues?.length ? clip(r.health.issues.join(" • "), 220) : `No DNS issues found for ${r.name}.`}
+                </div>
+              </div>
+
+              <div className="grid gap-3">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Mailstack</div>
+                    {r.mailstack ? (
+                      <div className="mt-1 font-semibold text-slate-900">{r.mailstack.tenantName || "Tenant"}</div>
+                    ) : (
+                      <div className="mt-1 text-slate-500">Not linked</div>
+                    )}
                   </div>
-                </td>
-                <td className="table-cell">
-                  <div>{fmtWhen(r.health.checkedAt)}</div>
-                </td>
-                <td className="table-cell">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Button variant="ghost" onClick={() => runCheck(r.id)} disabled={!!busy[r.id] || r.health.pending}>
-                      {busy[r.id] || r.health.pending ? "Checking…" : "Check"}
-                    </Button>
-                    {r.mailstack?.tenantId ? (
-                      <Button
-                        variant="ghost"
-                        onClick={() => rotateNow(r.mailstack!.tenantId, r.id)}
-                        disabled={!!busy[r.id] || (r.mailstack?.ipCount || 0) < 2}
-                        title={(r.mailstack?.ipCount || 0) < 2 ? "Add 2+ outbound IPs to enable rotation" : "Rotate outbound IP now"}
-                      >
-                        Rotate IP
-                      </Button>
-                    ) : null}
-                    <Link href={`/app/domains/${r.id}`}>
-                      <Button variant="ghost">Open</Button>
-                    </Link>
+                  <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Last check</div>
+                    <div className="mt-1 font-semibold text-slate-900">{fmtWhen(r.health.checkedAt)}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap xl:justify-end">
+                  <Button variant="ghost" onClick={() => runCheck(r.id)} disabled={!!busy[r.id] || r.health.pending}>
+                    {busy[r.id] || r.health.pending ? "Checking…" : "Check DNS"}
+                  </Button>
+                  {r.mailstack?.tenantId ? (
                     <Button
                       variant="ghost"
-                      onClick={() => del(r.id, r.name)}
-                      disabled={!!busy[r.id]}
-                      className="text-red-700"
+                      onClick={() => rotateNow(r.mailstack!.tenantId, r.id)}
+                      disabled={!!busy[r.id] || (r.mailstack?.ipCount || 0) < 2}
+                      title={(r.mailstack?.ipCount || 0) < 2 ? "Add 2+ outbound IPs to enable rotation" : "Rotate outbound IP now"}
                     >
-                      Delete
+                      Rotate IP
                     </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  ) : null}
+                  <Link href={`/app/domains/${r.id}`}>
+                    <Button>Open</Button>
+                  </Link>
+                  <Button variant="ghost" onClick={() => del(r.id, r.name)} disabled={!!busy[r.id]} className="text-red-700">
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </article>
+        ))}
       </div>
 
-      {view.length === 0 ? <div className="text-sm text-slate-600">No domains match your filters.</div> : null}
+      {view.length === 0 ? (
+        <div className="rounded-[1.7rem] border border-dashed border-slate-200 bg-white/70 p-10 text-center">
+          <div className="text-lg font-semibold text-slate-950">No matching domains</div>
+          <p className="mt-1 text-sm text-slate-500">Try a different filter or add a new domain batch above.</p>
+        </div>
+      ) : null}
     </div>
   );
 }

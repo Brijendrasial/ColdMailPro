@@ -1,4 +1,5 @@
 import { Container, Card, Input, TextArea, Button } from "@/components/ui";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -26,8 +27,18 @@ export default async function EditSteps({ params }: { params: { id: string } }) 
 
   return (
     <Container>
-      <div className="max-w-4xl grid gap-4">
-        <Card title={`Edit steps: ${camp.name}`}>
+      <CampaignInnerHero
+        campaignId={camp.id}
+        campaignName={camp.name}
+        status={camp.status}
+        active="steps"
+        title="Edit sequence"
+        subtitle="Write and A/B test the outreach steps with cleaner spacing and a focused builder layout."
+        primaryHref={`/app/campaigns/${camp.id}/analytics`}
+        primaryLabel="View analytics"
+      />
+      <div className="max-w-5xl grid gap-4 mx-auto">
+        <Card title={`Sequence builder: ${camp.name}`}>
           <form action="/api/campaigns/updateSteps" method="post" className="grid gap-6">
             <input type="hidden" name="campaignId" value={camp.id} />
 

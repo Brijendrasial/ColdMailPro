@@ -2,12 +2,11 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import dayjs from "dayjs";
-import { Badge, Button, Card, EmptyState, Input, Kpi, Pill, Select } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, Input, Pill, Select } from "@/components/ui";
 import type { AnalyticsRangeKey, AnalyticsSummary } from "@/components/analytics/types";
 import { BarList, Heatmap, LineAreaChart, Sparkline } from "@/components/analytics/charts";
 
 type TabKey = "overview" | "campaigns" | "mailboxes" | "deliverability" | "funnel" | "heatmap" | "events";
-
 type BounceTypeKey = "" | "blocked" | "policy" | "hard" | "soft" | "mailbox_full" | "unknown";
 
 export type AnalyticsInitialParams = {
@@ -20,8 +19,18 @@ export type AnalyticsInitialParams = {
   bounceType?: string;
 };
 
+const tabOptions: { key: TabKey; label: string; icon: string }[] = [
+  { key: "overview", label: "Overview", icon: "✦" },
+  { key: "campaigns", label: "Campaigns", icon: "🚀" },
+  { key: "mailboxes", label: "Mailboxes", icon: "📬" },
+  { key: "deliverability", label: "Deliverability", icon: "🛡️" },
+  { key: "funnel", label: "Funnel", icon: "⚡" },
+  { key: "heatmap", label: "Heatmap", icon: "▦" },
+  { key: "events", label: "Events", icon: "◎" },
+];
+
 function isTabKey(v: string): v is TabKey {
-  return ["overview", "campaigns", "mailboxes", "deliverability", "funnel", "heatmap", "events"].includes(v);
+  return tabOptions.some((t) => t.key === v);
 }
 
 function isRangeKey(v: string): v is AnalyticsRangeKey {
@@ -49,6 +58,29 @@ function pct(n: number) {
 
 function fmt(n: number) {
   return (n ?? 0).toLocaleString();
+}
+
+function scoreColor(score: number) {
+  if (score >= 80) return "text-emerald-300";
+  if (score >= 55) return "text-amber-200";
+  return "text-rose-200";
+}
+
+function performanceScore(data: AnalyticsSummary | null) {
+  if (!data) return 0;
+  const reply = Math.min(40, data.kpis.replyRate * 650);
+  const open = Math.min(20, data.kpis.openRate * 75);
+  const bouncePenalty = Math.min(35, data.kpis.bounceRate * 450);
+  const unsubPenalty = Math.min(12, data.kpis.unsubRate * 700);
+  const volume = data.kpis.sent >= 50 ? 10 : data.kpis.sent >= 10 ? 6 : data.kpis.sent > 0 ? 3 : 0;
+  return Math.max(0, Math.min(100, Math.round(45 + reply + open + volume - bouncePenalty - unsubPenalty)));
+}
+
+function rangeLabel(range: AnalyticsRangeKey) {
+  if (range === "7d") return "Last 7 days";
+  if (range === "30d") return "Last 30 days";
+  if (range === "90d") return "Last 90 days";
+  return "Custom range";
 }
 
 export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitialParams }) {
@@ -105,15 +137,9 @@ export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitia
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qs]);
 
-  const tabs: { key: TabKey; label: string }[] = [
-    { key: "overview", label: "Overview" },
-    { key: "campaigns", label: "Campaigns" },
-    { key: "mailboxes", label: "Mailboxes" },
-    { key: "deliverability", label: "Deliverability" },
-    { key: "funnel", label: "Funnel" },
-    { key: "heatmap", label: "Heatmap" },
-    { key: "events", label: "Events" },
-  ];
+  const score = performanceScore(data);
+  const selectedCampaign = data?.filters.campaigns.find((c) => c.id === campaignId)?.name;
+  const selectedMailbox = data?.filters.mailboxes.find((m) => m.id === mailboxId)?.fromEmail;
 
   const series = useMemo(() => {
     if (!data) return [] as { name: string; values: number[] }[];
@@ -125,51 +151,91 @@ export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitia
   }, [data]);
 
   const spark = useMemo(() => {
-    if (!data) return { sent: [], replies: [], bounces: [] };
+    if (!data) return { sent: [], replies: [], opens: [], bounces: [] };
     return {
       sent: data.timeseries.sent,
       replies: data.timeseries.replies,
+      opens: data.timeseries.opens,
       bounces: data.timeseries.bounces,
     };
   }, [data]);
 
   return (
     <div className="space-y-6">
-      {/* Controls */}
-      <div className="glass p-4 sm:p-5">
-        <div className="flex flex-col lg:flex-row lg:items-end gap-3">
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 flex-1">
+      <section className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-4">
+        <div className="relative overflow-hidden rounded-[2rem] border border-slate-900/10 bg-slate-950 p-6 text-white shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+          <div className="absolute inset-0 bg-[radial-gradient(520px_circle_at_0%_0%,rgba(99,102,241,0.42),transparent_48%),radial-gradient(420px_circle_at_100%_20%,rgba(20,184,166,0.26),transparent_45%)]" />
+          <div className="relative">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Performance score</div>
+                <div className={`mt-3 text-7xl font-semibold tracking-tight font-display ${scoreColor(score)}`}>{score}</div>
+                <div className="mt-1 text-sm text-slate-300">Calculated from reply rate, open rate, bounces, unsubscribes, and volume.</div>
+              </div>
+              <div className="h-24 w-24 rounded-full border border-white/10 bg-white/5 p-2 shadow-inner">
+                <div
+                  className="grid h-full w-full place-items-center rounded-full border border-white/10 text-lg font-bold"
+                  style={{ background: `conic-gradient(rgb(52 211 153) ${score * 3.6}deg, rgba(255,255,255,0.08) 0deg)` }}
+                >
+                  <div className="grid h-16 w-16 place-items-center rounded-full bg-slate-950/90">{score}%</div>
+                </div>
+              </div>
+            </div>
+            <div className="mt-6 grid grid-cols-3 gap-2 text-sm">
+              <MiniStat label="Reply" value={data ? pct(data.kpis.replyRate) : "—"} />
+              <MiniStat label="Bounce" value={data ? pct(data.kpis.bounceRate) : "—"} />
+              <MiniStat label="Volume" value={data ? fmt(data.kpis.sent) : "—"} />
+            </div>
+          </div>
+        </div>
+
+        <div className="premium-card p-4 sm:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Range</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Insight filters</div>
+              <h2 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950 font-display">Slice the signal</h2>
+              <p className="mt-1 text-sm text-slate-600">Filter by time, campaign, mailbox, and bounce type without losing the dashboard context.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {data ? <Badge>{dayjs(data.range.from).format("MMM D")} – {dayjs(data.range.to).format("MMM D")}</Badge> : null}
+              {campaignId ? <Pill tone="info">{selectedCampaign || "Campaign filtered"}</Pill> : null}
+              {mailboxId ? <Pill tone="info">{selectedMailbox || "Mailbox filtered"}</Pill> : null}
+              {bounceType ? <Pill tone="warning">{bounceLabel(bounceType)}</Pill> : null}
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <Field label="Range" className="xl:col-span-1">
               <Select value={range} onChange={(e) => setRange(e.target.value as AnalyticsRangeKey)}>
                 <option value="7d">Last 7 days</option>
                 <option value="30d">Last 30 days</option>
                 <option value="90d">Last 90 days</option>
                 <option value="custom">Custom</option>
               </Select>
-            </div>
-            <div className={`${range === "custom" ? "" : "opacity-50 pointer-events-none"}`}>
-              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">From</div>
+            </Field>
+            <Field label="From" className={range === "custom" ? "" : "opacity-50 pointer-events-none"}>
               <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
-            </div>
-            <div className={`${range === "custom" ? "" : "opacity-50 pointer-events-none"}`}>
-              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">To</div>
+            </Field>
+            <Field label="To" className={range === "custom" ? "" : "opacity-50 pointer-events-none"}>
               <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Campaign</div>
+            </Field>
+            <Field label="Campaign">
               <Select value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
                 <option value="">All campaigns</option>
                 {data?.filters.campaigns?.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
+                  <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </Select>
-            </div>
-
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Bounce type</div>
+            </Field>
+            <Field label="Mailbox">
+              <Select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
+                <option value="">All mailboxes</option>
+                {data?.filters.mailboxes?.map((m) => (
+                  <option key={m.id} value={m.id}>{m.fromEmail}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Bounce type">
               <Select value={bounceType} onChange={(e) => setBounceType(e.target.value as BounceTypeKey)}>
                 <option value="">All bounce types</option>
                 <option value="blocked">Blocked</option>
@@ -179,73 +245,47 @@ export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitia
                 <option value="mailbox_full">Mailbox full</option>
                 <option value="unknown">Unknown</option>
               </Select>
-            </div>
+            </Field>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:w-[520px]">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Mailbox</div>
-              <Select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
-                <option value="">All mailboxes</option>
-                {data?.filters.mailboxes?.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.fromEmail}
-                  </option>
-                ))}
-              </Select>
+          <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap gap-2 rounded-[1.35rem] border border-slate-200/80 bg-white/70 p-1.5 shadow-inner">
+              {tabOptions.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`inline-flex items-center gap-2 rounded-2xl px-3.5 py-2 text-sm font-semibold transition ${
+                    tab === t.key ? "bg-slate-950 text-white shadow-lg" : "text-slate-600 hover:bg-white hover:text-slate-950"
+                  }`}
+                >
+                  <span>{t.icon}</span>
+                  {t.label}
+                </button>
+              ))}
             </div>
-            <div className="sm:col-span-2 flex items-end justify-end gap-2">
-              <Button variant="ghost" onClick={() => {
-                setCampaignId("");
-                setMailboxId("");
-                setBounceType("");
-                setRange("7d");
-                setCustomFrom(dayjs().subtract(7, "day").format("YYYY-MM-DD"));
-                setCustomTo(dayjs().format("YYYY-MM-DD"));
-              }}>
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setCampaignId("");
+                  setMailboxId("");
+                  setBounceType("");
+                  setRange("7d");
+                  setCustomFrom(dayjs().subtract(7, "day").format("YYYY-MM-DD"));
+                  setCustomTo(dayjs().format("YYYY-MM-DD"));
+                }}
+              >
                 Reset
               </Button>
-              <Button variant="primary" onClick={load} disabled={loading}>
-                {loading ? "Refreshing…" : "Refresh"}
-              </Button>
+              <Button variant="primary" onClick={load} disabled={loading}>{loading ? "Refreshing…" : "Refresh data"}</Button>
             </div>
           </div>
         </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`px-3 py-1.5 rounded-xl text-sm border transition ${
-                tab === t.key
-                  ? "bg-indigo-600 text-white border-indigo-600"
-                  : "bg-white/60 text-slate-700 border-slate-200 hover:bg-white"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-          <div className="ml-auto flex items-center gap-2 text-xs text-slate-600">
-            {data ? (
-              <>
-                <Badge>
-                  {dayjs(data.range.from).format("MMM D")} – {dayjs(data.range.to).format("MMM D")}
-                </Badge>
-                {campaignId ? <Pill tone="info">Campaign filtered</Pill> : null}
-                {mailboxId ? <Pill tone="info">Mailbox filtered</Pill> : null}
-                {bounceType ? <Pill tone="warning">Bounce type: {bounceLabel(bounceType)}</Pill> : null}
-              </>
-            ) : null}
-          </div>
-        </div>
-      </div>
+      </section>
 
       {err ? (
         <Card title="Analytics failed to load" subtitle={err}>
-          <div className="flex gap-2">
-            <Button onClick={load}>Retry</Button>
-          </div>
+          <Button onClick={load}>Retry</Button>
         </Card>
       ) : null}
 
@@ -255,162 +295,104 @@ export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitia
 
       {data ? (
         <>
-          {/* KPIs */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Kpi
-              label="Sent"
-              value={fmt(data.kpis.sent)}
-              hint={
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">trend</span>
-                  <span className="text-indigo-600">
-                    <Sparkline values={spark.sent} />
-                  </span>
-                </div>
-              }
-              tone="info"
-            />
-            <Kpi
-              label="Replies"
-              value={fmt(data.kpis.replies)}
-              hint={
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">rate {pct(data.kpis.replyRate)}</span>
-                  <span className="text-indigo-600">
-                    <Sparkline values={spark.replies} />
-                  </span>
-                </div>
-              }
-              tone="success"
-            />
-            <Kpi
-              label="Opens"
-              value={fmt(data.kpis.opens)}
-              hint={`open rate ${pct(data.kpis.openRate)}`}
-              tone="neutral"
-            />
-            <Kpi
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Sent" value={fmt(data.kpis.sent)} sub={`${rangeLabel(range)} volume`} tone="info" spark={spark.sent} />
+            <MetricCard label="Replies" value={fmt(data.kpis.replies)} sub={`Reply rate ${pct(data.kpis.replyRate)}`} tone="success" spark={spark.replies} />
+            <MetricCard label="Opens" value={fmt(data.kpis.opens)} sub={`Open rate ${pct(data.kpis.openRate)}`} tone="neutral" spark={spark.opens} />
+            <MetricCard
               label="Bounces"
               value={fmt(data.kpis.bounces)}
-              hint={`bounce rate ${pct(data.kpis.bounceRate)}`}
+              sub={`Bounce rate ${pct(data.kpis.bounceRate)}`}
               tone={data.kpis.bounceRate >= 0.06 ? "danger" : data.kpis.bounceRate >= 0.03 ? "warning" : "neutral"}
+              spark={spark.bounces}
             />
-          </div>
+          </section>
 
-          {/* Insights */}
           {data.insights?.length ? (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <section className="grid grid-cols-1 gap-3 xl:grid-cols-3">
               {data.insights.map((it, idx) => (
-                <Card key={idx} title={it.title} subtitle={it.detail}>
-                  <Pill tone={it.tone}>{it.tone.toUpperCase()}</Pill>
-                </Card>
+                <InsightCard key={idx} title={it.title} detail={it.detail} tone={it.tone} />
               ))}
-            </div>
+            </section>
           ) : null}
 
-          {/* Tab content */}
           {tab === "overview" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <Card title="Trends" subtitle="Sent vs Replies vs Bounces">
-                <LineAreaChart labels={data.timeseries.days} series={series} legend />
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.8fr)]">
+              <Card title="Performance timeline" subtitle="Sent, replies, and bounces across the selected window" className="min-h-[420px]">
+                <LineAreaChart labels={data.timeseries.days} series={series} legend height={260} />
+                <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <RatioTile label="Reply rate" value={pct(data.kpis.replyRate)} tone="success" />
+                  <RatioTile label="Open rate" value={pct(data.kpis.openRate)} tone="info" />
+                  <RatioTile label="Bounce rate" value={pct(data.kpis.bounceRate)} tone={data.kpis.bounceRate >= 0.03 ? "warning" : "neutral"} />
+                  <RatioTile label="Unsub rate" value={pct(data.kpis.unsubRate)} tone={data.kpis.unsubRate >= 0.01 ? "warning" : "neutral"} />
+                </div>
               </Card>
-              <Card title="Top campaigns" subtitle="By replies">
-                <BarList
-                  items={data.top.campaignsByReplies}
-                  labelKey="name"
-                  valueKey="replies"
-                  right={(it) => (
-                    <div className="text-xs text-slate-600 tabular-nums">
-                      {it.sent ? pct(it.replies / it.sent) : "0%"}
-                    </div>
-                  )}
-                />
-              </Card>
-              <Card title="Top mailboxes" subtitle="By replies">
-                <BarList
-                  items={data.top.mailboxesByReplies}
-                  labelKey="fromEmail"
-                  valueKey="replies"
-                  right={(it) => (
-                    <div className="text-xs text-slate-600 tabular-nums">{it.sent ? pct(it.replies / it.sent) : "0%"}</div>
-                  )}
-                />
-              </Card>
-            </div>
+              <div className="space-y-4">
+                <Card title="Top mailboxes" subtitle="By reply count">
+                  <BarList
+                    items={data.top.mailboxesByReplies}
+                    labelKey="fromEmail"
+                    valueKey="replies"
+                    right={(it) => <div className="text-xs tabular-nums text-slate-600">{it.sent ? pct(it.replies / it.sent) : "0%"}</div>}
+                  />
+                </Card>
+                <Card title="Top campaigns" subtitle="By reply count">
+                  <BarList
+                    items={data.top.campaignsByReplies}
+                    labelKey="name"
+                    valueKey="replies"
+                    right={(it) => <div className="text-xs tabular-nums text-slate-600">{it.sent ? pct(it.replies / it.sent) : "0%"}</div>}
+                  />
+                </Card>
+              </div>
+            </section>
           ) : null}
 
           {tab === "campaigns" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <Card title="Campaign leaderboard" subtitle="Replies, sent volume, reply rate">
-                <div className="table-wrap">
-                  <table className="w-full">
-                    <thead className="table-head">
-                      <tr>
-                        <th className="table-cell text-left">Campaign</th>
-                        <th className="table-cell text-right">Sent</th>
-                        <th className="table-cell text-right">Replies</th>
-                        <th className="table-cell text-right">Rate</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.top.campaignsByReplies.map((c) => (
-                        <tr key={c.id} className="table-row">
-                          <td className="table-cell">
-                            <div className="font-medium text-slate-900 truncate">{c.name}</div>
-                          </td>
-                          <td className="table-cell text-right tabular-nums">{fmt(c.sent)}</td>
-                          <td className="table-cell text-right tabular-nums">{fmt(c.replies)}</td>
-                          <td className="table-cell text-right tabular-nums">{c.sent ? pct(c.replies / c.sent) : "0%"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_460px]">
+              <Card title="Campaign leaderboard" subtitle="Replies, sent volume, and conversion efficiency">
+                <div className="space-y-3">
+                  {data.top.campaignsByReplies.length ? data.top.campaignsByReplies.map((c, idx) => (
+                    <LeaderboardCard
+                      key={c.id}
+                      rank={idx + 1}
+                      title={c.name}
+                      subtitle={`${fmt(c.sent)} sent`}
+                      primary={`${fmt(c.replies)} replies`}
+                      secondary={c.sent ? pct(c.replies / c.sent) : "0%"}
+                    />
+                  )) : <EmptyInline text="No campaign performance yet for this range." />}
                 </div>
-                <div className="mt-3 text-xs text-slate-600">Tip: click a campaign in the filter to drill down further.</div>
               </Card>
-              <Card title="Trend" subtitle="Your current filters">
-                <LineAreaChart labels={data.timeseries.days} series={series} legend />
+              <Card title="Campaign trend" subtitle="Current filters">
+                <LineAreaChart labels={data.timeseries.days} series={series} legend height={260} />
               </Card>
-            </div>
+            </section>
           ) : null}
 
           {tab === "mailboxes" || tab === "deliverability" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <Card title={tab === "deliverability" ? "Mailbox health" : "Mailbox leaderboard"} subtitle="Replies, bounces and rate">
-                <div className="table-wrap">
-                  <table className="w-full">
-                    <thead className="table-head">
-                      <tr>
-                        <th className="table-cell text-left">Mailbox</th>
-                        <th className="table-cell text-right">Sent</th>
-                        <th className="table-cell text-right">Replies</th>
-                        <th className="table-cell text-right">Bounces</th>
-                        <th className="table-cell text-right">Bounce%</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.top.mailboxesByReplies.map((m) => {
-                        const br = m.sent ? m.bounces / m.sent : 0;
-                        return (
-                          <tr key={m.id} className="table-row">
-                            <td className="table-cell">
-                              <div className="font-medium text-slate-900 truncate">{m.fromEmail}</div>
-                              <div className="text-xs text-slate-600 truncate">{m.name}</div>
-                            </td>
-                            <td className="table-cell text-right tabular-nums">{fmt(m.sent)}</td>
-                            <td className="table-cell text-right tabular-nums">{fmt(m.replies)}</td>
-                            <td className="table-cell text-right tabular-nums">{fmt(m.bounces)}</td>
-                            <td className="table-cell text-right">
-                              <Pill tone={br >= 0.06 ? "danger" : br >= 0.03 ? "warning" : "neutral"}>{pct(br)}</Pill>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="mt-3 text-xs text-slate-600">
-                  Deliverability is estimated from bounce/unsubscribe patterns. (For inbox placement you’ll need external reputation signals.)
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <Card title={tab === "deliverability" ? "Mailbox reputation board" : "Mailbox leaderboard"} subtitle="Replies, bounces, and workload balance">
+                <div className="grid grid-cols-1 gap-3">
+                  {data.top.mailboxesByReplies.length ? data.top.mailboxesByReplies.map((m) => {
+                    const br = m.sent ? m.bounces / m.sent : 0;
+                    return (
+                      <div key={m.id} className="rounded-[1.4rem] border border-slate-200/80 bg-white/76 p-4 shadow-sm">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-950 truncate">{m.fromEmail}</div>
+                            <div className="mt-1 text-xs text-slate-500 truncate">{m.name || "Mailbox"}</div>
+                          </div>
+                          <Pill tone={br >= 0.06 ? "danger" : br >= 0.03 ? "warning" : "success"}>{pct(br)} bounce</Pill>
+                        </div>
+                        <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                          <RatioTile label="Sent" value={fmt(m.sent)} tone="neutral" compact />
+                          <RatioTile label="Replies" value={fmt(m.replies)} tone="success" compact />
+                          <RatioTile label="Bounces" value={fmt(m.bounces)} tone={br >= 0.03 ? "warning" : "neutral"} compact />
+                        </div>
+                      </div>
+                    );
+                  }) : <EmptyInline text="No mailbox activity in this range." />}
                 </div>
               </Card>
               <Card title="Volume & engagement" subtitle="Sent / opens / replies">
@@ -422,110 +404,80 @@ export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitia
                     { name: "Replies", values: data.timeseries.replies },
                   ]}
                   legend
+                  height={285}
                 />
+                <p className="mt-4 text-xs leading-5 text-slate-600">
+                  Deliverability is estimated from bounce and unsubscribe patterns. External inbox-placement signals can be layered in later.
+                </p>
               </Card>
-            </div>
+            </section>
           ) : null}
 
           {tab === "funnel" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <Card title="Funnel" subtitle="Lead → enrollment → contacted → replied">
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+              <Card title="Conversion funnel" subtitle="Lead → enrollment → contacted → replied">
                 <FunnelView data={data} />
               </Card>
-              <Card title="Key ratios" subtitle="A quick health snapshot">
+              <Card title="Key ratios" subtitle="Quick health snapshot">
                 <div className="space-y-3">
                   <RowStat label="Reply rate" value={pct(data.kpis.replyRate)} tone={data.kpis.replyRate >= 0.04 ? "success" : "neutral"} />
                   <RowStat label="Open rate" value={pct(data.kpis.openRate)} tone={data.kpis.openRate >= 0.25 ? "success" : "neutral"} />
-                  <RowStat
-                    label="Bounce rate"
-                    value={pct(data.kpis.bounceRate)}
-                    tone={data.kpis.bounceRate >= 0.06 ? "danger" : data.kpis.bounceRate >= 0.03 ? "warning" : "neutral"}
-                  />
+                  <RowStat label="Bounce rate" value={pct(data.kpis.bounceRate)} tone={data.kpis.bounceRate >= 0.06 ? "danger" : data.kpis.bounceRate >= 0.03 ? "warning" : "neutral"} />
                   <RowStat label="Unsubscribe rate" value={pct(data.kpis.unsubRate)} tone={data.kpis.unsubRate >= 0.01 ? "warning" : "neutral"} />
                 </div>
               </Card>
-            </div>
+            </section>
           ) : null}
 
           {tab === "heatmap" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <Card title="Replies heatmap" subtitle="When replies happen (weekday × hour)">
-                <Heatmap
-                  matrix={data.heatmap.replies}
-                  rowLabels={["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
-                  colLabels={Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))}
-                />
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <Card title="Replies heatmap" subtitle="When replies happen by weekday and hour">
+                <Heatmap matrix={data.heatmap.replies} rowLabels={["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]} colLabels={Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))} />
               </Card>
-              <Card title="Send volume heatmap" subtitle="When sends happen (weekday × hour)">
-                <Heatmap
-                  matrix={data.heatmap.sent}
-                  rowLabels={["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
-                  colLabels={Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))}
-                />
+              <Card title="Send volume heatmap" subtitle="When sends happen by weekday and hour">
+                <Heatmap matrix={data.heatmap.sent} rowLabels={["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]} colLabels={Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))} />
               </Card>
-            </div>
+            </section>
           ) : null}
 
           {tab === "events" ? (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <Card title="Recent important events" subtitle="Replies / bounces / unsubscribes">
-                <div className="space-y-2">
-                  {data.recent.length ? (
-                    data.recent.map((ev) => (
-                      <div key={ev.id} className="p-3 rounded-2xl border border-slate-200 bg-white/60">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-medium text-slate-900">
-                            <Pill tone={ev.type === "reply" ? "success" : ev.type === "bounce" ? "danger" : ev.type === "unsubscribe" ? "warning" : "info"}>
-                              {ev.type.toUpperCase()}
-                            </Pill>
-                          </div>
-                          <div className="text-xs text-slate-600">{dayjs(ev.createdAt).format("MMM D, HH:mm")}</div>
-                        </div>
-                        <div className="mt-2 text-sm text-slate-900 truncate">{ev.subject || "(no subject)"}</div>
-                        <div className="mt-1 text-xs text-slate-600 truncate">
-                          {ev.campaignName ? `Campaign: ${ev.campaignName}` : "Campaign: —"} • {ev.leadEmail ? `Lead: ${ev.leadEmail}` : "Lead: —"}
-                        </div>
-                        <div className="mt-1 text-xs text-slate-600 truncate">{ev.mailboxFrom ? `Mailbox: ${ev.mailboxFrom}` : "Mailbox: —"}</div>
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.1fr)_380px]">
+              <Card title="Event stream" subtitle="Replies, bounces, and unsubscribes that matter">
+                <div className="space-y-3">
+                  {data.recent.length ? data.recent.map((ev) => (
+                    <div key={ev.id} className="rounded-[1.35rem] border border-slate-200/80 bg-white/76 p-4 shadow-sm">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <Pill tone={ev.type === "reply" ? "success" : ev.type === "bounce" ? "danger" : ev.type === "unsubscribe" ? "warning" : "info"}>{ev.type.toUpperCase()}</Pill>
+                        <div className="text-xs text-slate-500">{dayjs(ev.createdAt).format("MMM D, YYYY HH:mm")}</div>
                       </div>
-                    ))
-                  ) : (
-                    <div className="text-sm text-slate-600">No reply/bounce/unsubscribe events in this range.</div>
-                  )}
+                      <div className="mt-3 font-medium text-slate-950 truncate">{ev.subject || "(no subject)"}</div>
+                      <div className="mt-1 text-xs text-slate-600 truncate">{ev.campaignName ? `Campaign: ${ev.campaignName}` : "Campaign: —"} • {ev.leadEmail ? `Lead: ${ev.leadEmail}` : "Lead: —"}</div>
+                      <div className="mt-1 text-xs text-slate-600 truncate">{ev.mailboxFrom ? `Mailbox: ${ev.mailboxFrom}` : "Mailbox: —"}</div>
+                    </div>
+                  )) : <EmptyInline text="No reply/bounce/unsubscribe events in this range." />}
                 </div>
               </Card>
-              <Card title="Counts" subtitle="Events captured">
-                <div className="flex flex-wrap gap-2">
-                  <Badge>Sent: {fmt(data.kpis.sent)}</Badge>
-                  <Badge>Opens: {fmt(data.kpis.opens)}</Badge>
-                  <Badge>Clicks: {fmt(data.kpis.clicks)}</Badge>
-                  <Badge>Replies: {fmt(data.kpis.replies)}</Badge>
-                  <Badge>Bounces: {fmt(data.kpis.bounces)}</Badge>
-                  <Badge>Unsubs: {fmt(data.kpis.unsubscribes)}</Badge>
-                </div>
-                <div className="mt-3 text-xs text-slate-600">
-                  If opens/clicks are low, ensure tracking is enabled and links are being rewritten.
-                </div>
-              </Card>
-              <Card title="Data freshness" subtitle="Live workers">
-                <div className="text-sm text-slate-700">
-                  <div className="flex items-center justify-between py-2">
-                    <div>Range size</div>
-                    <div className="tabular-nums">{data.range.days} days</div>
+              <div className="space-y-4">
+                <Card title="Event counts" subtitle="Captured in this range">
+                  <div className="flex flex-wrap gap-2">
+                    <Badge>Sent: {fmt(data.kpis.sent)}</Badge>
+                    <Badge>Opens: {fmt(data.kpis.opens)}</Badge>
+                    <Badge>Clicks: {fmt(data.kpis.clicks)}</Badge>
+                    <Badge>Replies: {fmt(data.kpis.replies)}</Badge>
+                    <Badge>Bounces: {fmt(data.kpis.bounces)}</Badge>
+                    <Badge>Unsubs: {fmt(data.kpis.unsubscribes)}</Badge>
                   </div>
-                  <div className="flex items-center justify-between py-2">
-                    <div>Leads added</div>
-                    <div className="tabular-nums">{fmt(data.kpis.leadsAdded)}</div>
-                  </div>
-                  <div className="flex items-center justify-between py-2">
-                    <div>Enrollments</div>
-                    <div className="tabular-nums">{fmt(data.kpis.enrollments)}</div>
-                  </div>
-                  <div className="mt-3">
+                </Card>
+                <Card title="Data freshness" subtitle="Worker-backed event stream">
+                  <div className="space-y-3 text-sm text-slate-700">
+                    <RowLine label="Range size" value={`${data.range.days} days`} />
+                    <RowLine label="Leads added" value={fmt(data.kpis.leadsAdded)} />
+                    <RowLine label="Enrollments" value={fmt(data.kpis.enrollments)} />
                     <Button variant="secondary" onClick={() => window.open("/app/logs", "_blank")}>Open Logs</Button>
                   </div>
-                </div>
-              </Card>
-            </div>
+                </Card>
+              </div>
+            </section>
           ) : null}
         </>
       ) : null}
@@ -533,23 +485,119 @@ export default function AnalyticsClient({ initial }: { initial?: AnalyticsInitia
   );
 }
 
+function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <label className={`block ${className}`}>
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      {children}
+    </label>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{label}</div>
+      <div className="mt-1 text-lg font-semibold text-white">{value}</div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, sub, tone, spark }: { label: string; value: string; sub: string; tone: "neutral" | "info" | "success" | "warning" | "danger"; spark: number[] }) {
+  const top = tone === "success" ? "from-emerald-400 to-teal-400" : tone === "warning" ? "from-amber-400 to-orange-500" : tone === "danger" ? "from-rose-500 to-orange-500" : tone === "info" ? "from-indigo-500 to-sky-500" : "from-slate-900 to-slate-500";
+  return (
+    <div className="relative overflow-hidden rounded-[1.75rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_55px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+      <div className={`absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r ${top}`} />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">{label}</div>
+          <div className="mt-2 text-4xl font-semibold tracking-tight text-slate-950 font-display">{value}</div>
+          <div className="mt-1 text-sm text-slate-600">{sub}</div>
+        </div>
+        <div className="rounded-2xl border border-slate-200/80 bg-white/70 p-2 text-indigo-600">
+          <Sparkline values={spark} height={30} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InsightCard({ title, detail, tone }: { title: string; detail: string; tone: "info" | "success" | "warning" | "danger" }) {
+  const dot = tone === "success" ? "bg-emerald-500" : tone === "warning" ? "bg-amber-500" : tone === "danger" ? "bg-rose-500" : "bg-indigo-500";
+  return (
+    <div className="relative overflow-hidden rounded-[1.6rem] border border-white/70 bg-white/82 p-5 shadow-[0_18px_55px_rgba(15,23,42,0.07)] backdrop-blur-xl">
+      <div className="flex items-start gap-3">
+        <span className={`mt-1 h-2.5 w-2.5 rounded-full ${dot} shadow-[0_0_0_5px_rgba(99,102,241,0.10)]`} />
+        <div>
+          <div className="text-base font-semibold text-slate-950">{title}</div>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p>
+          <div className="mt-4"><Pill tone={tone}>{tone.toUpperCase()}</Pill></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RatioTile({ label, value, tone, compact = false }: { label: string; value: string; tone: "neutral" | "success" | "warning" | "danger" | "info"; compact?: boolean }) {
+  return (
+    <div className={`rounded-2xl border border-slate-200/80 bg-white/70 ${compact ? "p-3" : "p-4"}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      <div className={`${compact ? "mt-1 text-lg" : "mt-2 text-2xl"} font-semibold tracking-tight text-slate-950`}>{value}</div>
+      <div className="mt-2"><Pill tone={tone}>{tone === "neutral" ? "steady" : tone}</Pill></div>
+    </div>
+  );
+}
+
+function LeaderboardCard({ rank, title, subtitle, primary, secondary }: { rank: number; title: string; subtitle: string; primary: string; secondary: string }) {
+  return (
+    <div className="rounded-[1.35rem] border border-slate-200/80 bg-white/76 p-4 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-slate-950 text-sm font-semibold text-white">#{rank}</div>
+          <div className="min-w-0">
+            <div className="truncate font-semibold text-slate-950">{title}</div>
+            <div className="text-xs text-slate-500">{subtitle}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Pill tone="success">{primary}</Pill>
+          <Pill tone="info">{secondary}</Pill>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RowStat({ label, value, tone }: { label: string; value: string; tone: "neutral" | "success" | "warning" | "danger" }) {
   return (
-    <div className="flex items-center justify-between p-4 rounded-2xl border border-slate-200 bg-white/60">
+    <div className="flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white/70 p-4">
       <div className="text-sm text-slate-700">{label}</div>
       <Pill tone={tone === "neutral" ? "neutral" : tone}>{value}</Pill>
     </div>
   );
 }
 
+function RowLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between border-b border-slate-100 py-2 last:border-0">
+      <span>{label}</span>
+      <span className="font-semibold tabular-nums text-slate-950">{value}</span>
+    </div>
+  );
+}
+
+function EmptyInline({ text }: { text: string }) {
+  return <div className="rounded-2xl border border-dashed border-slate-300 bg-white/60 p-6 text-center text-sm text-slate-600">{text}</div>;
+}
+
 function FunnelView({ data }: { data: AnalyticsSummary }) {
   const steps = [
-    { key: "leadsAdded", label: "Leads added", v: data.funnel.leadsAdded },
-    { key: "enrolled", label: "Enrolled", v: data.funnel.enrolled },
-    { key: "contacted", label: "Contacted", v: data.funnel.contacted },
-    { key: "replied", label: "Replied", v: data.funnel.replied },
-    { key: "bounced", label: "Bounced", v: data.funnel.bounced },
-    { key: "unsubscribed", label: "Unsubscribed", v: data.funnel.unsubscribed },
+    { key: "leadsAdded", label: "Leads added", v: data.funnel.leadsAdded, tone: "info" as const },
+    { key: "enrolled", label: "Enrolled", v: data.funnel.enrolled, tone: "info" as const },
+    { key: "contacted", label: "Contacted", v: data.funnel.contacted, tone: "success" as const },
+    { key: "replied", label: "Replied", v: data.funnel.replied, tone: "success" as const },
+    { key: "bounced", label: "Bounced", v: data.funnel.bounced, tone: "warning" as const },
+    { key: "unsubscribed", label: "Unsubscribed", v: data.funnel.unsubscribed, tone: "danger" as const },
   ];
   const max = Math.max(1, ...steps.map((s) => s.v));
   return (
@@ -558,20 +606,20 @@ function FunnelView({ data }: { data: AnalyticsSummary }) {
         const w = (s.v / max) * 100;
         const drop = idx === 0 ? null : steps[idx - 1].v ? 1 - s.v / steps[idx - 1].v : null;
         return (
-          <div key={s.key} className="p-3 rounded-2xl border border-slate-200 bg-white/60">
+          <div key={s.key} className="rounded-[1.35rem] border border-slate-200/80 bg-white/70 p-4">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium text-slate-900">{s.label}</div>
-              <div className="text-sm tabular-nums text-slate-900">{s.v.toLocaleString()}</div>
+              <div className="font-semibold text-slate-950">{s.label}</div>
+              <Pill tone={s.tone}>{s.v.toLocaleString()}</Pill>
             </div>
-            <div className="mt-2 h-2 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
-              <div className="h-full bg-indigo-600/70" style={{ width: `${Math.max(2, Math.min(100, w))}%` }} />
+            <div className="mt-3 h-3 overflow-hidden rounded-full border border-slate-200 bg-slate-100">
+              <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-400" style={{ width: `${Math.max(2, Math.min(100, w))}%` }} />
             </div>
-            {drop !== null ? <div className="mt-1 text-xs text-slate-600">Drop-off: {pct(drop)}</div> : null}
+            {drop !== null ? <div className="mt-2 text-xs text-slate-600">Drop-off: {pct(drop)}</div> : null}
           </div>
         );
       })}
-      <div className="text-xs text-slate-600">
-        Notes: “Contacted” = distinct leads with at least one <code className="px-1">sent</code> event in range.
+      <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4 text-xs leading-5 text-indigo-900">
+        “Contacted” means distinct leads with at least one sent event in the selected range.
       </div>
     </div>
   );

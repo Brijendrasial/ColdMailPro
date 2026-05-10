@@ -767,262 +767,197 @@ export default function MailboxesClient() {
   }, [rows]);
 
   return (
-    <div className="grid gap-3">
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+    <div className="grid gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+        <div className="xl:col-span-2 relative overflow-hidden rounded-[1.8rem] border border-slate-900/10 bg-slate-950 p-5 text-white shadow-[0_24px_70px_rgba(15,23,42,0.18)]">
+          <div className="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-indigo-500/30 blur-3xl" />
+          <div className="relative">
+            <div className="text-[11px] uppercase tracking-[0.22em] text-slate-400 font-semibold">Fleet health</div>
+            <div className="mt-3 flex items-end gap-3">
+              <div className="text-5xl font-semibold tracking-tight font-display">{kpis.total ? Math.max(0, Math.round(((kpis.total - kpis.attention) / kpis.total) * 100)) : 100}</div>
+              <div className="pb-2 text-sm text-slate-300">/100</div>
+            </div>
+            <div className="mt-3 h-2 rounded-full bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-indigo-400"
+                style={{ width: `${kpis.total ? Math.max(8, Math.round(((kpis.total - kpis.attention) / kpis.total) * 100)) : 100}%` }}
+              />
+            </div>
+            <div className="mt-3 text-xs leading-5 text-slate-300">
+              {kpis.attention ? `${kpis.attention} sender${kpis.attention === 1 ? "" : "s"} need a check before scaling.` : "All visible senders look campaign-ready."}
+            </div>
+          </div>
+        </div>
         <Kpi label="Mailboxes" value={kpis.total} />
         <Kpi label="Active" value={kpis.active} tone="info" />
-        <Kpi label="Warmup on" value={kpis.warmup} tone="neutral" />
-        <Kpi label="Needs attention" value={kpis.attention} tone={kpis.attention ? "danger" : "success"} hint={kpis.attention ? "Review health + bounce spikes" : "All good"} />
+        <Kpi label="Warmup on" value={kpis.warmup} tone="success" />
+        <Kpi label="Needs attention" value={kpis.attention} tone={kpis.attention ? "danger" : "success"} hint={kpis.attention ? "Review health + bounce spikes" : "Clean"} />
         <Kpi label="Sent today" value={kpis.sentToday} tone="neutral" />
-        <Kpi label="Avg bounce (7d)" value={fmtPct(kpis.avgBounce7d)} tone={kpis.avgBounce7d >= 0.1 ? "danger" : kpis.avgBounce7d >= 0.06 ? "warning" : "success"} hint="Across mailboxes with ≥20 sent" />
+        <Kpi label="Avg bounce (7d)" value={fmtPct(kpis.avgBounce7d)} tone={kpis.avgBounce7d >= 0.1 ? "danger" : kpis.avgBounce7d >= 0.06 ? "warning" : "success"} hint="Mailboxes with ≥20 sent" />
       </div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search mailboxes…" className="w-[280px]" />
-          <Select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="w-[240px] text-sm"
-          >
-            <option value="all">All</option>
-            <option value="active">Active</option>
-            <option value="disabled">Disabled</option>
-            <option value="attention">Needs attention ({attentionCount})</option>
-          </Select>
-          <Button type="button" variant="ghost" onClick={refresh} disabled={loading}>
-            Refresh
-          </Button>
-          <Button type="button" variant="ghost" onClick={() => downloadCsv(filteredSorted)} disabled={loading || filteredSorted.length === 0}>
-            Export CSV
-          </Button>
+
+      <div className="rounded-[1.8rem] border border-white/70 bg-white/82 p-4 shadow-[0_18px_55px_rgba(15,23,42,0.07)] backdrop-blur-xl">
+        <div className="flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(260px,1fr)_210px_190px_150px] gap-3 flex-1">
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search sender, email, SMTP host, bind IP…" />
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="text-sm">
+              <option value="all">All mailboxes</option>
+              <option value="active">Active only</option>
+              <option value="disabled">Disabled only</option>
+              <option value="attention">Needs attention ({attentionCount})</option>
+            </Select>
+            <Select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} className="text-sm">
+              <option value="created">Newest first</option>
+              <option value="name">Name</option>
+              <option value="sentToday">Sent today</option>
+              <option value="bounceRate7d">Bounce rate</option>
+              <option value="replyRate7d">Reply rate</option>
+              <option value="lastSentAt">Last sent</option>
+              <option value="needsAttention">Needs attention</option>
+            </Select>
+            <Button type="button" variant="ghost" onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}>
+              {sortDir === "asc" ? "Asc" : "Desc"}
+            </Button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <Button type="button" variant="ghost" onClick={refresh} disabled={loading}>Refresh</Button>
+            <Button type="button" variant="ghost" onClick={() => downloadCsv(filteredSorted)} disabled={loading || filteredSorted.length === 0}>Export CSV</Button>
+            <Button type="button" variant="secondary" onClick={() => runHealthcheck(filteredSorted.map((r) => r.id))} disabled={loading || filteredSorted.length === 0}>Run visible checks</Button>
+          </div>
         </div>
 
         {anyChecked ? (
-          <div className="flex items-center gap-2 flex-wrap">
-            <Pill tone="info">{selectedIds.length} selected</Pill>
-            <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ isActive: true })}>
-              Enable
-            </Button>
-            <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ isActive: false })}>
-              Disable
-            </Button>
-            <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ warmupEnabled: true })}>
-              Warmup on
-            </Button>
-            <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ warmupEnabled: false })}>
-              Warmup off
-            </Button>
-            <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => runHealthcheck(selectedIds)}>
-              Run checks
-            </Button>
-            <Button type="button" variant="ghost" disabled={bulkBusy || cooldownBusy} onClick={() => clearCooldown({ ids: selectedIds })}>
-              Clear cooldowns
-            </Button>
-            <div className="flex items-center gap-2">
-              <Input
-                value={bulkLimit}
-                onChange={(e) => setBulkLimit(e.target.value)}
-                placeholder="Daily limit"
-                type="number"
-                min={1}
-                className="w-[140px]"
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={bulkBusy || !bulkLimit.trim()}
-                onClick={() => bulkUpdate({ dailyLimit: clampInt(Number(bulkLimit), 1, 100000) })}
-              >
-                Set limit
-              </Button>
+          <div className="mt-4 rounded-[1.4rem] border border-indigo-200 bg-indigo-50/80 p-3">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Pill tone="info">{selectedIds.length} selected</Pill>
+                <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ isActive: true })}>Enable</Button>
+                <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ isActive: false })}>Disable</Button>
+                <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ warmupEnabled: true })}>Warmup on</Button>
+                <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => bulkUpdate({ warmupEnabled: false })}>Warmup off</Button>
+                <Button type="button" variant="ghost" disabled={bulkBusy} onClick={() => runHealthcheck(selectedIds)}>Run checks</Button>
+                <Button type="button" variant="ghost" disabled={bulkBusy || cooldownBusy} onClick={() => clearCooldown({ ids: selectedIds })}>Clear cooldowns</Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input value={bulkLimit} onChange={(e) => setBulkLimit(e.target.value)} placeholder="Daily limit" type="number" min={1} className="w-[150px]" />
+                <Button type="button" variant="secondary" disabled={bulkBusy || !bulkLimit.trim()} onClick={() => bulkUpdate({ dailyLimit: clampInt(Number(bulkLimit), 1, 100000) })}>Set limit</Button>
+              </div>
             </div>
           </div>
         ) : null}
       </div>
 
-      {error ? <div className="text-sm text-red-600">{error}</div> : null}
-      {notice ? <div className="text-sm text-emerald-700">{notice}</div> : null}
-      {loading ? <div className="text-sm text-slate-600">Loading…</div> : null}
+      {error ? <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+      {notice ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div> : null}
+      {loading ? <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600">Loading sender fleet…</div> : null}
 
-      <div className="table-wrap"><div className="overflow-auto">
-        <table className="min-w-[1420px] w-full text-sm">
-          <thead className="table-head">
-            <tr>
-              <th className="table-cell text-left w-[44px]">
-                <input type="checkbox" checked={allChecked} onChange={(e) => setAllSelected(e.target.checked)} />
-              </th>
-              <Th label="Mailbox" onClick={() => toggleSort("name")} active={sortKey === "name"} dir={sortDir} />
-              <Th label="Status" onClick={() => toggleSort("status")} active={sortKey === "status"} dir={sortDir} />
-              <Th label="Alerts" onClick={() => toggleSort("needsAttention")} active={sortKey === "needsAttention"} dir={sortDir} />
-              <Th label="Warmup" onClick={() => toggleSort("warmup")} active={sortKey === "warmup"} dir={sortDir} />
-              <Th label="Daily" onClick={() => toggleSort("dailyLimit")} active={sortKey === "dailyLimit"} dir={sortDir} />
-              <Th label="Sent today" onClick={() => toggleSort("sentToday")} active={sortKey === "sentToday"} dir={sortDir} />
-              <Th label="Bounce 7d" onClick={() => toggleSort("bounceRate7d")} active={sortKey === "bounceRate7d"} dir={sortDir} />
-              <Th label="Reply 7d" onClick={() => toggleSort("replyRate7d")} active={sortKey === "replyRate7d"} dir={sortDir} />
-              <Th label="Last sent" onClick={() => toggleSort("lastSentAt")} active={sortKey === "lastSentAt"} dir={sortDir} />
-              <Th label="Health" onClick={() => toggleSort("healthCheckedAt")} active={sortKey === "healthCheckedAt"} dir={sortDir} />
-              <Th label="Last test" onClick={() => toggleSort("testAt")} active={sortKey === "testAt"} dir={sortDir} />
-              <th className="table-cell text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white/60">
-            {filteredSorted.map((r) => {
-              const healthErr = r.health?.smtp?.error || r.health?.imap?.error || "";
-              return (
-                <tr
-                  key={r.id}
-                  className={cx(
-                    "table-row",
-                    r.needsAttention && "bg-red-50/40"
-                  )}
-                >
-                  <td className="table-cell">
-                    <input
-                      type="checkbox"
-                      checked={!!selected[r.id]}
-                      onChange={(e) => setSelected((s) => ({ ...s, [r.id]: e.target.checked }))}
-                    />
-                  </td>
+      <div className="grid gap-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap px-1">
+          <div>
+            <div className="text-sm font-semibold text-slate-950">{filteredSorted.length} sender{filteredSorted.length === 1 ? "" : "s"} visible</div>
+            <div className="text-xs text-slate-500">Card view optimized for action: check, test, edit, and inspect health quickly.</div>
+          </div>
+          <label className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-slate-700 shadow-sm">
+            <input type="checkbox" checked={allChecked} onChange={(e) => setAllSelected(e.target.checked)} />
+            Select visible
+          </label>
+        </div>
 
-                  <td className="table-cell">
-                    <div className="font-medium text-slate-900">{r.name}</div>
-                    <div className="text-slate-600">{r.fromEmail}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      {r.smtpHost}:{r.smtpPort}
-                      {r.localAddress ? ` • bind ${r.localAddress}` : ""}
+        <div className="grid gap-3">
+          {filteredSorted.map((r) => {
+            const healthErr = r.health?.smtp?.error || r.health?.imap?.error || "";
+            const usage = r.dailyLimit ? Math.min(100, Math.round(((Number(r.sentToday) || 0) / r.dailyLimit) * 100)) : 0;
+            const initials = (r.name || r.fromEmail || "M").split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((x) => x[0]?.toUpperCase()).join("") || "M";
+            return (
+              <article key={r.id} className={cx("group relative overflow-hidden rounded-[1.8rem] border bg-white/86 p-4 shadow-[0_18px_55px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:shadow-[0_26px_80px_rgba(15,23,42,0.12)]", r.needsAttention ? "border-red-200" : "border-white/70")}>
+                <div className={cx("absolute inset-x-0 top-0 h-1", r.needsAttention ? "bg-gradient-to-r from-red-500 via-orange-400 to-amber-400" : r.health?.ok ? "bg-gradient-to-r from-emerald-400 via-cyan-400 to-indigo-400" : "bg-gradient-to-r from-slate-300 to-slate-100")} />
+                <div className="grid grid-cols-1 2xl:grid-cols-[minmax(280px,1.1fr)_minmax(440px,1.5fr)_minmax(300px,0.9fr)] gap-4 items-start">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <input className="mt-5" type="checkbox" checked={!!selected[r.id]} onChange={(e) => setSelected((s) => ({ ...s, [r.id]: e.target.checked }))} />
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 to-cyan-500 text-sm font-bold text-white shadow-lg">{initials}</div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-slate-950 truncate">{r.name}</div>
+                      <div className="text-sm text-slate-600 truncate">{r.fromEmail}</div>
+                      <div className="mt-1 text-xs text-slate-500 truncate">{r.smtpHost}:{r.smtpPort}{r.localAddress ? ` • bind ${r.localAddress}` : ""}</div>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        <Pill tone={r.isActive ? "success" : "neutral"}>{r.isActive ? "active" : "disabled"}</Pill>
+                        <Pill tone={r.warmupEnabled ? "info" : "neutral"}>warmup {r.warmupEnabled ? "on" : "off"}</Pill>
+                        {r.cooldown?.active && r.cooldown?.until ? <Pill tone="warning">cooldown {fmtRemaining(r.cooldown.until)}</Pill> : null}
+                        {r.needsAttention ? <Pill tone="danger">needs attention</Pill> : null}
+                      </div>
                     </div>
-                  </td>
+                  </div>
 
-                  <td className="table-cell">
-                    <div className="flex flex-wrap gap-1">
-                      <Pill tone={r.isActive ? "success" : "neutral"}>{r.isActive ? "active" : "disabled"}</Pill>
-                      {r.cooldown?.active && r.cooldown?.until ? (
-                        <Pill tone="warning">cooldown {fmtRemaining(r.cooldown.until)}</Pill>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500 font-semibold">Daily usage</div>
+                      <div className="mt-1 text-xl font-semibold text-slate-950">{r.sentToday}<span className="text-sm text-slate-400">/{r.dailyLimit}</span></div>
+                      <div className="mt-2 h-2 rounded-full bg-slate-200 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" style={{ width: `${usage}%` }} /></div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500 font-semibold">Bounce 7d</div>
+                      <div className={cx("mt-1 text-xl font-semibold", r.bounceRate7d >= 0.1 && r.sent7d >= 20 ? "text-red-600" : "text-slate-950")}>{fmtPct(r.bounceRate7d)}</div>
+                      <div className="mt-1 text-xs text-slate-500">{r.bounced7d}/{r.sent7d || 0} • 24h {fmtPct(r.bounceRate24h)}</div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500 font-semibold">Reply 7d</div>
+                      <div className={cx("mt-1 text-xl font-semibold", r.replyRate7d >= 0.03 && r.sent7d >= 20 ? "text-emerald-700" : "text-slate-950")}>{fmtPct(r.replyRate7d)}</div>
+                      <div className="mt-1 text-xs text-slate-500">{r.replied7d}/{r.sent7d || 0}</div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500 font-semibold">Last sent</div>
+                      <div className="mt-1 text-xl font-semibold text-slate-950">{fmtWhen(r.lastSentAt)}</div>
+                      <div className="mt-1 text-xs text-slate-500">Created {fmtWhen(new Date(r.created).toISOString())}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3">
+                    <div className="rounded-2xl border border-slate-200 bg-white/70 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Connection health</div>
+                        <div className="flex flex-wrap gap-1 justify-end">
+                          {r.health?.pending || healthBusy[r.id] ? <Pill tone="info">checking…</Pill> : null}
+                          <Pill tone={r.health?.ok ? "success" : r.health?.checkedAt ? "danger" : "neutral"}>{r.health?.checkedAt ? (r.health.ok ? "healthy" : "unhealthy") : "not checked"}</Pill>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Pill tone={r.health?.smtp ? (r.health.smtp.ok ? "success" : "danger") : "neutral"}>SMTP {r.health?.smtp ? (r.health.smtp.ok ? "ok" : "fail") : "—"}</Pill>
+                        <Pill tone={r.health?.imap ? (r.health.imap.skipped ? "neutral" : r.health.imap.ok ? "success" : "danger") : "neutral"}>IMAP {r.health?.imap ? (r.health.imap.skipped ? "n/a" : r.health.imap.ok ? "ok" : "fail") : "—"}</Pill>
+                        <span className="px-2 py-1 text-xs text-slate-500">{fmtWhen(r.health?.checkedAt || null)}</span>
+                      </div>
+                      {healthErr ? (
+                        <div className="mt-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">
+                          <div>{clipText(healthErr, 120)}</div>
+                          <button className="mt-1 underline" onClick={async () => { const ok = await copyToClipboard(healthErr); setNotice(ok ? "Copied error" : "Copy failed"); setTimeout(() => setNotice(null), 2000); }}>Copy error</button>
+                        </div>
                       ) : null}
                     </div>
-                    {!r.isActive ? <div className="text-xs text-slate-500 mt-1">—</div> : null}
-                  </td>
 
-                  <td className="table-cell">
-                    <div className="flex flex-wrap gap-1">
-                      {r.needsAttention ? <Pill tone="danger">needs attention</Pill> : <Pill tone="neutral">ok</Pill>}
-                      {r.cooldown?.active ? <Pill tone="warning">throttled</Pill> : null}
-                    </div>
-                    {r.attentionReasons?.length ? (
-                      <div className="text-xs text-slate-600 mt-1">
-                        {clipText(r.attentionReasons.join(" • "), 90)}
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div className="flex flex-wrap gap-1.5">
+                        {r.lastTest?.pending ? <Pill tone="info">test sending…</Pill> : typeof r.lastTest?.ok === "boolean" ? <Pill tone={r.lastTest.ok ? "success" : "danger"}>test {r.lastTest.ok ? "sent" : "failed"}</Pill> : <Pill tone="neutral">no test</Pill>}
+                        <span className="px-2 py-1 text-xs text-slate-500">{r.lastTest?.to ? `to ${r.lastTest.to}` : "—"} • {fmtWhen(r.lastTest?.at || null)}</span>
                       </div>
-                    ) : (
-                      <div className="text-xs text-slate-500 mt-1">—</div>
-                    )}
-                  </td>
-
-                  <td className="table-cell">
-                    <Pill tone={r.warmupEnabled ? "info" : "neutral"}>{r.warmupEnabled ? "on" : "off"}</Pill>
-                  </td>
-
-                  <td className="table-cell font-medium text-slate-900">{r.dailyLimit}</td>
-                  <td className="table-cell">{r.sentToday}</td>
-
-                  <td className="table-cell">
-                    <span className={cx(r.bounceRate7d >= 0.1 && r.sent7d >= 20 && "text-red-600 font-medium")}>{fmtPct(r.bounceRate7d)}</span>
-                    <div className="text-xs text-slate-500">{r.bounced7d}/{r.sent7d || 0}</div>
-                    <div className={cx("text-xs mt-0.5", r.bounceRate24h >= 0.08 && r.sent24h >= 20 ? "text-red-600" : "text-slate-500")}>
-                      24h: {fmtPct(r.bounceRate24h)} ({r.bounced24h}/{r.sent24h || 0})
-                    </div>
-                  </td>
-
-                  <td className="table-cell">
-                    <span className={cx(r.replyRate7d >= 0.03 && r.sent7d >= 20 && "text-emerald-700 font-medium")}>{fmtPct(r.replyRate7d)}</span>
-                    <div className="text-xs text-slate-500">{r.replied7d}/{r.sent7d || 0}</div>
-                  </td>
-
-                  <td className="table-cell text-slate-700">{fmtWhen(r.lastSentAt)}</td>
-
-                  <td className="table-cell">
-                    <div className="flex flex-wrap gap-1">
-                      {r.health?.pending || healthBusy[r.id] ? <Pill tone="info">checking…</Pill> : null}
-                      <Pill tone={r.health?.ok ? "success" : r.health?.checkedAt ? "danger" : "neutral"}>
-                        {r.health?.checkedAt ? (r.health.ok ? "healthy" : "unhealthy") : "—"}
-                      </Pill>
-                      <Pill tone={r.health?.smtp ? (r.health.smtp.ok ? "success" : "danger") : "neutral"}>
-                        SMTP {r.health?.smtp ? (r.health.smtp.ok ? "ok" : "fail") : "—"}
-                      </Pill>
-                      <Pill
-                        tone={
-                          r.health?.imap
-                            ? (r.health.imap.skipped ? "neutral" : r.health.imap.ok ? "success" : "danger")
-                            : "neutral"
-                        }
-                      >
-                        IMAP {r.health?.imap ? (r.health.imap.skipped ? "n/a" : r.health.imap.ok ? "ok" : "fail") : "—"}
-                      </Pill>
-                    </div>
-                    <div className="text-xs text-slate-500 mt-1">{fmtWhen(r.health?.checkedAt || null)}</div>
-
-                    {healthErr ? (
-                      <div className="mt-1 flex items-start justify-between gap-2">
-                        <div className="text-xs text-red-600">{clipText(healthErr, 90)}</div>
-                        <button
-                          className="text-xs text-slate-600 hover:text-slate-900 underline"
-                          onClick={async () => {
-                            const ok = await copyToClipboard(healthErr);
-                            setNotice(ok ? "Copied error" : "Copy failed");
-                            setTimeout(() => setNotice(null), 2000);
-                          }}
-                          title="Copy error"
-                        >
-                          Copy
-                        </button>
+                      <div className="flex items-center gap-2">
+                        <Button type="button" variant="ghost" onClick={() => runHealthcheck([r.id])} disabled={!!healthBusy[r.id]}>Check</Button>
+                        <Button type="button" variant="ghost" onClick={() => openTestModal(r)}>Test</Button>
+                        <Button type="button" variant="secondary" onClick={() => openDrawer(r)}>Edit</Button>
                       </div>
-                    ) : null}
-
-                    {r.healthFailCount24h >= 3 ? (
-                      <div className="text-xs text-red-600 mt-1">Fails 24h: {r.healthFailCount24h}</div>
-                    ) : null}
-                  </td>
-
-                  <td className="table-cell">
-                    <div className="flex flex-wrap gap-1">
-                      {r.lastTest?.pending ? <Pill tone="info">sending…</Pill> : null}
-                      {typeof r.lastTest?.ok === "boolean" ? (
-                        <Pill tone={r.lastTest.ok ? "success" : "danger"}>{r.lastTest.ok ? "sent" : "failed"}</Pill>
-                      ) : (
-                        <Pill tone="neutral">—</Pill>
-                      )}
                     </div>
-                    <div className="text-xs text-slate-500 mt-1">
-                      {r.lastTest?.to ? `to ${r.lastTest.to}` : "—"} • {fmtWhen(r.lastTest?.at || null)}
-                    </div>
-                    {r.lastTest?.error ? <div className="text-xs text-red-600 mt-1">{clipText(r.lastTest.error, 90)}</div> : null}
-                  </td>
+                  </div>
+                </div>
+                {r.attentionReasons?.length ? <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-800">{clipText(r.attentionReasons.join(" • "), 180)}</div> : null}
+              </article>
+            );
+          })}
 
-                  <td className="table-cell text-right">
-                    <div className="inline-flex items-center gap-2">
-                      <Button type="button" variant="ghost" onClick={() => runHealthcheck([r.id])} disabled={!!healthBusy[r.id]}>
-                        Check
-                      </Button>
-                      <Button type="button" variant="ghost" onClick={() => openTestModal(r)}>
-                        Test
-                      </Button>
-                      <Button type="button" variant="ghost" onClick={() => openDrawer(r)}>
-                        Edit
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-
-            {!loading && filteredSorted.length === 0 ? (
-              <tr>
-                <td colSpan={13} className="table-cell py-6 text-center text-slate-600">
-                  No mailboxes found.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+          {!loading && filteredSorted.length === 0 ? (
+            <div className="rounded-[1.8rem] border border-dashed border-slate-300 bg-white/70 p-10 text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg">📮</div>
+              <div className="mt-4 text-lg font-semibold text-slate-950">No mailboxes found</div>
+              <div className="mt-1 text-sm text-slate-600">Try clearing filters or add your first sender above.</div>
+            </div>
+          ) : null}
         </div>
       </div>
 

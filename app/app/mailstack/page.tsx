@@ -1,4 +1,4 @@
-import { Container, Card, Input, Button, Badge } from "@/components/ui";
+import { Container, Card, Input, Button, Badge, PageHeader, Pill } from "@/components/ui";
 import MailstackMaintenanceClient from "./MailstackMaintenanceClient";
 import Link from "next/link";
 import { requireSession } from "@/lib/auth";
@@ -17,20 +17,46 @@ type MailstackTenantRow = {
   mailboxes: unknown[];
 };
 
+function MetricTile({ label, value, hint, tone = "slate" }: { label: string; value: string | number; hint?: string; tone?: "slate" | "indigo" | "emerald" | "amber" | "rose" }) {
+  const tones: Record<string, string> = {
+    slate: "from-slate-950 to-slate-700",
+    indigo: "from-indigo-600 to-sky-500",
+    emerald: "from-emerald-500 to-teal-500",
+    amber: "from-amber-500 to-orange-500",
+    rose: "from-rose-500 to-red-500",
+  };
+  return (
+    <div className="relative overflow-hidden rounded-[1.6rem] border border-white/70 bg-white/85 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.07)]">
+      <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${tones[tone]}`} />
+      <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">{label}</div>
+      <div className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-slate-500">{hint}</div> : null}
+    </div>
+  );
+}
+
+function WorkflowStep({ step, title, text }: { step: string; title: string; text: string }) {
+  return (
+    <div className="rounded-[1.4rem] border border-slate-200/80 bg-white/80 p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-md">{step}</div>
+        <div>
+          <div className="font-semibold text-slate-950">{title}</div>
+          <div className="mt-0.5 text-xs leading-5 text-slate-500">{text}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default async function MailstackPage() {
   const s = await requireSession();
 
-  // If DB was reset but browser still has an old session cookie,
-  // the user row may no longer exist. Avoid FK crashes by forcing a re-login.
   const user = await prisma.user.findUnique({ where: { id: s.uid } });
   if (!user) {
     redirect("/api/auth/logout?next=/login");
   }
 
-  // Defensive: some installs end up with a session wid that has no Workspace row
-  // (eg after partial DB resets / schema pushes). MailstackConfig has an FK to Workspace,
-  // so ensure the Workspace (and Membership) exist before creating config.
   let ws = await prisma.workspace.findUnique({ where: { id: s.wid } });
   if (!ws) {
     const wsName = user?.name ? `${user.name}'s Workspace` : "Default Workspace";
@@ -46,33 +72,25 @@ export default async function MailstackPage() {
     });
   }
 
-  // If the Prisma Client was generated from an older schema (common after zip updates),
-  // these Mailstack models won't exist at runtime and would crash the page.
-  // Show a helpful message instead.
   const p: any = prisma as any;
   if (!p.mailstackConfig || !p.mailstackTenant) {
     return (
-      <Container>
+      <Container wide>
         <Card title="Mailstack integration">
-          <p className="text-sm opacity-80">
-            Your Prisma Client is missing the Mailstack models.
-          </p>
-          <pre className="text-xs whitespace-pre-wrap bg-black/5 p-3 rounded-xl mt-3">
-{`Fix:
+          <p className="text-sm opacity-80">Your Prisma Client is missing the Mailstack models.</p>
+          <pre className="mt-3 whitespace-pre-wrap rounded-xl bg-black/5 p-3 text-xs">{`Fix:
   npm run prisma:generate
   npx prisma db push
   npm run seed
 
 Then restart:
   npm run dev
-  npm run worker:dev`}
-          </pre>
+  npm run worker:dev`}</pre>
         </Card>
       </Container>
     );
   }
 
-  // Use upsert to avoid FK race conditions and make the page idempotent
   const cfg = await p.mailstackConfig.upsert({
     where: { workspaceId: s.wid },
     update: {},
@@ -85,104 +103,144 @@ Then restart:
     include: { domains: true, ips: true, users: true, mailboxes: true },
   });
 
+  const activeTenants = tenants.filter((t) => t.status !== "suspended").length;
+  const domainCount = tenants.reduce((sum, t) => sum + t.domains.length, 0);
+  const mailboxCount = tenants.reduce((sum, t) => sum + t.mailboxes.length, 0);
+  const ipCount = tenants.reduce((sum, t) => sum + t.ips.length, 0);
+  const needsAttention = tenants.filter((t) => t.status === "suspended" || t.lastJobStatus === "failed").length;
+
   return (
-    <Container>
-      <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
-        <div className="min-w-0">
-          <div className="text-2xl font-semibold">🛠️ Mailstack</div>
-          <div className="text-sm opacity-70 mt-1 truncate">
-            Workspace: <span className="font-medium">{ws.name}</span>{" "}
-            <span className="font-mono text-xs opacity-80">({s.wid.slice(0, 8)})</span>
-          </div>
+    <Container wide>
+      <div className="space-y-8">
+        <PageHeader
+          title="Mailstack Control Center"
+          subtitle="Provision tenants, sync Cloudflare DNS, rotate outbound IPs, update Roundcube, and keep your mail server fleet healthy from one clean workspace."
+          right={
+            <>
+              <Badge>Workspace: {ws.name}</Badge>
+              <Badge>ID: {s.wid.slice(0, 8)}</Badge>
+              <Link href="/app/mailstack/new"><Button>Create tenant</Button></Link>
+            </>
+          }
+          className="min-h-[220px]"
+        />
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <MetricTile label="Tenants" value={tenants.length} hint={`${activeTenants} active`} tone="indigo" />
+          <MetricTile label="Domains" value={domainCount} hint="DNS managed" tone="emerald" />
+          <MetricTile label="Mailboxes" value={mailboxCount} hint="Imported senders" tone="slate" />
+          <MetricTile label="Outbound IPs" value={ipCount} hint="SPF rotation pool" tone="amber" />
+          <MetricTile label="Attention" value={needsAttention} hint="Suspended / failed jobs" tone={needsAttention ? "rose" : "emerald"} />
         </div>
-        <div className="text-xs opacity-60">Tip: switch workspace from the sidebar → “Switch workspace”.</div>
-      </div>
-      <div className="grid gap-6">
-        <Card title="Mailstack integration">
-          <p className="opacity-80 text-sm">
-            This connects the app to your on-server <code>mailstack.sh</code> + <code>mailstack-addon.sh</code> scripts to provision domains,
-            DNS (Cloudflare), DKIM/SPF/DMARC, and mailboxes.
-          </p>
 
-          <form className="mt-4 grid gap-3" action="/api/mailstack/config/save" method="post">
-            <div className="grid md:grid-cols-2 gap-3">
-              <div>
-                <div className="text-xs opacity-70 mb-1">Server IP</div>
-                <Input name="serverIp" defaultValue={cfg.serverIp || ""} placeholder="51.38.38.222" />
+        <div className="grid gap-4 lg:grid-cols-3">
+          <WorkflowStep step="1" title="Connect server" text="Save the MailStack server IP and encrypted Cloudflare token for this workspace." />
+          <WorkflowStep step="2" title="Create tenant" text="Group domains, outbound IPs, and mailbox users into one provisioning job." />
+          <WorkflowStep step="3" title="Operate safely" text="Run DNS sync, rotate IPs, issue SSL, update packages, and stream worker progress." />
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
+          <Card title="Integration vault" subtitle="Workspace-specific server settings used by domain provisioning and Cloudflare sync.">
+            <form className="grid gap-5" action="/api/mailstack/config/save" method="post">
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Server IP
+                  <Input name="serverIp" defaultValue={cfg.serverIp || ""} placeholder="51.38.38.222" />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-slate-700">
+                  Cloudflare API token
+                  <Input name="cloudflareToken" type="password" placeholder={cfg.cloudflareTokenEnc ? "•••••••• (set)" : "paste token"} />
+                </label>
               </div>
-              <div>
-                <div className="text-xs opacity-70 mb-1">Cloudflare API token (stored per-workspace, encrypted)</div>
-                <Input name="cloudflareToken" type="password" placeholder={cfg.cloudflareTokenEnc ? "•••••••• (set)" : "paste token"} />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit">Save settings</Button>
+                {cfg.cloudflareTokenEnc ? <Pill tone="success">Token set</Pill> : <Pill tone="warning">Token not set</Pill>}
+                {cfg.serverIp ? <Pill tone="info">Server IP {cfg.serverIp}</Pill> : <Pill tone="warning">Server IP missing</Pill>}
               </div>
-            </div>
-            <div className="flex gap-3 items-center">
-              <Button type="submit">Save settings</Button>
-              {cfg.cloudflareTokenEnc ? <Badge>Token: set</Badge> : <Badge>Token: not set</Badge>}
-              {cfg.serverIp ? <Badge>Server IP: {cfg.serverIp}</Badge> : <Badge>Server IP: not set</Badge>}
-            </div>
-          </form>
+            </form>
 
-          <form className="mt-3" action="/api/mailstack/config/init" method="post">
-            <Button variant="ghost" type="submit">Init Cloudflare (writes /etc/mailstack/workspaces/&lt;workspace&gt;/cloudflare.env)</Button>
-          </form>
-
-          <div className="mt-4 flex gap-3">
-            <Link href="/app/mailstack/new"><Button>Create tenant</Button></Link>
-          </div>
-        </Card>
-
-
-        <Card title="Server maintenance" subtitle="Beautiful one-click updates with a live popup, progress stages, and worker logs.">
-          <div className="grid gap-4 text-sm">
-            <p className="text-slate-600">
-              Update OS packages and MailStack-installed services. After updates finish, the script automatically restarts Exim, Dovecot, Nginx, PHP-FPM, database/cache services when present, and reapplies safe MailStack permissions/fixes.
-            </p>
-            <MailstackMaintenanceClient />
-          </div>
-        </Card>
-
-        <Card title="Tenants">
-          {tenants.length === 0 ? (
-            <p className="opacity-70 text-sm">No tenants yet.</p>
-          ) : (
-            <div className="grid gap-3">
-              {tenants.map((t) => (
-                <div key={t.id} className="rounded-xl border border-black/10 dark:border-white/10 p-3 flex items-start justify-between gap-4">
-                  <div className="grid gap-1">
-                    <div className="font-semibold">
-                      <Link className="underline" href={`/app/mailstack/${t.id}`}>{t.name}</Link>
-                      <span className="ml-2 text-xs opacity-70">{t.serverIp}</span>
-                    </div>
-                    <div className="text-xs opacity-70">
-                      Domains: {t.domains.length} • IPs: {t.ips.length} • Users: {t.users.length} • Mailboxes: {t.mailboxes.length}
-                    </div>
-                    <div className="text-xs opacity-70">
-                      Status: <span className="font-medium">{t.status}</span>{t.lastJobStatus ? ` • Last job: ${t.lastJobStatus}` : ""}
-                    </div>
-                  </div>
-                  <div className="flex gap-2 flex-wrap justify-end">
-                    <form action="/api/mailstack/tenant/sync" method="post">
-                      <input type="hidden" name="tenantId" value={t.id} />
-                      <Button variant="ghost" type="submit">DNS sync</Button>
-                    </form>
-                    <form action="/api/mailstack/tenant/rotate" method="post">
-                      <input type="hidden" name="tenantId" value={t.id} />
-                      <Button variant="ghost" type="submit">Rotate now</Button>
-                    </form>
-                    {t.status === "suspended" ? (
-                      <form action="/api/mailstack/tenant/unsuspend" method="post">
-                        <input type="hidden" name="tenantId" value={t.id} />
-                        <Button variant="ghost" type="submit">Unsuspend</Button>
-                      </form>
-                    ) : (
-                      <form action="/api/mailstack/tenant/suspend" method="post">
-                        <input type="hidden" name="tenantId" value={t.id} />
-                        <Button variant="ghost" type="submit">Suspend</Button>
-                      </form>
-                    )}
-                  </div>
+            <div className="mt-6 rounded-[1.4rem] border border-slate-200/80 bg-slate-50/80 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="font-semibold text-slate-950">Cloudflare bootstrap</div>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Writes the encrypted token into the server-side workspace environment file so MailStack scripts can create and update DNS records.
+                  </p>
                 </div>
-              ))}
+                <form action="/api/mailstack/config/init" method="post" className="shrink-0">
+                  <Button variant="ghost" type="submit">Init Cloudflare</Button>
+                </form>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Server maintenance studio" subtitle="One-click operating system, MailStack service, and Roundcube updates with live progress.">
+            <MailstackMaintenanceClient />
+          </Card>
+        </div>
+
+        <Card
+          title="Tenant fleet"
+          subtitle="Every tenant links domains, IPs, mailbox users, DNS state, and operational actions."
+          right={<Link href="/app/mailstack/new"><Button>Create tenant</Button></Link>}
+        >
+          {tenants.length === 0 ? (
+            <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-white/70 p-10 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg">✦</div>
+              <h3 className="mt-4 text-lg font-semibold text-slate-950">No tenants yet</h3>
+              <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">
+                Create your first tenant to generate domain DNS defaults, mailbox users, outbound IP mappings, and DKIM/SPF/DMARC records.
+              </p>
+              <div className="mt-5"><Link href="/app/mailstack/new"><Button>Create tenant</Button></Link></div>
+            </div>
+          ) : (
+            <div className="grid gap-4 xl:grid-cols-2">
+              {tenants.map((t) => {
+                const attention = t.status === "suspended" || t.lastJobStatus === "failed";
+                return (
+                  <div key={t.id} className="group relative overflow-hidden rounded-[1.7rem] border border-slate-200/80 bg-white/85 p-5 shadow-[0_18px_55px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_70px_rgba(15,23,42,0.10)]">
+                    <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${attention ? "from-amber-400 to-rose-500" : "from-emerald-400 to-cyan-500"}`} />
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Link className="text-xl font-semibold tracking-tight text-slate-950 underline-offset-4 hover:underline" href={`/app/mailstack/${t.id}`}>{t.name}</Link>
+                          <Pill tone={t.status === "active" ? "success" : t.status === "suspended" ? "warning" : "neutral"}>{t.status}</Pill>
+                          {t.lastJobStatus ? <Pill tone={t.lastJobStatus === "done" ? "success" : t.lastJobStatus === "failed" ? "danger" : "info"}>last job {t.lastJobStatus}</Pill> : null}
+                        </div>
+                        <div className="mt-1 text-sm text-slate-500">Server IP: {t.serverIp || "not set"}</div>
+                        <div className="mt-4 grid grid-cols-4 gap-2 text-center">
+                          <div className="rounded-2xl bg-slate-50 p-3"><div className="text-lg font-semibold text-slate-950">{t.domains.length}</div><div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Domains</div></div>
+                          <div className="rounded-2xl bg-slate-50 p-3"><div className="text-lg font-semibold text-slate-950">{t.ips.length}</div><div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">IPs</div></div>
+                          <div className="rounded-2xl bg-slate-50 p-3"><div className="text-lg font-semibold text-slate-950">{t.users.length}</div><div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Users</div></div>
+                          <div className="rounded-2xl bg-slate-50 p-3"><div className="text-lg font-semibold text-slate-950">{t.mailboxes.length}</div><div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Boxes</div></div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
+                        <form action="/api/mailstack/tenant/sync" method="post">
+                          <input type="hidden" name="tenantId" value={t.id} />
+                          <Button variant="ghost" type="submit">DNS sync</Button>
+                        </form>
+                        <form action="/api/mailstack/tenant/rotate" method="post">
+                          <input type="hidden" name="tenantId" value={t.id} />
+                          <Button variant="ghost" type="submit">Rotate IP</Button>
+                        </form>
+                        {t.status === "suspended" ? (
+                          <form action="/api/mailstack/tenant/unsuspend" method="post">
+                            <input type="hidden" name="tenantId" value={t.id} />
+                            <Button variant="ghost" type="submit">Unsuspend</Button>
+                          </form>
+                        ) : (
+                          <form action="/api/mailstack/tenant/suspend" method="post">
+                            <input type="hidden" name="tenantId" value={t.id} />
+                            <Button variant="ghost" type="submit">Suspend</Button>
+                          </form>
+                        )}
+                        <Link href={`/app/mailstack/${t.id}`}><Button variant="secondary">Open cockpit</Button></Link>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </Card>

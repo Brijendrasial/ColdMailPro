@@ -1,4 +1,5 @@
 import { Container, Card, Button } from "@/components/ui";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -22,7 +23,17 @@ export default async function Enroll({ params }: { params: { id: string } }) {
 
   return (
     <Container>
-      <div className="grid gap-4">
+      <CampaignInnerHero
+        campaignId={camp.id}
+        campaignName={camp.name}
+        status={camp.status}
+        active="enroll"
+        title="Enroll leads"
+        subtitle="Pick eligible leads and push them into the campaign without leaving the campaign workspace."
+        primaryHref="/app/leads"
+        primaryLabel="Open leads"
+      />
+      <div className="grid gap-4 max-w-5xl mx-auto">
         <Card title={`Enroll leads: ${camp.name}`}>
           <form action="/api/campaigns/enroll" method="post" className="grid gap-3">
             <input type="hidden" name="campaignId" value={camp.id} />

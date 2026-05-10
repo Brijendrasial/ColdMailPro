@@ -38,7 +38,7 @@ export default async function InvitePage({ params }: { params: { token: string }
 
   return (
     <Container>
-      <div className="max-w-2xl mx-auto grid gap-6">
+      <div className="max-w-3xl mx-auto grid gap-6">
         <Card
           title="Workspace invite"
           subtitle="Join a workspace securely using a signed invite link."

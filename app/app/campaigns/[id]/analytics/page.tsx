@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { Container, Card, Badge, Pill, Button } from "@/components/ui";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -173,21 +174,16 @@ export default async function CampaignAnalytics({ params }: { params: { id: stri
 
   return (
     <Container>
-      <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
-        <div className="min-w-0">
-          <div className="text-2xl font-semibold tracking-tight">Campaign Analytics</div>
-          <div className="mt-1 text-sm opacity-70">Step-level performance + A/B testing breakdown.</div>
-          <div className="mt-2 flex gap-2 flex-wrap">
-            <Badge>Campaign: {camp.name}</Badge>
-            <Pill tone={camp.status === "running" ? "success" : camp.status === "paused" ? "warning" : "neutral"}>{camp.status}</Pill>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Link href={`/app/campaigns/${camp.id}`}><Button variant="ghost">← Back</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/settings`}><Button variant="ghost">Settings</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/edit`}><Button variant="ghost">Edit steps</Button></Link>
-        </div>
-      </div>
+      <CampaignInnerHero
+        campaignId={camp.id}
+        campaignName={camp.name}
+        status={camp.status}
+        active="analytics"
+        title="Campaign analytics"
+        subtitle="Step-level performance, variant winners, engagement rates, and reply movement in one readable view."
+        primaryHref={`/app/campaigns/${camp.id}/deliverability`}
+        primaryLabel="Deliverability"
+      />
 
       <Card title="Steps & variants" subtitle="Unique counts by message (open/click/reply counted once per message).">
         {rows.length === 0 ? (

@@ -3859,7 +3859,13 @@ async function main() {
             payload = JSON.parse(job.payload || "{}");
       await executeJob(job, payload);
 
-      await updateJobSafe(job.id, { status: "done", lockedAt: null, lastError: null }, "mark done");
+      await updateJobSafe(
+        job.id,
+        job.type === "domain_dns_check"
+          ? { status: "done", lockedAt: null }
+          : { status: "done", lockedAt: null, lastError: null },
+        "mark done"
+      );
     
 } catch (e: any) {
   // Risky: AI suggestions only (never auto-applied). Safe: deterministic fixes auto-applied.
@@ -3869,7 +3875,13 @@ async function main() {
   if (shouldRetry) {
     try {
       await executeJob(job, payload);
-      await updateJobSafe(job.id, { status: "done", lockedAt: null, lastError: null }, "mark done after AutoFix retry").catch(() => false);
+      await updateJobSafe(
+        job.id,
+        job.type === "domain_dns_check"
+          ? { status: "done", lockedAt: null }
+          : { status: "done", lockedAt: null, lastError: null },
+        "mark done after AutoFix retry"
+      ).catch(() => false);
       await logJob(job.id, `✅ Job succeeded after AutoFix retry.`);
       if (payload?.tenantId && job.type !== "mailstack:tenant-reset") {
         await prisma.mailstackTenant

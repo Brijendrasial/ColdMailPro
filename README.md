@@ -10,6 +10,38 @@
 - **Tenant delete DNS cleanup**: optional Cloudflare DNS purge on tenant reset/delete.
 
 
+
+## Patch fixed76 - Replies command center redesign
+- Redesigned the Replies page into a polished shared inbox command center with a premium hero, inbox stats, global search, mailbox/campaign filters, and refresh/AI controls.
+- Rebuilt the thread list with stronger conversation cards, avatars, unread badges, status chips, assignment chips, pinned/starred/snoozed indicators, and better empty states.
+- Redesigned the conversation workspace with lead summary cards, triage controls, AI draft panel, suggested actions, labels, timeline messages, and a cleaner reply composer.
+- Preserved existing reply APIs and behavior: thread loading, state updates, bulk read/unread, assignment, snooze, AI drafts, Google scheduling, and send reply.
+- Kept the corrected `coldmail-pro/` project folder structure for direct deployment.
+
+## Patch fixed73 - Domains DNS command center redesign
+- Rebuilt the Domains page into a cleaner DNS command center with a premium hero, workflow cards, domain launchpad, SPF preview panel, and card-based domain fleet.
+- Redesigned the Add domain flow into focused sections for tenant/domain batch, outbound IP pool, SPF preview, and advanced Cloudflare/server defaults.
+- Replaced the cramped domain table with responsive domain health cards showing score, SPF/DKIM/DMARC/MX status, issues, Mailstack linkage, and actions.
+- Redesigned the domain detail workspace with a dark hero, DNS health radar, record status panels, Cloudflare/manual DNS cockpit, provisioning area, DKIM rotation studio, tracking CNAME, and danger zone.
+- Preserved existing APIs and behavior for DKIM generation, DNS checks, Cloudflare sync, Mailstack provisioning, DKIM rotation, IP rotation, and deletion.
+
+
+## Patch fixed70 - Campaigns command center + campaign workspace redesign
+- Rebuilt the Campaigns list screen into a full command center with a dark gradient hero, deliverability score ring, quick actions, fleet metrics, ops radar, and a card-style campaign fleet.
+- Replaced the cramped table-first layout with searchable/filterable campaign cards that show schedule, sender load, lead progress, engagement, status, health, and actions in a cleaner responsive flow.
+- Preserved existing campaign actions: run/pause, duplicate, settings, analytics, bulk actions, DNS checks, and pre-send QA validation modal.
+- Added a shared premium campaign inner-page hero and tab bar across overview, mailboxes, settings, analytics, deliverability, funnel, edit sequence, and enroll leads pages.
+- Kept backend/API logic intact; this patch is focused on UX, layout, and visual clarity.
+
+## Patch fixed65 - Leads command center redesign
+- Rebuilt the Leads page into a wide CRM-style command center with a premium gradient hero, cleaner action buttons, and stronger stats.
+- Removed the duplicate cramped page header so the Leads screen opens directly into the new workspace.
+- Added a sticky left workspace rail for quick tools, presets, saved views, lists, suppressions, and duplicates.
+- Reorganized filters into a calm two-row “Find and focus” panel with better spacing and larger controls.
+- Redesigned the bulk-action area into a highlighted command bar with grouped actions and aligned stage/owner/list controls.
+- Restyled the lead table with better spacing, avatars, status pills, clearer company/activity columns, and a polished pagination footer.
+- Kept the fixed64 enrichment modal and valid-only import behavior intact.
+
 Self-hosted **cold email + warmup** app built with **Next.js 14**, **Prisma**, and **MariaDB**.
 
 > Not affiliated with Instantly.ai or Mailgun. “Instantly-style” is used as a product description only.
@@ -1136,3 +1168,137 @@ For upstream installs, the script downloads the `roundcubemail-<version>-complet
 - Changed import behavior so it imports only verified-valid selected emails and automatically skips failed or pending selected emails. Users no longer need to manually deselect failed leads after verification.
 - Grouped results into clean cards for website-published emails, AI suggestions, manual emails, and generated patterns.
 - Moved manual checking, verification settings, and fallback pattern generation into aligned side panels.
+
+## fixed66 - Full app polish system redesign
+
+This release applies a full-app visual polish pass across ColdMail Pro so every page benefits from the same premium command-center design language.
+
+### UI/UX changes
+
+- Redesigned the authenticated app shell with a floating glass top bar, improved action buttons, and a cleaner workspace header.
+- Redesigned the left sidebar with stronger active states, workspace card polish, and a more modern navigation feel.
+- Rebuilt the shared UI primitives used across pages:
+  - `Container`
+  - `PageHeader`
+  - `Card`
+  - `Button`
+  - `Input`
+  - `Select`
+  - `TextArea`
+  - `Kpi`
+  - `Pill`
+  - `Badge`
+  - `Modal`
+  - `Segmented` / `SegmentedNav`
+  - `EmptyState`
+- Upgraded global table, card, scrollbar, background, modal, and form styling.
+- Redesigned public landing page, login page, 2FA page, and setup page for a premium SaaS-style first impression.
+- Existing fixed65 Leads Command Center and fixed64 enrichment modal remain intact.
+
+### Scope
+
+This is a foundation-level redesign pass, so all existing pages receive the new layout system through shared components and app shell improvements while keeping existing business logic, routes, forms, and APIs unchanged.
+
+## fixed67 - Dashboard command center redesign
+
+This release redesigns the main dashboard page as a real outbound command center instead of a dense grid of plain cards.
+
+### Dashboard UI/UX changes
+
+- Added a premium gradient hero with workspace health, date range controls, and primary actions.
+- Added a visible deliverability score and sending pulse summary.
+- Rebuilt top KPI cards for sent volume, replies, bounce risk, campaigns, leads, and mailboxes.
+- Reorganized operational data into clear sections:
+  - Today's sending pace
+  - Queue health
+  - Deliverability radar
+  - DNS + warmup
+  - Next best actions
+  - Setup progress
+  - Alerts
+  - Top campaigns
+  - Needs attention
+  - Recent campaigns
+  - Live activity
+- Improved spacing, card hierarchy, shadows, responsive behavior, and empty states.
+- Kept all existing dashboard queries, metrics, links, filters, and backend logic intact.
+
+## fixed68-dashboard-redesign-correct-project-folder
+
+- Repackaged the fixed67 dashboard command-center redesign so all files live under the `coldmail-pro/` project folder inside the zip.
+- This ensures copying/extracting the package over an existing `/root/coldmail-pro` or `coldmail-pro` checkout replaces the real app files instead of placing files at the wrong root level.
+
+## Fixed69 - Tailwind opacity build fix
+
+- Fixed production build failure caused by custom Tailwind opacity utilities such as `bg-white/78`.
+- Added the custom opacity tokens used by the redesigned UI to `tailwind.config.ts` so `next build` can compile the dashboard styles correctly.
+- Preserved the corrected `coldmail-pro/` project folder structure from fixed68.
+
+## fixed71-campaign-inner-hero-import-build-fix
+
+- Fixed the Campaigns inner pages build error caused by missing `CampaignInnerHero` imports.
+- Updated analytics, deliverability, and funnel campaign pages to import the shared campaign inner shell component.
+- Preserved the fixed70 Campaign Command Center redesign and the correct `coldmail-pro/` package folder structure.
+
+
+## fixed72-mailboxes-command-center-redesign
+
+- Redesigned the Mailboxes page into a full Mailbox Command Center.
+- Added a premium hero, sender-fleet side panel, and clearer SMTP/IMAP add-mailbox flow.
+- Reworked existing mailboxes into action-first sender cards with health, bounce, reply, daily usage, test-send, and edit controls.
+- Added improved bulk-action toolbar for selected mailboxes.
+- Updated related inner mailbox pages: Pools, Warmup Studio, and Warmup Control Center with the same command-center layout.
+- Preserved all existing SMTP/IMAP, health check, test send, cooldown, pool, warmup, and worker logic.
+
+## fixed74 - Domain detail layout and overlap repair
+
+- Redesigned the domain detail DNS workspace to remove cramped/overlapping panels.
+- Rebuilt the Cloudflare cockpit with a cleaner two-column layout that only splits on very wide screens.
+- Rebuilt manual DNS records into scroll-safe record cards so long SPF/DKIM values do not break alignment.
+- Reworked Mailstack provisioning into clear sections for readiness, tenant setup, mailbox defaults, authentication defaults, provisioning, and tenant maintenance actions.
+- Added safer scroll boxes for long DNS bundle, SPF, DKIM, and DMARC content.
+- Changed the app command bar from sticky to normal relative positioning to prevent it from overlaying dense long pages and full-page screenshots.
+- Added Tailwind opacity values used by the updated layout.
+
+### fixed75 - Domain DNS check completion/status fix
+
+- Fixed the domain detail "Run check" button appearing stuck even when the worker completed the DNS check.
+- `/api/domains/check` now returns the queued or already-running job id.
+- Added `/api/domains/check/status` so the domain detail UI can poll DNS check progress and logs live.
+- The worker now preserves structured DNS check results in `Job.lastError` after marking domain DNS jobs as `done`, instead of clearing them during the final success update.
+- The domain detail button now shows queued/running/done/failed state, recent logs, and refreshes the page when the check completes.
+
+## fixed77 - Analytics Command Center redesign
+
+- Redesigned the Analytics page into a premium command-center layout.
+- Added a dark executive hero and performance score panel.
+- Rebuilt analytics filters into a clearer slicer workspace.
+- Reworked KPI cards, insight cards, campaign leaderboard, mailbox reputation board, funnel, heatmaps, and event stream.
+- Kept all analytics API/backend behavior intact.
+- Preserved the correct `coldmail-pro/` project folder structure.
+
+## fixed78 - Logs Observability Command Center redesign
+
+- Redesigned the Logs page into a full observability cockpit with a dark executive hero, live event summary, and clear health counters.
+- Rebuilt Unified Logs into a polished event stream with severity counters, cleaner filters, trace cards, selected-event inspector, JSON inspection, and better empty states.
+- Redesigned the Messages panel into a message flight recorder with status counters, cleaner message cards, recipient/mailbox/campaign context, and failure details.
+- Preserved the existing logs/message APIs and backend behavior.
+- Preserved the correct `coldmail-pro/` project folder structure.
+
+## fixed79-mailstack-control-center-redesign
+
+- Redesigned `/app/mailstack` into a premium Mailstack Control Center.
+- Added fleet metrics for tenants, domains, mailboxes, outbound IPs, and attention state.
+- Reworked integration settings into a clear Integration Vault with Cloudflare bootstrap controls.
+- Preserved the live server/Roundcube maintenance modal and update workflow.
+- Redesigned tenant fleet cards with DNS sync, IP rotation, suspend/unsuspend, and open cockpit actions.
+- Redesigned `/app/mailstack/new` into a guided tenant creation flow.
+- Redesigned `/app/mailstack/[id]` into a tenant operations cockpit with clear asset panels and danger zone.
+- Kept existing MailStack provisioning, Cloudflare, update, tenant action, and worker logic intact.
+
+## fixed80 - Settings Control Center redesign
+
+- Redesigned `/app/settings` into a premium Settings Control Center.
+- Added dark hero, security/developer/workspace summary cards, grouped sidebar navigation, active panel header, cleaner account/workspace forms, improved security layout, and clearer danger-zone panels.
+- Preserved existing account, password, 2FA, sessions, notifications, deliverability, workspace, team, audit, system, integrations, developer, and danger-zone API behavior.
+- Added Tailwind opacity support required by the redesigned settings layout.

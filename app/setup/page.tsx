@@ -4,17 +4,17 @@ import { Container, Card, Button } from "@/components/ui";
 export default function SetupPage() {
   return (
     <Container>
-      <div className="max-w-3xl mx-auto grid gap-6">
+      <div className="max-w-4xl mx-auto grid gap-6">
         <Card
-          title="Setup"
-          subtitle="Quick commands to get ColdMail Pro running (web + worker)."
+          title="Setup command center"
+          subtitle="Copy-paste friendly commands to get ColdMail Pro running with web, worker, database, and production notes."
           right={
             <Link href="/login">
               <Button variant="ghost">Back to login</Button>
             </Link>
           }
         >
-          <pre className="text-xs whitespace-pre-wrap bg-slate-900 text-slate-50 p-4 rounded-2xl overflow-x-auto">
+          <pre className="text-xs whitespace-pre-wrap bg-slate-950 text-slate-50 p-5 rounded-[1.5rem] shadow-inner overflow-x-auto">
 {`cp .env.example .env
 # edit DATABASE_URL, JWT_SECRET, PUBLIC_APP_URL
 

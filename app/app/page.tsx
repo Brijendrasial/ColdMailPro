@@ -791,566 +791,288 @@ export default async function Dashboard({
     });
   }
 
+  const setupPct = Math.round((checklistDone / Math.max(1, checklist.length)) * 100);
+  const deliverabilityScore = Math.max(0, Math.min(100, Math.round(100 - bounceRate * 650 - unsubRate * 1200)));
+  const todayCapacityPct = Math.round(100 * clamp(capacityToday ? sentToday / capacityToday : 0, 0, 1));
+  const queueTone = failedToday > 0 ? "warning" : queuedNow > 50 ? "info" : "success";
+  const queueText = failedToday > 0 ? "Needs review" : queuedNow > 0 ? "Flowing" : "Clear";
+  const healthCopy = healthTone === "success" ? "Systems look clean" : healthTone === "warning" ? "Watch the signals" : "Action needed";
+
+  const actionLink = "inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-semibold shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg";
+  const ghostLink = "inline-flex items-center justify-center gap-2 rounded-2xl border border-white/70 bg-white/80 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur transition hover:bg-white hover:shadow-md";
+  const miniAction = "group flex items-center justify-between gap-3 rounded-2xl border border-white/70 bg-white/75 px-4 py-3 text-sm shadow-sm transition hover:-translate-y-0.5 hover:bg-white hover:shadow-lg";
+
   return (
-    <Container wide>
-      <div className="px-1 md:px-0">
-        <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
-          <div>
-            <div className="text-2xl font-semibold tracking-tight text-slate-900">Dashboard</div>
-            <div className="text-sm text-slate-600 mt-0.5">{rangeLabel} · Dates shown in UTC to avoid timezone mismatches</div>
-          </div>
+    <Container wide className="max-w-[1900px]">
+      <div className="relative space-y-6">
+        <div className="absolute -left-24 -top-20 h-72 w-72 rounded-full bg-indigo-300/20 blur-3xl" />
+        <div className="absolute right-0 top-40 h-96 w-96 rounded-full bg-cyan-300/20 blur-3xl" />
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <DateRangeControls />
-            <Link href="/app/campaigns/new">
-              <Button>+ New Campaign</Button>
-            </Link>
-            <Link href="/app/replies">
-              <Button variant="ghost">Open Replies</Button>
-            </Link>
-          </div>
-        </div>
+        <section className="relative overflow-hidden rounded-[2.2rem] border border-white/70 bg-slate-950 shadow-[0_30px_90px_rgba(15,23,42,0.18)]">
+          <div className="absolute inset-0 bg-[radial-gradient(900px_circle_at_10%_0%,rgba(129,140,248,0.55),transparent_45%),radial-gradient(800px_circle_at_90%_10%,rgba(45,212,191,0.38),transparent_45%),linear-gradient(135deg,#0f172a,#111827_55%,#312e81)]" />
+          <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+          <div className="absolute bottom-0 left-1/3 h-px w-1/2 bg-gradient-to-r from-transparent via-white/50 to-transparent" />
 
-        {/* KPI row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card title="Deliverability" subtitle="Guardrails snapshot" right={<Pill tone={healthTone}>{healthText}</Pill>}>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-600">Bounce</div>
-                <div className="font-semibold text-slate-900">{pct(bounceRate)}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Unsub</div>
-                <div className="font-semibold text-slate-900">{pct(unsubRate)}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Opens</div>
-                <div className="font-semibold text-slate-900">{pct(openRate)}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Replies</div>
-                <div className="font-semibold text-slate-900">{pct(replyRate)}</div>
-              </div>
-            </div>
-          </Card>
-
-          <Card title="Sending" subtitle={`Volume · trend ${trendDays}d`} right={<Sparkline values={days.map((d) => d.count)} />}>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-600">Sent</div>
-                <div className="text-2xl font-semibold text-slate-900">{sentRange}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Avg/day</div>
-                <div className="text-2xl font-semibold text-slate-900">{Math.round(sentRange / Math.max(1, Math.min(trendDays, 30)))}</div>
-              </div>
-            </div>
-            <div className="mt-2 text-xs text-slate-600">UTC buckets: {days[0]?.label} → {days[days.length - 1]?.label}</div>
-          </Card>
-
-          <Card title="Workspace" subtitle="Inventory">
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-600">Campaigns</div>
-                <div className="text-2xl font-semibold text-slate-900">{campaignsTotal}</div>
-                <div className="mt-1 flex gap-2 flex-wrap">
-                  <Pill tone="success">Running: {campaignsRunning}</Pill>
-                  <Pill tone="warning">Paused: {campaignsPaused}</Pill>
-                  <Pill tone="neutral">Draft: {campaignsDraft}</Pill>
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-600">Mailboxes</div>
-                <div className="text-2xl font-semibold text-slate-900">{mailboxesActive}</div>
-                <div className="mt-3">
-                  <div className="text-slate-600">Leads</div>
-                  <div className="text-2xl font-semibold text-slate-900">{leadsTotal}</div>
-                  <div className="text-xs text-slate-600">Active: {leadsActive}</div>
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          <Card title="Quick Actions" subtitle="Next best steps">
-            <div className="grid gap-2">
-              <Link href="/app/mailboxes" className="rounded-xl border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-sm">
-                ➜ Add / verify mailboxes
-              </Link>
-              <Link href="/app/leads" className="rounded-xl border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-sm">
-                ➜ Import leads (CSV wizard)
-              </Link>
-              <Link href="/app/campaigns/new" className="rounded-xl border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-sm">
-                ➜ Create campaign (wizard)
-              </Link>
-              <Link href="/app/analytics" className="rounded-xl border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-sm">
-                ➜ Analytics & deliverability
-              </Link>
-            </div>
-          </Card>
-        </div>
-
-        {/* Command center */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
-          <Card title="Today pacing" subtitle="Capacity + remaining" right={<Pill tone={paceTone}>{paceText}</Pill>}>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-600">Sent today</div>
-                <div className="text-2xl font-semibold text-slate-900">{sentToday}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Remaining</div>
-                <div className="text-2xl font-semibold text-slate-900">{remainingToday}</div>
-              </div>
-            </div>
-
-            <div className="mt-3 text-xs text-slate-600">
-              Capacity: <b>{capacityToday}</b> · Expected by now: <b>{expectedByNow}</b>
-            </div>
-
-            <div className="mt-2 h-2 rounded-full bg-slate-200 overflow-hidden">
-              <div
-                className="h-full bg-indigo-600"
-                style={{ width: `${Math.round(100 * clamp(capacityToday ? sentToday / capacityToday : 0, 0, 1))}%` }}
-              />
-            </div>
-          </Card>
-
-          <Card
-            title="Replies"
-            subtitle="Triage snapshot"
-            right={<Link href="/app/replies" className="text-sm text-indigo-700 hover:underline">Inbox</Link>}
-          >
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-600">Unread</div>
-                <div className="text-2xl font-semibold text-slate-900">{replyUnreadThreads}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Due now</div>
-                <div className="text-2xl font-semibold text-slate-900">{replyDueThreads}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Open</div>
-                <div className="font-semibold text-slate-900">{replyOpenThreads}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Follow-up</div>
-                <div className="font-semibold text-slate-900">{replyFollowUpThreads}</div>
-              </div>
-            </div>
-            <div className="mt-2 text-xs text-slate-600">
-              Threads: {replyThreadsTotal} · Mine: {replyMineThreads}
-            </div>
-          </Card>
-
-          <Card
-            title="Queue health"
-            subtitle="Scheduler + failures"
-            right={<Pill tone={failedToday > 0 ? "warning" : "success"}>{failedToday > 0 ? "Watch" : "OK"}</Pill>}
-          >
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-600">Queued now</div>
-                <div className="text-2xl font-semibold text-slate-900">{queuedNow}</div>
-              </div>
-              <div>
-                <div className="text-slate-600">Due next 60m</div>
-                <div className="text-2xl font-semibold text-slate-900">{enrollDueSoon}</div>
-              </div>
-            </div>
-            <div className="mt-2 text-xs text-slate-600">
-              Failed today: <b>{failedToday}</b>
-            </div>
-          </Card>
-
-          <Card
-            title="DNS + Warmup"
-            subtitle="Deliverability signals"
-            right={<Link href="/app/domains" className="text-sm text-indigo-700 hover:underline">Domains</Link>}
-          >
-            <div className="text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600">DNS healthy</span>
-                <span className="font-semibold text-slate-900">{dnsHealthy}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600">Needs work</span>
-                <span className="font-semibold text-slate-900">{dnsWarn}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600">Misconfigured</span>
-                <span className="font-semibold text-slate-900">{dnsFail}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600">Pending / Not checked</span>
-                <span className="font-semibold text-slate-900">{dnsPending} / {dnsNotChecked}</span>
-              </div>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-slate-200/70 text-xs text-slate-600">
-              <div className="flex items-center justify-between gap-2">
-                <div className="font-medium text-slate-700">Top domain issues</div>
-                <Link href="/app/domains" className="text-indigo-700 hover:underline">View</Link>
+          <div className="relative grid gap-6 p-5 sm:p-7 lg:grid-cols-[1.4fr_.8fr] lg:p-8 xl:p-10">
+            <div className="min-w-0">
+              <div className="mb-5 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-100 backdrop-blur">
+                  <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_0_5px_rgba(110,231,183,0.16)]" />
+                  ColdMailPro command center
+                </span>
+                <Pill tone={healthTone}>{healthText}</Pill>
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-200 backdrop-blur">
+                  {rangeLabel} · UTC
+                </span>
               </div>
 
-              {brokenDomainsTop.length === 0 ? (
-                <div className="mt-2">No DNS issues detected (or not checked yet).</div>
-              ) : (
-                <div className="mt-2 grid gap-2">
-                  {brokenDomainsTop.map((d) => (
-                    <div key={d.id} className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <Link href={`/app/domains/${d.id}`} className="text-slate-900 hover:underline font-medium truncate block">
-                          {d.name}
-                        </Link>
-                        <div className="text-[11px] text-slate-600 truncate max-w-[260px]">
-                          {d.issues?.[0] ? String(d.issues[0]) : "Open domain to see details."}
-                        </div>
-                      </div>
-                      <Pill tone={dnsTone(d.status)}>{dnsLabel(d.status)}</Pill>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <h1 className="max-w-5xl text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
+                Your outbound cockpit, rebuilt for speed.
+              </h1>
+              <p className="mt-4 max-w-3xl text-base leading-7 text-slate-200/90 sm:text-lg">
+                Monitor sending, replies, DNS, warmup, bounces, setup tasks, and today&apos;s queue from one focused dashboard.
+              </p>
 
-              <div className="mt-3 pt-3 border-t border-slate-200/70">
-                Warmup (7d): Inbox <b>{pct(warmInboxRate)}</b> · Spam <b>{pct(warmSpamRate)}</b>
-                <div className="mt-1">
-                  <Link href="/app/mailboxes/warmup" className="text-indigo-700 hover:underline">Warmup</Link>
-                </div>
-              </div>
-            </div>
-          </Card>
-        </div>
-
-        {/* Deliverability insights */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-          <Card
-            title="Bounce reasons"
-            subtitle={rangeLabel}
-            right={<Link href="/app/analytics" className="text-sm text-indigo-700 hover:underline">Analytics</Link>}
-          >
-            {bounceTotal === 0 ? (
-              <div className="text-sm text-slate-600">No bounces detected in this range.</div>
-            ) : (
-              <div className="grid gap-2">
-                <div className="text-xs text-slate-600">Total bounced messages: <b>{bounceTotal}</b></div>
-                <div className="grid gap-2">
-                  {bounceBreakdown.map((x) => {
-                    const p = analyticsRangeParams(rangeKey, rangeStart, rangeEnd);
-                    p.set("tab", "deliverability");
-                    p.set("bounceType", x.type);
-                    const href = `/app/analytics?${p.toString()}`;
-                    const label =
-                      x.type === "blocked"
-                        ? "Blocked"
-                        : x.type === "policy"
-                          ? "Policy"
-                          : x.type === "hard"
-                            ? "Hard"
-                            : x.type === "soft"
-                              ? "Soft"
-                              : x.type === "mailbox_full"
-                                ? "Mailbox full"
-                                : "Unknown";
-                    return (
-                      <Link
-                        key={x.type}
-                        href={href}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/60 px-3 py-2 hover:bg-white transition"
-                        title="Open analytics drill-down"
-                      >
-                        <div className="text-sm text-slate-700">{label}</div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          {x.count} <span className="text-slate-600 font-normal">({pct(x.count / Math.max(1, bounceTotal))})</span>
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </Card>
-
-          <Card
-            title="Recipient domains"
-            subtitle={`Top domains by sent volume · ${rangeLabel}`}
-            right={<Link href="/app/leads" className="text-sm text-indigo-700 hover:underline">Leads</Link>}
-          >
-            {recipientDomains.length === 0 ? (
-              <div className="text-sm text-slate-600">No sent messages with lead emails in this range.</div>
-            ) : (
-              <div className="grid gap-2">
-                {recipientDomains.map((d) => (
-                  <Link
-                    key={d.domain}
-                    href={`/app/leads?prefill=${encodeURIComponent("@" + d.domain)}`}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/60 px-3 py-2 hover:bg-white transition"
-                    title="Open leads filtered by this domain"
-                  >
-                    <div className="min-w-0">
-                      <div className="font-medium text-slate-900 truncate">{d.domain}</div>
-                      <div className="text-xs text-slate-600">
-                        Bounce {pct(d.bounceRate)} · Unsub {pct(d.unsubRate)}
-                      </div>
-                    </div>
-                    <Badge>{d.sent} sent</Badge>
-                  </Link>
-                ))}
-                <div className="text-xs text-slate-500">Tip: if a single domain dominates volume, consider per-domain caps to reduce risk.</div>
-              </div>
-            )}
-          </Card>
-        </div>
-
-        {/* Leaderboard + checklist + notifications */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-          <Card
-            title="Top campaigns"
-            subtitle="Sorted by reply rate"
-            right={<Link href="/app/campaigns" className="text-sm text-indigo-700 hover:underline">Campaigns</Link>}
-            className="lg:col-span-2"
-          >
-            {topCampaigns.length === 0 ? (
-              <div className="text-sm text-slate-600">No campaigns have sent enough emails in this range yet.</div>
-            ) : (
-              <div className="grid gap-2">
-                {topCampaigns.map((c) => (
-                  <div key={c.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Link href={`/app/campaigns/${c.id}`} className="font-medium text-slate-900 hover:underline truncate max-w-[520px]">
-                          {c.name}
-                        </Link>
-                        <Pill tone={toneForStatus(c.status)}>{c.status}</Pill>
-                        <Badge>{c.sent} sent</Badge>
-                      </div>
-                      <div className="text-xs text-slate-600 mt-0.5">
-                        Replies {pct(c.replyRate)} · Opens {pct(c.openRate)} · Bounce {pct(c.bounceRate)} · Unsub {pct(c.unsubRate)}
-                      </div>
-                    </div>
-                    <div className="text-sm font-semibold text-slate-900 shrink-0">{pct(c.replyRate)}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-
-          <Card title="Setup checklist" subtitle={`${checklistDone}/${checklist.length} completed`}>
-            <div className="grid gap-2">
-              {checklist.map((t) => (
-                <Link
-                  key={t.label}
-                  href={t.href}
-                  className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm ${t.done ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={`h-5 w-5 rounded-full grid place-items-center text-xs ${t.done ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700"}`}>
-                      {t.done ? "✓" : "•"}
-                    </span>
-                    <span className="text-slate-900">{t.label}</span>
-                  </div>
-                  <span className="text-slate-600">→</span>
+              <div className="mt-7 flex flex-wrap items-center gap-3">
+                <Link href="/app/campaigns/new" className={`${actionLink} bg-white text-slate-950`}>
+                  <span>＋</span> New campaign
                 </Link>
-              ))}
+                <Link href="/app/leads" className={`${actionLink} bg-indigo-500 text-white hover:bg-indigo-400`}>
+                  Import leads
+                </Link>
+                <Link href="/app/replies" className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white shadow-sm backdrop-blur transition hover:bg-white/15">
+                  Open replies
+                </Link>
+                <DateRangeControls />
+              </div>
             </div>
-          </Card>
 
-          <Card title="Needs attention" subtitle="Highest bounce + unsub" className="lg:col-span-2">
-            {watchlist.length === 0 ? (
-              <div className="text-sm text-slate-600">Nothing stands out yet. As volume grows, this list will highlight risk.</div>
-            ) : (
-              <div className="grid gap-2">
-                {watchlist.map((c) => (
-                  <div key={c.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Link href={`/app/campaigns/${c.id}/deliverability`} className="font-medium text-slate-900 hover:underline truncate max-w-[520px]">
-                          {c.name}
-                        </Link>
-                        <Pill tone={toneForStatus(c.status)}>{c.status}</Pill>
-                        <Badge>{c.sent} sent</Badge>
-                      </div>
-                      <div className="text-xs text-slate-600 mt-0.5">
-                        Bounce {pct(c.bounceRate)} · Unsub {pct(c.unsubRate)} · Replies {pct(c.replyRate)}
-                      </div>
-                    </div>
-                    <div className="flex gap-2 shrink-0">
-                      <Pill tone={c.bounceRate >= 0.08 || c.unsubRate >= 0.02 ? "danger" : "warning"}>
-                        {pct(c.bounceRate + c.unsubRate)}
-                      </Pill>
-                    </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              <div className="rounded-[1.7rem] border border-white/15 bg-white/10 p-5 text-white shadow-2xl backdrop-blur-xl">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-100">Deliverability score</div>
+                <div className="mt-3 flex items-end gap-2">
+                  <div className="text-5xl font-semibold tracking-tight">{deliverabilityScore}</div>
+                  <div className="pb-2 text-sm text-slate-300">/100</div>
+                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/15">
+                  <div className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-cyan-300 to-indigo-300" style={{ width: `${deliverabilityScore}%` }} />
+                </div>
+                <div className="mt-3 text-sm text-slate-300">{healthCopy}</div>
+              </div>
+
+              <div className="rounded-[1.7rem] border border-white/15 bg-white/10 p-5 text-white shadow-2xl backdrop-blur-xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">Sending pulse</div>
+                    <div className="mt-3 text-5xl font-semibold tracking-tight">{sentRange}</div>
                   </div>
-                ))}
+                  <Sparkline values={days.map((d) => d.count)} />
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-300">
+                  <div><b className="block text-white">{sentToday}</b>Today</div>
+                  <div><b className="block text-white">{queuedNow}</b>Queued</div>
+                  <div><b className="block text-white">{replyUnreadThreads}</b>Unread</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="relative grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="rounded-[1.7rem] border border-white/70 bg-white/85 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Sent</div>
+                <div className="mt-2 text-4xl font-semibold tracking-tight text-slate-950">{sentRange}</div>
+              </div>
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-indigo-50 text-xl">📤</span>
+            </div>
+            <div className="mt-3 text-xs text-slate-600">Avg/day {Math.round(sentRange / Math.max(1, Math.min(trendDays, 30)))} · {days[0]?.label} → {days[days.length - 1]?.label}</div>
+          </div>
+
+          <div className="rounded-[1.7rem] border border-white/70 bg-white/85 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Replies</div>
+                <div className="mt-2 text-4xl font-semibold tracking-tight text-slate-950">{replyRange}</div>
+              </div>
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-emerald-50 text-xl">💬</span>
+            </div>
+            <div className="mt-3 text-xs text-slate-600">Rate {pct(replyRate)} · {replyUnreadThreads} unread · {replyDueThreads} due</div>
+          </div>
+
+          <div className="rounded-[1.7rem] border border-white/70 bg-white/85 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Bounce risk</div>
+                <div className="mt-2 text-4xl font-semibold tracking-tight text-slate-950">{pct(bounceRate)}</div>
+              </div>
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-rose-50 text-xl">🛡️</span>
+            </div>
+            <div className="mt-3 text-xs text-slate-600">{bounceRange} bounced · Unsub {pct(unsubRate)}</div>
+          </div>
+
+          <div className="rounded-[1.7rem] border border-white/70 bg-white/85 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Campaigns</div>
+                <div className="mt-2 text-4xl font-semibold tracking-tight text-slate-950">{campaignsTotal}</div>
+              </div>
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-50 text-xl">🚀</span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5"><Pill tone="success">{campaignsRunning} running</Pill><Pill tone="warning">{campaignsPaused} paused</Pill></div>
+          </div>
+
+          <div className="rounded-[1.7rem] border border-white/70 bg-white/85 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Workspace</div>
+                <div className="mt-2 text-4xl font-semibold tracking-tight text-slate-950">{leadsTotal}</div>
+              </div>
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-cyan-50 text-xl">👥</span>
+            </div>
+            <div className="mt-3 text-xs text-slate-600">{leadsActive} active leads · {mailboxesActive} mailboxes</div>
+          </div>
+        </section>
+
+        <section className="relative grid grid-cols-1 gap-5 xl:grid-cols-[1.25fr_.75fr]">
+          <div className="grid gap-5 lg:grid-cols-2">
+            <Card className="overflow-hidden border-indigo-100/80 bg-white/90" title="Today's sending pace" subtitle="Capacity, queue pressure, and remaining volume" right={<Pill tone={paceTone}>{paceText}</Pill>}>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-slate-50 p-4"><div className="text-xs uppercase tracking-[0.16em] text-slate-500">Sent today</div><div className="mt-1 text-3xl font-semibold text-slate-950">{sentToday}</div></div>
+                <div className="rounded-2xl bg-slate-50 p-4"><div className="text-xs uppercase tracking-[0.16em] text-slate-500">Remaining</div><div className="mt-1 text-3xl font-semibold text-slate-950">{remainingToday}</div></div>
+              </div>
+              <div className="mt-5 flex items-center justify-between text-sm text-slate-600"><span>Capacity {capacityToday}</span><span>{todayCapacityPct}% used</span></div>
+              <div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400" style={{ width: `${todayCapacityPct}%` }} /></div>
+              <div className="mt-3 text-xs text-slate-500">Expected by now: {expectedByNow}. Time windows are calculated in UTC.</div>
+            </Card>
+
+            <Card className="bg-white/90" title="Queue health" subtitle="Scheduler, due enrollments, and worker failures" right={<Pill tone={queueTone as any}>{queueText}</Pill>}>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-2xl border border-slate-100 bg-white p-4"><div className="text-xs text-slate-500">Queued</div><div className="mt-1 text-3xl font-semibold text-slate-950">{queuedNow}</div></div>
+                <div className="rounded-2xl border border-slate-100 bg-white p-4"><div className="text-xs text-slate-500">Due 60m</div><div className="mt-1 text-3xl font-semibold text-slate-950">{enrollDueSoon}</div></div>
+                <div className="rounded-2xl border border-slate-100 bg-white p-4"><div className="text-xs text-slate-500">Failed</div><div className="mt-1 text-3xl font-semibold text-slate-950">{failedToday}</div></div>
+              </div>
+              <div className="mt-4 rounded-2xl bg-slate-950 px-4 py-3 text-sm text-slate-200">{failedToday > 0 ? "Some jobs failed today. Open logs before increasing volume." : "No failures today. Scheduler looks stable."}</div>
+            </Card>
+
+            <Card className="lg:col-span-2 bg-white/90" title="Deliverability radar" subtitle="Bounce reasons, recipient concentration, DNS, and warmup" right={<Link href="/app/analytics" className="text-sm font-semibold text-indigo-700 hover:underline">Open analytics</Link>}>
+              <div className="grid gap-4 lg:grid-cols-3">
+                <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between"><div className="font-semibold text-slate-950">Bounce reasons</div><Badge>{bounceTotal} total</Badge></div>
+                  {bounceTotal === 0 ? <div className="text-sm text-slate-600">No bounces detected in this range.</div> : (
+                    <div className="space-y-3">
+                      {bounceBreakdown.map((x) => {
+                        const label = x.type === "blocked" ? "Blocked" : x.type === "policy" ? "Policy" : x.type === "hard" ? "Hard" : x.type === "soft" ? "Soft" : x.type === "mailbox_full" ? "Mailbox full" : "Unknown";
+                        const width = Math.round((x.count / Math.max(1, bounceTotal)) * 100);
+                        return <div key={x.type}><div className="mb-1 flex justify-between text-xs text-slate-600"><span>{label}</span><span>{x.count} · {width}%</span></div><div className="h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-rose-400" style={{ width: `${width}%` }} /></div></div>;
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between"><div className="font-semibold text-slate-950">Recipient domains</div><Link href="/app/leads" className="text-xs font-semibold text-indigo-700">Leads</Link></div>
+                  {recipientDomains.length === 0 ? <div className="text-sm text-slate-600">No sent messages with lead emails in this range.</div> : (
+                    <div className="space-y-2">
+                      {recipientDomains.slice(0, 5).map((d) => <Link key={d.domain} href={`/app/leads?prefill=${encodeURIComponent("@" + d.domain)}`} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm shadow-sm hover:shadow-md"><span className="truncate font-medium text-slate-800">{d.domain}</span><span className="text-xs text-slate-500">{d.sent} sent</span></Link>)}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between"><div className="font-semibold text-slate-950">DNS + warmup</div><Link href="/app/domains" className="text-xs font-semibold text-indigo-700">Domains</Link></div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-xl bg-white p-3"><div className="text-slate-500">Healthy</div><div className="text-2xl font-semibold text-slate-950">{dnsHealthy}</div></div>
+                    <div className="rounded-xl bg-white p-3"><div className="text-slate-500">Needs work</div><div className="text-2xl font-semibold text-slate-950">{dnsWarn + dnsFail}</div></div>
+                    <div className="rounded-xl bg-white p-3"><div className="text-slate-500">Inbox</div><div className="text-2xl font-semibold text-slate-950">{pct(warmInboxRate)}</div></div>
+                    <div className="rounded-xl bg-white p-3"><div className="text-slate-500">Spam</div><div className="text-2xl font-semibold text-slate-950">{pct(warmSpamRate)}</div></div>
+                  </div>
+                  {brokenDomainsTop.length > 0 ? <div className="mt-3 space-y-2">{brokenDomainsTop.map((d) => <Link key={d.id} href={`/app/domains/${d.id}`} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-xs shadow-sm"><span className="truncate font-medium text-slate-800">{d.name}</span><Pill tone={dnsTone(d.status)}>{dnsLabel(d.status)}</Pill></Link>)}</div> : null}
+                </div>
+              </div>
+            </Card>
+          </div>
+
+          <aside className="space-y-5">
+            <Card className="bg-white/90" title="Next best actions" subtitle="Fast paths for the work you do most">
+              <div className="space-y-3">
+                <Link href="/app/mailboxes" className={miniAction}><span><b className="block text-slate-950">Add / verify mailboxes</b><span className="text-xs text-slate-500">Connect senders and IMAP</span></span><span className="text-slate-400 transition group-hover:translate-x-1">→</span></Link>
+                <Link href="/app/leads" className={miniAction}><span><b className="block text-slate-950">Import or enrich leads</b><span className="text-xs text-slate-500">CSV, website discovery, AI segments</span></span><span className="text-slate-400 transition group-hover:translate-x-1">→</span></Link>
+                <Link href="/app/campaigns/new" className={miniAction}><span><b className="block text-slate-950">Create campaign</b><span className="text-xs text-slate-500">Launch with wizard</span></span><span className="text-slate-400 transition group-hover:translate-x-1">→</span></Link>
+                <Link href="/app/domains" className={miniAction}><span><b className="block text-slate-950">Fix DNS signals</b><span className="text-xs text-slate-500">SPF, DKIM, DMARC, warmup</span></span><span className="text-slate-400 transition group-hover:translate-x-1">→</span></Link>
+              </div>
+            </Card>
+
+            <Card className="bg-white/90" title="Setup progress" subtitle={`${checklistDone}/${checklist.length} completed`}>
+              <div className="mb-4 flex items-center gap-4"><div className="grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-emerald-100 to-indigo-100 text-2xl font-semibold text-slate-950">{setupPct}%</div><div className="text-sm text-slate-600">Finish these once and the workspace becomes much easier to operate.</div></div>
+              <div className="space-y-2">
+                {checklist.map((t) => <Link key={t.label} href={t.href} className={`flex items-center justify-between rounded-2xl border px-3 py-2.5 text-sm transition ${t.done ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50"}`}><span className="flex items-center gap-2"><span className={`grid h-6 w-6 place-items-center rounded-full text-xs ${t.done ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-500"}`}>{t.done ? "✓" : "•"}</span>{t.label}</span><span>→</span></Link>)}
+              </div>
+            </Card>
+
+            <Card className="bg-white/90" title="Alerts" subtitle="Setup + deliverability notifications">
+              <div className="space-y-3">
+                {notifications.map((n, idx) => <div key={idx} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="mb-1 flex items-center gap-2"><Pill tone={n.tone}>{n.tone}</Pill><span className="font-semibold text-slate-950">{n.title}</span></div><div className="text-xs leading-5 text-slate-600">{n.body}</div></div>{n.href ? <Link href={n.href} className="text-sm font-semibold text-indigo-700 hover:underline">Fix</Link> : null}</div></div>)}
+                {activeThrottles.length > 0 ? <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><div className="mb-2 font-semibold">Active cooldowns</div>{activeThrottles.map((t) => <div key={t.id} className="flex justify-between gap-2"><span className="truncate">{t.mailbox?.fromEmail || "Mailbox"} · {t.campaign?.name || "Campaign"}</span><span className="shrink-0">{fmtDateTimeUTC(t.until)}</span></div>)}</div> : null}
+              </div>
+            </Card>
+          </aside>
+        </section>
+
+        <section className="relative grid grid-cols-1 gap-5 xl:grid-cols-2">
+          <Card className="bg-white/90" title="Top campaigns" subtitle="Ranked by reply rate" right={<Link href="/app/campaigns" className="text-sm font-semibold text-indigo-700 hover:underline">View all</Link>}>
+            {topCampaigns.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">No campaigns have sent enough emails in this range yet.</div> : (
+              <div className="space-y-3">
+                {topCampaigns.map((c, idx) => <div key={c.id} className="rounded-[1.25rem] border border-slate-100 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><span className="grid h-8 w-8 place-items-center rounded-xl bg-indigo-50 text-sm font-bold text-indigo-700">#{idx + 1}</span><Link href={`/app/campaigns/${c.id}`} className="truncate font-semibold text-slate-950 hover:underline">{c.name}</Link><Pill tone={toneForStatus(c.status)}>{c.status}</Pill></div><div className="mt-2 text-xs text-slate-500">{c.sent} sent · Opens {pct(c.openRate)} · Bounce {pct(c.bounceRate)} · Unsub {pct(c.unsubRate)}</div></div><div className="text-right"><div className="text-2xl font-semibold text-slate-950">{pct(c.replyRate)}</div><div className="text-xs text-slate-500">reply rate</div></div></div></div>)}
               </div>
             )}
           </Card>
 
-          <Card title="Notifications" subtitle="Setup + deliverability alerts">
-            <div className="grid gap-2">
-              {notifications.map((n, idx) => (
-                <div key={idx} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Pill tone={n.tone}>{n.tone}</Pill>
-                        <div className="font-medium text-slate-900">{n.title}</div>
-                      </div>
-                      <div className="text-xs text-slate-600 mt-0.5">{n.body}</div>
-                    </div>
-                    {n.href ? (
-                      <Link href={n.href} className="text-sm text-indigo-700 hover:underline shrink-0">
-                        Fix
-                      </Link>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-
-              {activeThrottles.length > 0 ? (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-slate-700">
-                  <div className="font-medium text-slate-900 mb-1">Active cooldowns</div>
-                  <div className="grid gap-1">
-                    {activeThrottles.map((t) => (
-                      <div key={t.id} className="flex items-center justify-between gap-2">
-                        <div className="truncate">{t.mailbox?.fromEmail || "Mailbox"} · {t.campaign?.name || "Campaign"}</div>
-                        <div className="shrink-0">until {fmtDateTimeUTC(t.until)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
+          <Card className="bg-white/90" title="Needs attention" subtitle="Campaigns with elevated bounce or unsubscribe signals">
+            {watchlist.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">Nothing stands out yet. As volume grows, this list will highlight risk automatically.</div> : (
+              <div className="space-y-3">
+                {watchlist.map((c) => <div key={c.id} className="rounded-[1.25rem] border border-slate-100 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><Link href={`/app/campaigns/${c.id}/deliverability`} className="font-semibold text-slate-950 hover:underline">{c.name}</Link><div className="mt-2 flex flex-wrap gap-2 text-xs"><Badge>{c.sent} sent</Badge><Pill tone={toneForStatus(c.status)}>{c.status}</Pill></div></div><Pill tone={c.bounceRate >= 0.08 || c.unsubRate >= 0.02 ? "danger" : "warning"}>{pct(c.bounceRate + c.unsubRate)} risk</Pill></div><div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-600"><span>Bounce <b>{pct(c.bounceRate)}</b></span><span>Unsub <b>{pct(c.unsubRate)}</b></span><span>Replies <b>{pct(c.replyRate)}</b></span></div></div>)}
+              </div>
+            )}
           </Card>
-        </div>
+        </section>
 
-        {/* Setup reminders (keep the existing high-signal boxes) */}
         {(draftCampaigns.length > 0 || pausedWithReason.length > 0) && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-            {draftCampaigns.length > 0 && (
-              <Card title="Finish setup" subtitle="Draft campaigns that need attention">
-                <div className="grid gap-2">
-                  {draftCampaigns.map((c) => (
-                    <div key={c.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                      <div className="min-w-0">
-                        <div className="font-medium text-slate-900 truncate">{c.name}</div>
-                        <div className="text-xs text-slate-600">Step {c.setupStep + 1} · Updated {fmtDateUTC(c.updatedAt)}</div>
-                      </div>
-                      <Link href={`/app/campaigns/new?resume=${c.id}`} className="text-sm text-indigo-700 hover:underline">
-                        Continue
-                      </Link>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
-            {pausedWithReason.length > 0 && (
-              <Card title="Paused by guardrails" subtitle="Review and fix before resuming">
-                <div className="grid gap-2">
-                  {pausedWithReason.map((c) => (
-                    <div key={c.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-                      <div className="min-w-0">
-                        <div className="font-medium text-slate-900 truncate">{c.name}</div>
-                        <div className="text-xs text-slate-700">Updated {fmtDateUTC(c.updatedAt)}</div>
-                      </div>
-                      <Link href={`/app/campaigns/${c.id}/settings`} className="text-sm text-slate-900 hover:underline">
-                        View
-                      </Link>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
-          </div>
+          <section className="relative grid grid-cols-1 gap-5 xl:grid-cols-2">
+            {draftCampaigns.length > 0 ? <Card className="bg-white/90" title="Finish setup" subtitle="Draft campaigns that need attention"><div className="space-y-3">{draftCampaigns.map((c) => <div key={c.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"><div className="min-w-0"><div className="truncate font-semibold text-slate-950">{c.name}</div><div className="text-xs text-slate-500">Step {c.setupStep + 1} · Updated {fmtDateUTC(c.updatedAt)}</div></div><Link href={`/app/campaigns/new?resume=${c.id}`} className="text-sm font-semibold text-indigo-700 hover:underline">Continue</Link></div>)}</div></Card> : null}
+            {pausedWithReason.length > 0 ? <Card className="bg-white/90" title="Paused by guardrails" subtitle="Review and fix before resuming"><div className="space-y-3">{pausedWithReason.map((c) => <div key={c.id} className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-sm"><div className="min-w-0"><div className="truncate font-semibold text-slate-950">{c.name}</div><div className="text-xs text-amber-800">Updated {fmtDateUTC(c.updatedAt)}</div></div><Link href={`/app/campaigns/${c.id}/settings`} className="text-sm font-semibold text-slate-900 hover:underline">View</Link></div>)}</div></Card> : null}
+          </section>
         )}
 
-        {/* Bottom: lists */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-          <Card
-            title="Recent campaigns"
-            subtitle="Last updated"
-            right={
-              <Link href="/app/campaigns" className="text-sm text-indigo-700 hover:underline">
-                View all
-              </Link>
-            }
-          >
-            <div className="overflow-auto">
+        <section className="relative grid grid-cols-1 gap-5 xl:grid-cols-[.95fr_1.05fr]">
+          <Card className="bg-white/90" title="Recent campaigns" subtitle="Last updated" right={<Link href="/app/campaigns" className="text-sm font-semibold text-indigo-700 hover:underline">Campaigns</Link>}>
+            <div className="overflow-hidden rounded-[1.4rem] border border-slate-100 bg-white">
               <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-wider text-slate-500">
-                    <th className="py-2 pr-3">Campaign</th>
-                    <th className="py-2 pr-3">Schedule</th>
-                    <th className="py-2 pr-3">Status</th>
-                    <th className="py-2">Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentCampaigns.map((c) => (
-                    <tr key={c.id} className="border-t border-slate-100">
-                      <td className="py-2 pr-3">
-                        <Link href={`/app/campaigns/${c.id}`} className="font-medium text-slate-900 hover:underline">
-                          {c.name}
-                        </Link>
-                      </td>
-                      <td className="py-2 pr-3 text-slate-600">
-                        {c.sendingWindow} · {c.timezone}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <Pill tone={toneForStatus(c.status)}>{c.status}</Pill>
-                      </td>
-                      <td className="py-2 text-slate-600">{fmtDateUTC(c.updatedAt)}</td>
-                    </tr>
-                  ))}
+                <thead className="bg-slate-50 text-left text-xs uppercase tracking-[0.16em] text-slate-500"><tr><th className="px-4 py-3">Campaign</th><th className="px-4 py-3">Schedule</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Updated</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {recentCampaigns.map((c) => <tr key={c.id} className="hover:bg-slate-50/70"><td className="px-4 py-3"><Link href={`/app/campaigns/${c.id}`} className="font-semibold text-slate-950 hover:underline">{c.name}</Link></td><td className="px-4 py-3 text-slate-600">{c.sendingWindow} · {c.timezone}</td><td className="px-4 py-3"><Pill tone={toneForStatus(c.status)}>{c.status}</Pill></td><td className="px-4 py-3 text-slate-600">{fmtDateUTC(c.updatedAt)}</td></tr>)}
                 </tbody>
               </table>
             </div>
           </Card>
 
-          <Card
-            title="Activity (24h)"
-            subtitle="Opens, replies, bounces, and unsubscribes"
-            right={
-              <Link href="/app/analytics" className="text-sm text-indigo-700 hover:underline">
-                Analytics
-              </Link>
-            }
-          >
-            <div className="grid gap-2">
-              {recentEvents.length === 0 ? (
-                <div className="text-sm text-slate-600">No recent events.</div>
-              ) : (
-                recentEvents.map((e) => {
-                  const leadEmail = e.message?.lead?.email || "";
-                  const campName = e.message?.campaign?.name || "—";
-                  const subj = e.message?.subject || "(no subject)";
-                  const box = e.message?.mailbox?.fromEmail || "";
-                  const tone = e.type === "reply" ? "success" : e.type === "bounce" ? "danger" : e.type === "unsubscribe" || e.type === "unsub" ? "warning" : "info";
-                  return (
-                    <div key={e.id} className="flex items-start justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Pill tone={tone as any}>{e.type}</Pill>
-                          <div className="text-slate-900 truncate max-w-[520px]">
-                            <span className="font-medium">{leadEmail || "Lead"}</span>
-                            <span className="text-slate-600"> · {campName}</span>
-                          </div>
-                        </div>
-                        <div className="text-xs text-slate-600 truncate mt-0.5">
-                          {subj} {box ? `· via ${box}` : ""}
-                        </div>
-                      </div>
-                      <div className="text-xs text-slate-600 shrink-0">{fmtDateTimeUTC(e.createdAt)}</div>
-                    </div>
-                  );
-                })
-              )}
+          <Card className="bg-white/90" title="Live activity" subtitle="Last 24 hours" right={<Link href="/app/analytics" className="text-sm font-semibold text-indigo-700 hover:underline">Analytics</Link>}>
+            <div className="space-y-3">
+              {recentEvents.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">No recent events.</div> : recentEvents.map((e) => {
+                const leadEmail = e.message?.lead?.email || "";
+                const campName = e.message?.campaign?.name || "—";
+                const subj = e.message?.subject || "(no subject)";
+                const box = e.message?.mailbox?.fromEmail || "";
+                const tone = e.type === "reply" ? "success" : e.type === "bounce" ? "danger" : e.type === "unsubscribe" || e.type === "unsub" ? "warning" : "info";
+                return <div key={e.id} className="flex items-start justify-between gap-4 rounded-[1.25rem] border border-slate-100 bg-white p-4 shadow-sm"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill tone={tone as any}>{e.type}</Pill><span className="truncate font-semibold text-slate-950">{leadEmail || "Lead"}</span><span className="text-slate-500">·</span><span className="truncate text-slate-600">{campName}</span></div><div className="mt-1 truncate text-xs text-slate-500">{subj} {box ? `· via ${box}` : ""}</div></div><div className="shrink-0 text-xs text-slate-500">{fmtDateTimeUTC(e.createdAt)}</div></div>;
+              })}
             </div>
           </Card>
-        </div>
+        </section>
 
-        <div className="text-xs text-slate-500 mt-4">
-          Pro tip: Bookmark filters using URL params (e.g. <code className="px-1 py-0.5 rounded border border-slate-200 bg-white">?range=30d</code>).
+        <div className="relative rounded-2xl border border-white/70 bg-white/70 px-4 py-3 text-xs text-slate-500 shadow-sm backdrop-blur">
+          Pro tip: Bookmark filtered dashboard URLs like <code className="rounded-lg border border-slate-200 bg-white px-1.5 py-0.5">?range=30d</code> for weekly reviews.
         </div>
       </div>
     </Container>

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Container, Card, Input, TextArea, Button, Badge, Pill } from "@/components/ui";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -68,23 +69,16 @@ export default async function CampaignSettings({ params }: { params: { id: strin
 
   return (
     <Container>
-      <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
-        <div className="min-w-0">
-          <div className="text-2xl font-semibold tracking-tight">Campaign Settings</div>
-          <div className="mt-1 text-sm opacity-70">Instantly-style control panel: schedule, sender pool, ramp-up, and stop rules.</div>
-          <div className="mt-2 flex gap-2 flex-wrap">
-            <Badge>Name: {camp.name}</Badge>
-            <Pill tone={camp.status === "running" ? "success" : camp.status === "paused" ? "warning" : "neutral"}>{camp.status}</Pill>
-            {(camp as any).archivedAt ? <Pill tone="danger">archived</Pill> : null}
-          </div>
-        </div>
-
-        <div className="flex gap-2">
-          <Link href={`/app/campaigns/${camp.id}`}><Button variant="ghost">← Back</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/edit`}><Button variant="ghost">Edit sequence</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/enroll`}><Button>Enroll leads</Button></Link>
-        </div>
-      </div>
+      <CampaignInnerHero
+        campaignId={camp.id}
+        campaignName={camp.name}
+        status={camp.status}
+        active="settings"
+        title="Campaign settings"
+        subtitle="Tune schedule, sender routing, ramp-up, stop rules, and safety rails from one focused control panel."
+        primaryHref={`/app/campaigns/${camp.id}/edit`}
+        primaryLabel="Edit sequence"
+      />
 
       <div className="grid gap-4">
         <Card

@@ -2,6 +2,17 @@ import React from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 
+function toneGradient(tone: string) {
+  const tones: Record<string, string> = {
+    neutral: "from-slate-900 via-slate-800 to-slate-700",
+    info: "from-indigo-600 via-violet-600 to-sky-500",
+    success: "from-emerald-600 via-teal-600 to-cyan-500",
+    warning: "from-amber-500 via-orange-500 to-rose-500",
+    danger: "from-rose-600 via-red-600 to-orange-500",
+  };
+  return tones[tone] || tones.neutral;
+}
+
 export function Container({
   children,
   wide = false,
@@ -12,7 +23,7 @@ export function Container({
   className?: string;
 }) {
   return (
-    <div className={`${wide ? "max-w-none" : "max-w-7xl"} mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 ${className}`}>
+    <div className={`${wide ? "max-w-[1800px]" : "max-w-7xl"} mx-auto px-4 sm:px-6 lg:px-8 py-7 sm:py-9 ${className}`}>
       {children}
     </div>
   );
@@ -30,12 +41,21 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <div className={`flex items-start sm:items-center justify-between gap-3 flex-wrap ${className}`}>
-      <div className="min-w-0">
-        <div className="text-2xl font-semibold tracking-tight text-slate-900 font-display truncate">{title}</div>
-        {subtitle ? <div className="text-sm text-slate-600 mt-1 max-w-3xl">{subtitle}</div> : null}
+    <div className={`relative overflow-hidden rounded-[2rem] border border-white/70 bg-white/78 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl ${className}`}>
+      <div className="absolute inset-0 bg-[radial-gradient(900px_circle_at_0%_0%,rgba(99,102,241,0.18),transparent_42%),radial-gradient(700px_circle_at_100%_0%,rgba(20,184,166,0.16),transparent_42%),linear-gradient(135deg,rgba(255,255,255,0.95),rgba(248,250,252,0.72))]" />
+      <div className="absolute -right-20 -top-24 h-56 w-56 rounded-full bg-indigo-500/10 blur-3xl" />
+      <div className="absolute -left-20 bottom-0 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl" />
+      <div className="relative p-5 sm:p-7 lg:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+        <div className="min-w-0 max-w-4xl">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/70 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500 shadow-sm">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.18)]" />
+            Command workspace
+          </div>
+          <h1 className="mt-3 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-950 font-display truncate">{title}</h1>
+          {subtitle ? <p className="mt-2 text-sm sm:text-base text-slate-600 leading-6 max-w-3xl">{subtitle}</p> : null}
+        </div>
+        {right ? <div className="shrink-0 flex items-center gap-2 flex-wrap lg:justify-end">{right}</div> : null}
       </div>
-      {right ? <div className="shrink-0">{right}</div> : null}
     </div>
   );
 }
@@ -54,27 +74,28 @@ export function Card({
   className?: string;
 }) {
   return (
-    <div className={`glass ${className}`}>
-      <div className="p-4 sm:p-5">
+    <section className={`premium-card ${className}`}>
+      <div className="p-4 sm:p-5 lg:p-6">
         {title ? (
-          <div className="mb-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="card-title truncate">{title}</div>
-                {subtitle ? <div className="card-subtitle">{subtitle}</div> : null}
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_0_4px_rgba(99,102,241,0.13)]" />
+                <h2 className="card-title truncate">{title}</h2>
               </div>
-              {right ? <div className="shrink-0">{right}</div> : null}
+              {subtitle ? <p className="card-subtitle">{subtitle}</p> : null}
             </div>
+            {right ? <div className="shrink-0">{right}</div> : null}
           </div>
         ) : null}
         {children}
       </div>
-    </div>
+    </section>
   );
 }
 
 export function Divider({ className = "" }: { className?: string }) {
-  return <div className={`h-px w-full bg-slate-200/80 ${className}`} />;
+  return <div className={`h-px w-full bg-gradient-to-r from-transparent via-slate-200 to-transparent ${className}`} />;
 }
 
 export function IconButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { titleText?: string }) {
@@ -82,7 +103,7 @@ export function IconButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> 
   return (
     <button
       title={titleText}
-      className={`h-9 w-9 rounded-xl border border-slate-200 bg-white/70 hover:bg-white inline-flex items-center justify-center transition focus:outline-none focus:ring-2 focus:ring-indigo-200/70 ${className}`}
+      className={`h-10 w-10 rounded-2xl border border-slate-200/80 bg-white/80 hover:bg-white inline-flex items-center justify-center transition shadow-sm hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-200/70 ${className}`}
       {...rest}
     />
   );
@@ -94,29 +115,27 @@ type PillTone =
   | "warning"
   | "danger"
   | "info"
-  // legacy aliases used in a few places
   | "green"
   | "red"
   | "gray"
   | "amber";
 
 export function Pill({ children, tone = "neutral" }: { children?: React.ReactNode; tone?: PillTone }) {
-  const base = "inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border";
+  const base = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border shadow-sm";
   const t = tone === "green" ? "success" : tone === "red" ? "danger" : tone === "gray" ? "neutral" : tone === "amber" ? "warning" : tone;
-
   const tones: Record<string, string> = {
-    neutral: "border-slate-200 bg-slate-50/80 text-slate-700",
-    success: "border-emerald-200 bg-emerald-50/80 text-emerald-700",
-    warning: "border-amber-200 bg-amber-50/80 text-amber-700",
-    danger: "border-red-200 bg-red-50/80 text-red-700",
-    info: "border-indigo-200 bg-indigo-50/80 text-indigo-700",
+    neutral: "border-slate-200 bg-white/80 text-slate-700",
+    success: "border-emerald-200 bg-emerald-50/90 text-emerald-700",
+    warning: "border-amber-200 bg-amber-50/90 text-amber-800",
+    danger: "border-red-200 bg-red-50/90 text-red-700",
+    info: "border-indigo-200 bg-indigo-50/90 text-indigo-700",
   };
   return <span className={`${base} ${tones[t] || tones.neutral}`}>{children}</span>;
 }
 
 export function Badge({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center px-2 py-1 rounded-lg text-xs border border-slate-200 bg-white/70 text-slate-700">
+    <span className="inline-flex items-center px-2.5 py-1 rounded-xl text-xs font-medium border border-slate-200/90 bg-white/80 text-slate-700 shadow-sm">
       {children}
     </span>
   );
@@ -129,34 +148,26 @@ export function Button(
 ) {
   const { className = "", variant = "primary", disabled, ...rest } = props;
   const base =
-    "px-4 py-2 rounded-xl text-sm font-medium transition border focus:outline-none focus:ring-2 focus:ring-indigo-200/70 disabled:opacity-60 disabled:cursor-not-allowed";
+    "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-semibold transition border shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-indigo-200/70 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:shadow-sm disabled:active:scale-100";
   const v =
     variant === "primary"
-      ? "bg-indigo-600 text-white border-indigo-700/30 hover:bg-indigo-700"
+      ? "bg-gradient-to-r from-indigo-600 to-violet-600 text-white border-indigo-500/40 hover:from-indigo-700 hover:to-violet-700"
       : variant === "secondary"
-        ? "bg-slate-900 text-white border-slate-900/20 hover:bg-slate-800"
+        ? "bg-slate-950 text-white border-slate-900/20 hover:bg-slate-800"
         : variant === "danger"
-          ? "bg-red-600 text-white border-red-700/30 hover:bg-red-700"
-          : "bg-white/70 text-slate-700 border-slate-200 hover:bg-white";
+          ? "bg-gradient-to-r from-red-600 to-rose-600 text-white border-red-500/40 hover:from-red-700 hover:to-rose-700"
+          : "bg-white/80 text-slate-700 border-slate-200/90 hover:bg-white";
   return <button className={`${base} ${v} ${className}`} disabled={disabled} {...rest} />;
 }
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   const { className = "", type, ...rest } = props;
-
   if (type === "checkbox") {
-    return (
-      <input
-        type="checkbox"
-        className={`h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-200 ${className}`}
-        {...rest}
-      />
-    );
+    return <input type="checkbox" className={`h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-200 ${className}`} {...rest} />;
   }
-
   return (
     <input
-      className={`w-full px-3 py-2 rounded-xl border border-slate-200 bg-white/70 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 placeholder:text-slate-400 ${className}`}
+      className={`w-full px-3.5 py-2.5 rounded-2xl border border-slate-200/90 bg-white/80 shadow-sm outline-none transition focus:ring-4 focus:ring-indigo-100 focus:border-indigo-300 placeholder:text-slate-400 ${className}`}
       type={type}
       {...rest}
     />
@@ -167,7 +178,7 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   const { className = "", ...rest } = props;
   return (
     <select
-      className={`w-full px-3 py-2 rounded-xl border border-slate-200 bg-white/70 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 ${className}`}
+      className={`w-full px-3.5 py-2.5 rounded-2xl border border-slate-200/90 bg-white/80 shadow-sm outline-none transition focus:ring-4 focus:ring-indigo-100 focus:border-indigo-300 ${className}`}
       {...rest}
     />
   );
@@ -177,13 +188,12 @@ export function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
   const { className = "", ...rest } = props;
   return (
     <textarea
-      className={`w-full px-3 py-2 rounded-xl border border-slate-200 bg-white/70 outline-none min-h-[140px] focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 placeholder:text-slate-400 ${className}`}
+      className={`w-full px-3.5 py-2.5 rounded-2xl border border-slate-200/90 bg-white/80 shadow-sm outline-none min-h-[150px] transition focus:ring-4 focus:ring-indigo-100 focus:border-indigo-300 placeholder:text-slate-400 ${className}`}
       {...rest}
     />
   );
 }
 
-// Back-compat alias
 export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <TextArea {...props} />;
 }
@@ -201,20 +211,20 @@ export function Kpi({
 }) {
   const ring =
     tone === "success"
-      ? "ring-emerald-200/60"
+      ? "ring-emerald-200/70"
       : tone === "warning"
-        ? "ring-amber-200/60"
+        ? "ring-amber-200/70"
         : tone === "danger"
-          ? "ring-red-200/60"
+          ? "ring-red-200/70"
           : tone === "info"
-            ? "ring-indigo-200/60"
-            : "ring-slate-200/60";
-
+            ? "ring-indigo-200/70"
+            : "ring-slate-200/70";
   return (
-    <div className={`glass p-4 sm:p-5 ring-1 ${ring}`}>
-      <div className="text-xs uppercase tracking-wider text-slate-500">{label}</div>
-      <div className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">{value}</div>
-      {hint ? <div className="mt-1 text-xs text-slate-600">{hint}</div> : null}
+    <div className={`relative overflow-hidden rounded-[1.6rem] border border-white/70 bg-white/78 p-4 sm:p-5 shadow-[0_18px_50px_rgba(15,23,42,0.07)] ring-1 ${ring}`}>
+      <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${toneGradient(tone)}`} />
+      <div className="text-[11px] uppercase tracking-[0.2em] font-semibold text-slate-500">{label}</div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-950 font-display">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-slate-600 leading-5">{hint}</div> : null}
     </div>
   );
 }
@@ -229,13 +239,13 @@ export function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="glass p-8 text-center">
-      <div className="mx-auto h-12 w-12 rounded-2xl border border-slate-200 bg-white/70 grid place-items-center text-xl">
+    <div className="premium-card p-10 text-center">
+      <div className="mx-auto h-14 w-14 rounded-3xl border border-white/70 bg-gradient-to-br from-indigo-600 to-emerald-500 grid place-items-center text-2xl shadow-lg text-white">
         ✨
       </div>
-      <div className="mt-3 text-base font-semibold text-slate-900">{title}</div>
-      {subtitle ? <div className="mt-1 text-sm text-slate-600">{subtitle}</div> : null}
-      {action ? <div className="mt-4 flex justify-center">{action}</div> : null}
+      <div className="mt-4 text-lg font-semibold text-slate-950 font-display">{title}</div>
+      {subtitle ? <div className="mt-1 text-sm text-slate-600 max-w-xl mx-auto leading-6">{subtitle}</div> : null}
+      {action ? <div className="mt-5 flex justify-center">{action}</div> : null}
     </div>
   );
 }
@@ -255,24 +265,20 @@ export function Modal({
 }) {
   const node = (
     <div className="fixed inset-0 z-[100]">
-      <div className="absolute inset-0 bg-black/35" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" onClick={onClose} />
       <div className="absolute inset-0 flex items-center justify-center p-4">
-        {/*
-          IMPORTANT: This modal is rendered via a portal (when document is available).
-          This prevents "fixed inside transformed sidebar" bugs where the modal gets constrained
-          to the sidebar width/height and ends up bottom-left / clipped.
-        */}
         <div
           role="dialog"
           aria-modal="true"
-          className={`w-full ${wide ? "max-w-5xl" : "max-w-xl"} glass shadow-2xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden`}
+          className={`w-full ${wide ? "max-w-6xl" : "max-w-xl"} overflow-hidden rounded-[2rem] border border-white/60 bg-white/90 shadow-[0_35px_120px_rgba(15,23,42,0.35)] backdrop-blur-xl max-h-[calc(100vh-2rem)] flex flex-col`}
         >
-          <div className="px-5 py-4 border-b border-slate-200/70 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-lg font-semibold text-slate-900 truncate">{title}</div>
+          <div className="relative overflow-hidden px-5 py-4 border-b border-slate-200/70 flex items-start justify-between gap-3">
+            <div className="absolute inset-0 bg-[radial-gradient(600px_circle_at_0%_0%,rgba(99,102,241,0.16),transparent_50%),radial-gradient(500px_circle_at_100%_0%,rgba(16,185,129,0.12),transparent_50%)]" />
+            <div className="relative min-w-0">
+              <div className="text-lg font-semibold text-slate-950 truncate font-display">{title}</div>
             </div>
             <button
-              className="h-9 w-9 rounded-xl border border-slate-200 bg-white/70 hover:bg-white inline-flex items-center justify-center transition"
+              className="relative h-10 w-10 rounded-2xl border border-slate-200 bg-white/80 hover:bg-white inline-flex items-center justify-center transition shadow-sm"
               onClick={onClose}
               aria-label="Close"
               type="button"
@@ -281,14 +287,11 @@ export function Modal({
             </button>
           </div>
           <div className="p-5 overflow-y-auto">{children}</div>
-          {footer ? <div className="px-5 py-4 border-t border-slate-200/70 shrink-0">{footer}</div> : null}
+          {footer ? <div className="px-5 py-4 border-t border-slate-200/70 bg-white/70 shrink-0">{footer}</div> : null}
         </div>
       </div>
     </div>
   );
-
-  // Portal to <body> so it's truly viewport-fixed even if opened from inside a transformed container.
-  // In server-render / tests where document isn't available, fall back to inline render.
   return typeof document !== "undefined" ? createPortal(node, document.body) : node;
 }
 
@@ -304,15 +307,15 @@ export function Segmented({
   className?: string;
 }) {
   return (
-    <div className={`inline-flex items-center rounded-2xl border border-slate-200 bg-white/60 overflow-hidden ${className}`}>
+    <div className={`inline-flex items-center rounded-2xl border border-slate-200/90 bg-white/70 p-1 shadow-sm overflow-hidden ${className}`}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           disabled={o.disabled}
           onClick={() => onChange(o.value)}
-          className={`px-3 py-2 text-sm transition ${
-            value === o.value ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-white"
+          className={`px-3 py-2 text-sm font-medium rounded-xl transition ${
+            value === o.value ? "bg-slate-950 text-white shadow-sm" : "text-slate-700 hover:bg-white"
           } disabled:opacity-50`}
         >
           {o.label}
@@ -332,12 +335,12 @@ export function SegmentedNav({
   className?: string;
 }) {
   return (
-    <div className={`inline-flex items-center rounded-2xl border border-slate-200 bg-white/60 overflow-hidden ${className}`}>
+    <div className={`inline-flex items-center rounded-2xl border border-slate-200/90 bg-white/70 p-1 shadow-sm overflow-x-auto ${className}`}>
       {items.map((it) => (
         <Link
           key={it.value}
           href={it.href}
-          className={`px-3 py-2 text-sm transition ${active === it.value ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-white"}`}
+          className={`px-3 py-2 text-sm font-medium rounded-xl whitespace-nowrap transition ${active === it.value ? "bg-slate-950 text-white shadow-sm" : "text-slate-700 hover:bg-white"}`}
         >
           {it.label}
         </Link>

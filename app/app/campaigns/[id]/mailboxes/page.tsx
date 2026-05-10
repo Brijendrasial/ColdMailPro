@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Container, Card, Button, PageHeader, SegmentedNav, Pill } from "@/components/ui";
+import { Container, Card, Button, Pill } from "@/components/ui";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { requireSession } from "@/lib/auth";
 import { getCampaignMailboxDashboard } from "@/lib/campaign-mailboxes-dashboard";
 import { MailboxesDashboardClient } from "@/components/campaigns/mailboxes-dashboard-client";
@@ -19,16 +20,15 @@ export default async function CampaignMailboxesPage({ params }: { params: { id: 
 
   return (
     <Container wide>
-      <PageHeader
-        title={`Mailboxes · ${data.campaign.name}`}
-        subtitle="Visual sender health + load for this campaign. Quickly see which mailboxes are safest to route next."
-        right={
-          <div className="flex items-center gap-2 flex-wrap">
-            <Link href={`/app/campaigns/${data.campaign.id}`}><Button variant="ghost">Back</Button></Link>
-            <Link href={`/app/campaigns/${data.campaign.id}/settings`}><Button variant="ghost">Settings</Button></Link>
-            <Link href={`/app/campaigns/${data.campaign.id}/deliverability`}><Button>Deliverability</Button></Link>
-          </div>
-        }
+      <CampaignInnerHero
+        campaignId={data.campaign.id}
+        campaignName={data.campaign.name}
+        status={data.campaign.status}
+        active="mailboxes"
+        title={`Sender cockpit · ${data.campaign.name}`}
+        subtitle="Visual sender health, cooldowns, capacity, and routing explainability for this campaign."
+        primaryHref={`/app/campaigns/${data.campaign.id}/deliverability`}
+        primaryLabel="Deliverability"
       />
 
       <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
@@ -38,18 +38,6 @@ export default async function CampaignMailboxesPage({ params }: { params: { id: 
           {data.campaign.mailboxStrategy === "score_idle" ? <Pill tone="neutral">min idle: {data.campaign.mailboxMinIdleMinutes}m</Pill> : null}
           <Pill tone="neutral">senders: {data.campaign.senderMode}{data.campaign.mailboxPoolName ? ` (${data.campaign.mailboxPoolName})` : ""}</Pill>
         </div>
-
-        <SegmentedNav
-          active="mailboxes"
-          items={[
-            { value: "overview", label: "Overview", href: `/app/campaigns/${data.campaign.id}` },
-            { value: "mailboxes", label: "Mailboxes", href: `/app/campaigns/${data.campaign.id}/mailboxes` },
-            { value: "settings", label: "Settings", href: `/app/campaigns/${data.campaign.id}/settings` },
-            { value: "deliverability", label: "Deliverability", href: `/app/campaigns/${data.campaign.id}/deliverability` },
-            { value: "analytics", label: "Analytics", href: `/app/campaigns/${data.campaign.id}/analytics` },
-          ]}
-          className="shrink-0"
-        />
       </div>
 
       <div className="mt-4">
