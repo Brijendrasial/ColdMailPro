@@ -17,7 +17,9 @@ const schema = z.object({
   MAILSTACK_ACME_EMAIL: z.string().email().optional(),
   WORKER_CONCURRENCY: z.coerce.number().int().positive().default(10),
   SEND_TICK_SECONDS: z.coerce.number().int().positive().default(10),
-  IMAP_POLL_MINUTES: z.coerce.number().int().positive().default(5),
+  IMAP_POLL_MINUTES: z.coerce.number().int().positive().default(1),
+  // Optional faster reply polling. When set, worker sweeps IMAP every N seconds instead of minutes.
+  IMAP_POLL_SECONDS: z.coerce.number().int().positive().optional(),
   // Global pacing between sends per mailbox (seconds). Helps avoid burst sending.
   SEND_GAP_MIN_SECONDS: z.coerce.number().int().nonnegative().default(60),
   SEND_GAP_MAX_SECONDS: z.coerce.number().int().nonnegative().default(180),
@@ -152,6 +154,7 @@ export const env = schema.parse({
   WORKER_CONCURRENCY: process.env.WORKER_CONCURRENCY,
   SEND_TICK_SECONDS: process.env.SEND_TICK_SECONDS,
   IMAP_POLL_MINUTES: process.env.IMAP_POLL_MINUTES,
+  IMAP_POLL_SECONDS: process.env.IMAP_POLL_SECONDS,
   SEND_GAP_MIN_SECONDS: process.env.SEND_GAP_MIN_SECONDS,
   SEND_GAP_MAX_SECONDS: process.env.SEND_GAP_MAX_SECONDS,
   SMTP_TLS_SKIP_VERIFY: process.env.SMTP_TLS_SKIP_VERIFY,

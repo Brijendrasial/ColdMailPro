@@ -50,6 +50,14 @@ function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
   return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
 }
 
+function preserveThreadSubject(...candidates: any[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return normalizeReplySubject(value);
+  }
+  return 'Re:';
+}
+
 function getGcalCfg(settingsJson: any) {
   const gc = (settingsJson || {})?.repliesAi?.googleCalendar || {};
   return {
@@ -118,7 +126,7 @@ export async function POST(req: NextRequest) {
     const meetLink = ev.meetLink || null;
     const when = mt.startIso;
     const tz = mt.timezone || cfg.timezone || "";
-    const subject = normalizeReplySubject(ai.draftSubject, inboundSubject || "Re:");
+    const subject = preserveThreadSubject(inboundSubject, ai.replyEvent.message?.subject, ai.draftSubject);
     const replyText = `Perfect — I’ve sent a calendar invite for ${when}${tz ? " (" + tz + ")" : ""}.` +
       (meetLink ? `\n\nGoogle Meet: ${meetLink}` : "") +
       `\n\nIf you need a different time, just reply with your availability.`;

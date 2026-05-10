@@ -48,6 +48,14 @@ function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
   return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
 }
 
+function preserveThreadSubject(...candidates: any[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return normalizeReplySubject(value);
+  }
+  return 'Re:';
+}
+
 // Send a manual reply from the Replies tab.
 // Creates a new Message row and a sent event for audit.
 
@@ -85,7 +93,7 @@ export async function POST(req: NextRequest) {
     const originalOutboundMessageId = cleanMsgId(replyTo.messageId || replyTo.inReplyTo || null);
     const inReplyTo = inboundReplyMessageId || originalOutboundMessageId || null;
     const references = collectMsgIds(originalOutboundMessageId, latestInboundMeta.references, inboundReplyMessageId).join(" ") || undefined;
-    const replySubject = normalizeReplySubject(subject, latestInboundMeta.subject || replyTo.subject || "Re:");
+    const replySubject = preserveThreadSubject(latestInboundMeta.subject, replyTo.subject, subject);
 
     const info = await sendEmail({
       mailboxId: replyTo.mailboxId,

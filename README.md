@@ -1,3 +1,9 @@
+## v2.0.6 replies sync update
+
+- Added **Sync inbox now** on the Replies page.
+- Replies refresh now queues immediate IMAP sync jobs instead of only refreshing saved database rows.
+- Default reply polling is faster and supports optional `IMAP_POLL_SECONDS=30`.
+
 # ColdMailPro v2.0.0
 
 A self-hosted cold email, lead management, warmup, deliverability, and MailStack operations platform built with **Next.js 14**, **Prisma**, **MariaDB/MySQL**, and a Node.js worker.
@@ -1084,3 +1090,11 @@ This project is governed by the **ColdMailPro Proprietary License (MTA)** in `LI
 ## Disclaimer
 
 ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare, Google, OpenAI, or any mail provider. Product names are used only to describe integrations or workflow compatibility.
+
+## Changelog
+
+### v2.0.5 - Preserve reply thread subject
+
+- AI automatic replies now preserve the original inbound/outbound thread subject instead of using an AI-generated subject.
+- Manual and AI reply send paths keep `In-Reply-To` and `References` headers while reusing the existing conversation subject.
+- Prevents second and later AI replies from changing the email subject and splitting the conversation into multiple threads.

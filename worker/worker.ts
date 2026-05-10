@@ -115,7 +115,7 @@ async function maybeHandleRepliesAi(args: {
       language: cfg.language || "English",
     });
 
-    let draftSubject: string | null = cls.draftSubject || null;
+    let draftSubject: string | null = preserveThreadSubject(args.inboundSubject, args.lastOutboundSubject, cls.draftSubject);
     let draftBodyText: string | null = cls.draftBodyText || null;
 
 
@@ -233,7 +233,7 @@ Google Meet: ${meetLink}` : "") +
 
 If you need a different time, just reply with your availability.`;
 
-          draftSubject = draftSubject || (args.inboundSubject ? `Re: ${args.inboundSubject}` : "Re:");
+          draftSubject = preserveThreadSubject(args.inboundSubject, args.lastOutboundSubject, draftSubject);
           draftBodyText = body;
 
           await prisma.replyAiAction.update({
@@ -282,7 +282,7 @@ If you need a different time, just reply with your availability.`;
     if (!shouldSend) return;
 
     try {
-      const replySubject = normalizeReplySubject(draftSubject || cls.draftSubject, args.inboundSubject || args.lastOutboundSubject || "Re:");
+      const replySubject = preserveThreadSubject(args.inboundSubject, args.lastOutboundSubject, draftSubject, cls.draftSubject);
       const sendRes = await sendEmail({
         mailboxId: args.mailboxId,
         to: args.leadEmail,
@@ -3112,6 +3112,14 @@ function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
   return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
 }
 
+function preserveThreadSubject(...candidates: any[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return normalizeReplySubject(value);
+  }
+  return 'Re:';
+}
+
 function keywordList(v: any): string[] {
   if (!v) return [];
   return String(v)
@@ -3779,7 +3787,7 @@ async function main() {
   console.log("[worker] starting", new Date().toISOString());
   const imapDebug = String(process.env.DEBUG_IMAP || "") === "1";
   if (imapDebug) {
-    console.log("[worker] config", { IMAP_POLL_MINUTES: env.IMAP_POLL_MINUTES, SEND_TICK_SECONDS: env.SEND_TICK_SECONDS });
+    console.log("[worker] config", { IMAP_POLL_MINUTES: env.IMAP_POLL_MINUTES, IMAP_POLL_SECONDS: env.IMAP_POLL_SECONDS, SEND_TICK_SECONDS: env.SEND_TICK_SECONDS });
   }
   await recoverStaleRunningJobs();
   let lastImapSweep = 0;
@@ -3809,6 +3817,7 @@ async function main() {
           node: process.version,
           sendTickSeconds: env.SEND_TICK_SECONDS,
           imapPollMinutes: env.IMAP_POLL_MINUTES,
+          imapPollSeconds: env.IMAP_POLL_SECONDS || null,
         },
       }).catch(() => {});
     }
@@ -3828,7 +3837,8 @@ async function main() {
     }
 
     
-    if (now - lastImapSweep > env.IMAP_POLL_MINUTES * 60 * 1000) {
+    const imapSweepMs = (env.IMAP_POLL_SECONDS || env.IMAP_POLL_MINUTES * 60) * 1000;
+    if (now - lastImapSweep > imapSweepMs) {
       lastImapSweep = now;
       if (imapDebug) console.log("[imap] sweep tick");
       await enqueueImapSyncJobs().catch((e) => { if (imapDebug) console.warn("[imap] sweep error", String(e?.message || e)); });

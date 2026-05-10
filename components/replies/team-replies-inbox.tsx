@@ -156,6 +156,7 @@ export default function TeamRepliesInbox(props: {
 
   const [threads, setThreads] = useState<ThreadRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [syncingInbox, setSyncingInbox] = useState(false);
 
   const [selectedLeadId, setSelectedLeadId] = useState<string>("");
   const [detail, setDetail] = useState<ThreadDetail | null>(null);
@@ -558,6 +559,37 @@ export default function TeamRepliesInbox(props: {
     }
   }
 
+
+
+  async function syncInboxNow() {
+    setSyncingInbox(true);
+    try {
+      const res = await fetch("/api/replies/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mailboxId: mailboxId || undefined }),
+      });
+      const js = await res.json().catch(() => ({}));
+      if (!res.ok || js?.error) throw new Error(js?.error || "SYNC_FAILED");
+      toast.success(
+        js.queued > 0
+          ? `Inbox sync queued for ${js.queued} mailbox${js.queued === 1 ? "" : "es"}`
+          : "Inbox sync already running"
+      );
+
+      // The worker picks queued jobs on its normal tick. Poll the DB-backed thread list a few
+      // times so new replies appear without forcing the user to wait for the 25s refresh.
+      await fetchThreads();
+      window.setTimeout(fetchThreads, 2500);
+      window.setTimeout(fetchThreads, 6000);
+      window.setTimeout(fetchThreads, 10000);
+    } catch (e: any) {
+      toast.error(String(e?.message || e));
+    } finally {
+      setSyncingInbox(false);
+    }
+  }
+
   async function fetchDetail(leadId: string) {
     setDetailLoading(true);
     try {
@@ -765,8 +797,8 @@ export default function TeamRepliesInbox(props: {
               </select>
             </div>
             <div className="flex items-center gap-2 justify-start lg:justify-end">
-              <Button variant="ghost" className="bg-white/10 border-white/15 text-white hover:bg-white/15" onClick={() => fetchThreads()}>
-                {loading ? "Refreshing…" : "Refresh"}
+              <Button variant="ghost" className="bg-white/10 border-white/15 text-white hover:bg-white/15" onClick={() => syncInboxNow()}>
+                {syncingInbox ? "Syncing inbox…" : loading ? "Refreshing…" : "Sync inbox now"}
               </Button>
               <Button variant="ghost" className="bg-white text-slate-900 border-white" onClick={() => setAiSettingsOpen((v) => !v)}>
                 AI settings
@@ -785,11 +817,11 @@ export default function TeamRepliesInbox(props: {
                   <span className="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_0_4px_rgba(99,102,241,0.13)]" />
                   <h2 className="card-title">Inbox queue</h2>
                 </div>
-                <p className="card-subtitle">J/K to navigate · R to reply · 25s auto-refresh</p>
+                <p className="card-subtitle">J/K to navigate · R to reply · auto-refresh + instant IMAP sync</p>
               </div>
               <div className="flex items-center gap-2">
                 <Badge>{visibleThreadLabel}</Badge>
-                <IconButton titleText="Refresh" onClick={() => fetchThreads()}>↻</IconButton>
+                <IconButton titleText="Sync inbox now" onClick={() => syncInboxNow()}>{syncingInbox ? "…" : "↻"}</IconButton>
               </div>
             </div>
 

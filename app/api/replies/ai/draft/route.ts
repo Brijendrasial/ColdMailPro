@@ -11,6 +11,20 @@ function safeStr(v: any, max = 5000) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
+  const raw = String(subject || fallbackSubject || '').trim();
+  const base = raw || 'Re:';
+  return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
+}
+
+function preserveThreadSubject(...candidates: any[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return normalizeReplySubject(value);
+  }
+  return 'Re:';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const s = await requireSession();
@@ -59,7 +73,7 @@ export async function POST(req: NextRequest) {
       language,
     });
 
-    const draftSubject = cls.draftSubject || (meta.subject ? `Re: ${String(meta.subject).replace(/^Re:\s*/i, "").slice(0, 250)}` : (latestReply.message.subject ? `Re: ${latestReply.message.subject.replace(/^Re:\s*/i, "").slice(0, 250)}` : "Re:"));
+    const draftSubject = preserveThreadSubject(meta.subject, latestReply.message.subject, cls.draftSubject);
 
     const action = cls.draftBodyText ? "drafted" : "none";
 

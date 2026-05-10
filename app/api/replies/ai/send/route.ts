@@ -48,6 +48,14 @@ function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
   return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
 }
 
+function preserveThreadSubject(...candidates: any[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return normalizeReplySubject(value);
+  }
+  return 'Re:';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const s = await requireSession();
@@ -73,7 +81,7 @@ export async function POST(req: NextRequest) {
     const originalOutboundMessageId = cleanMsgId(threadMsg.messageId || threadMsg.inReplyTo || null);
     const inReplyTo = inboundReplyMessageId || originalOutboundMessageId || null;
     const references = collectMsgIds(originalOutboundMessageId, replyMeta.references, inboundReplyMessageId).join(" ") || undefined;
-    const subject = normalizeReplySubject(ai.draftSubject, replyMeta.subject || threadMsg.subject || "Re:");
+    const subject = preserveThreadSubject(replyMeta.subject, threadMsg.subject, ai.draftSubject);
 
     const info = await sendEmail({
       mailboxId: threadMsg.mailboxId,

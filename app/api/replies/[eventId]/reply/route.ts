@@ -23,6 +23,14 @@ function normalizeReplySubject(subject: any, fallbackSubject?: any): string {
   return /^\s*re\s*:/i.test(base) ? base : `Re: ${base}`;
 }
 
+function preserveThreadSubject(...candidates: any[]): string {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return normalizeReplySubject(value);
+  }
+  return 'Re:';
+}
+
 export async function POST(
   req: Request,
   ctx: { params: { eventId: string } }
@@ -78,7 +86,7 @@ export async function POST(
   const defaultTo = pickEmailAddress(meta.fromAddress || meta.from || ev.message.lead?.email) || to.toLowerCase();
   const finalTo = pickEmailAddress(to) || defaultTo;
 
-  subject = clip(normalizeReplySubject(subject, meta.subject || ev.message.subject || "Re:"), 200);
+  subject = clip(preserveThreadSubject(meta.subject, ev.message.subject, subject), 200);
 
   const inReplyTo = String(meta.replyMessageId || meta.messageId || ev.message.messageId || "").trim() || undefined;
   const references = [ev.message.messageId, meta.references, meta.replyMessageId]
