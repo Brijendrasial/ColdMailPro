@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CampaignInnerHero } from "@/components/campaigns/campaign-inner-shell";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildCampaignQaReport } from "@/lib/campaign-qa";
@@ -91,17 +92,16 @@ export default async function CampaignDeliverabilityPage({
 
   return (
     <Container>
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className="text-xl font-semibold tracking-tight">Deliverability · {camp.name}</div>
-          <div className="text-sm opacity-70">Inbox signals + template risk in one place (window: last {windowHours}h).</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Link href={`/app/campaigns/${camp.id}`}><Button variant="ghost">Back</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/funnel`}><Button variant="ghost">Funnel</Button></Link>
-          <Link href={`/app/campaigns/${camp.id}/analytics`}><Button>Analytics</Button></Link>
-        </div>
-      </div>
+      <CampaignInnerHero
+        campaignId={camp.id}
+        campaignName={camp.name}
+        status={camp.status}
+        active="deliverability"
+        title={`Deliverability · ${camp.name}`}
+        subtitle={`Inbox signals, template QA, guardrails, and recent sender health from the last ${windowHours}h.`}
+        primaryHref={`/app/campaigns/${camp.id}/analytics`}
+        primaryLabel="Analytics"
+      />
 
       <div className="grid lg:grid-cols-3 gap-4 mt-4">
         <Card title="Deliverability score" subtitle="A simple health score based on recent bounces/unsubs + template risk.">

@@ -39,23 +39,41 @@ export async function POST(req: NextRequest) {
   if (!okIds.length) return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
 
   let enqueued = 0;
+  let reused = 0;
+  const jobs: Array<{ id: string; domainId: string; status: string; reused: boolean }> = [];
+
   for (const id of okIds) {
-    // avoid duplicate queued/running jobs for same domain
+    // avoid duplicate queued/running jobs for same domain, but return the existing job id
+    // so the UI can keep polling instead of looking stuck.
     const pending = await prisma.job.findFirst({
       where: { type: "domain_dns_check", status: { in: ["queued", "running"] }, payload: { contains: id } },
-      select: { id: true },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true, payload: true },
     });
-    if (pending) continue;
-    await prisma.job.create({
+    if (pending) {
+      jobs.push({ id: pending.id, domainId: id, status: pending.status, reused: true });
+      reused++;
+      continue;
+    }
+
+    const job = await prisma.job.create({
       data: {
         type: "domain_dns_check",
         payload: JSON.stringify({ workspaceId: s.wid, domainId: id, source: "manual" }),
         runAt: new Date(),
         status: "queued",
       },
+      select: { id: true, status: true },
     });
+    jobs.push({ id: job.id, domainId: id, status: job.status, reused: false });
     enqueued++;
   }
 
-  return NextResponse.json({ enqueued, domainIds: okIds });
+  return NextResponse.json({
+    enqueued,
+    reused,
+    domainIds: okIds,
+    jobs,
+    jobId: jobs[0]?.id || null,
+  });
 }

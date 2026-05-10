@@ -549,20 +549,19 @@ nextRunAt: (() => {
   return (
     <Container wide>
       {resumeDraft ? (
-        <div className="mb-4 rounded-2xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/10 p-4 flex items-start justify-between gap-3 flex-wrap">
-          <div className="min-w-0">
-            <div className="font-semibold">Resume campaign setup</div>
-            <div className="text-sm opacity-70 mt-1">
-              You have an unfinished draft: <span className="font-medium">{resumeDraft.name}</span> (last updated{" "}
-              {resumeDraft.updatedAt.toLocaleString()}).
+        <div className="mb-5 overflow-hidden rounded-[2rem] border border-amber-200/70 bg-gradient-to-r from-amber-50 via-white to-indigo-50 p-5 shadow-[0_18px_55px_rgba(15,23,42,0.07)]">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="inline-flex items-center rounded-full border border-amber-200 bg-white/80 px-3 py-1 text-xs font-semibold text-amber-800">Draft waiting</div>
+              <div className="mt-2 text-lg font-semibold text-slate-950">Resume campaign setup</div>
+              <div className="mt-1 text-sm text-slate-600">
+                Continue <span className="font-semibold text-slate-950">{resumeDraft.name}</span> — last updated {resumeDraft.updatedAt.toLocaleString()}.
+              </div>
             </div>
+            <a href={`/app/campaigns/new?resume=${resumeDraft.id}`} className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-slate-800">
+              Continue wizard →
+            </a>
           </div>
-          <a
-            href={`/app/campaigns/new?resume=${resumeDraft.id}`}
-            className="inline-flex items-center px-4 py-2 rounded-xl border border-black/10 dark:border-white/10 bg-white dark:bg-black hover:bg-black/5 dark:hover:bg-white/10"
-          >
-            Continue wizard →
-          </a>
         </div>
       ) : null}
 

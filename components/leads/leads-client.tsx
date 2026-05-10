@@ -1126,711 +1126,405 @@ export function LeadsClient() {
   ];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="text-xl font-semibold">Leads</div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge>{loading ? "Loading…" : `${total} leads`}</Badge>
-          <Button variant="primary" onClick={openAddModal}>
-            Add lead
-          </Button>
-          <Button variant="ghost" onClick={() => setShowImport(true)}>
-            Import wizard
-          </Button>
-          <Button variant="ghost" onClick={() => setShowSuppressions(true)}>
-            Suppressions
-          </Button>
-          <Button variant="ghost" onClick={() => setShowDuplicates(true)}>
-            Duplicates
-          </Button>
-          <Button variant="ghost" onClick={() => setShowLists(true)}>
-            Lists
-          </Button>
-        </div>
-      </div>
-
-      <Card
-        title="Leads"
-        subtitle="Views, filters, bulk actions, and a lead drawer (timeline + messages + campaigns)."
-        right={
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="ghost" onClick={saveCurrentView}>
-              Save view
-            </Button>
-            <Button variant="ghost" onClick={openAiSegmentsModal}>
-              ✨ AI segments
-            </Button>
-            <Button variant="ghost" onClick={openCompanyEnrichModal}>
-              ✨ Enrich by website
-            </Button>
-            {activeViewId ? (
-              <Button variant="danger" onClick={deleteActiveView}>
-                Delete view
+    <div className="space-y-6">
+      <section className="relative overflow-hidden rounded-[2rem] border border-white/70 bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 p-5 sm:p-6 text-white shadow-2xl shadow-indigo-200/60">
+        <div className="absolute -right-24 -top-24 h-72 w-72 rounded-full bg-white/20 blur-3xl" />
+        <div className="absolute -left-24 bottom-0 h-64 w-64 rounded-full bg-cyan-300/20 blur-3xl" />
+        <div className="relative grid gap-5 xl:grid-cols-[1.15fr_0.85fr] xl:items-end">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-white/90 backdrop-blur">
+              ✨ Lead Command Center
+            </div>
+            <h1 className="mt-4 text-3xl sm:text-4xl font-semibold tracking-tight">Leads</h1>
+            <p className="mt-2 max-w-3xl text-sm sm:text-base text-white/80">
+              Search, enrich, verify, segment, bulk-edit, and move prospects into campaigns from one polished workspace.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center gap-2">
+              <Button variant="secondary" className="bg-white text-indigo-700 border-white/30 hover:bg-white/90" onClick={openAddModal}>
+                + Add lead
               </Button>
-            ) : null}
-            <Select
-              value={pageSize}
-              onChange={(e) => {
-                setPageSize(Number(e.target.value));
-                setPage(1);
-              }}
-              className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
-            >
-              <option value={50}>50 / page</option>
-              <option value={100}>100 / page</option>
-              <option value={200}>200 / page</option>
-            </Select>
-          </div>
-        }
-      >        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-4">
-          <Kpi label="Total leads" value={pageStats.total} />
-          <Kpi label="On this page" value={pageStats.pageTotal} tone="info" />
-          <Kpi label="Selected" value={pageStats.selected} tone={pageStats.selected ? "warning" : "neutral"} />
-          <Kpi label="Active" value={pageStats.active} tone="info" />
-          <Kpi label="Replied" value={pageStats.replied} tone="success" />
-          <Kpi label="Bounced" value={pageStats.bounced} tone={pageStats.bounced ? "danger" : "neutral"} />
-        </div>
-
-        {/* Views (presets + saved) */}
-        <div className="flex flex-wrap gap-2 mb-3">
-          {presets.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => applyViewPayload(p.payload, null)}
-              className="px-3 py-1.5 rounded-xl text-sm border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10"
-            >
-              {p.name}
-            </button>
-          ))}
-          {views.length ? <span className="mx-1 opacity-40">|</span> : null}
-          {views.map((v) => (
-            <button
-              key={v.id}
-              onClick={() => applyViewPayload(v.payload, v.id)}
-              className={`px-3 py-1.5 rounded-xl text-sm border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 ${activeViewId === v.id ? "bg-indigo-600 text-white border-indigo-600" : ""}`}
-              title="Shared workspace view"
-            >
-              {v.name}
-            </button>
-          ))}
-        </div>
-
-        {/* Filters */}
-        <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-            <div className="md:col-span-5">
-              <div className="text-xs opacity-70 mb-1">Search</div>
-              <Input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); setActiveViewId(null); }} placeholder="email, name, company, website, tags…" />
-            </div>
-
-            <div className="md:col-span-2">
-              <div className="text-xs opacity-70 mb-1">Status</div>
-              <Select
-                value={status}
-                onChange={(e) => {
-                  setStatus(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="all">All</option>
-                <option value="active">Active</option>
-                <option value="replied">Replied</option>
-                <option value="unsubscribed">Unsubscribed</option>
-                <option value="bounced">Bounced</option>
-                <option value="suppressed">Suppressed (DNC)</option>
-              </Select>
-            </div>
-
-            <div className="md:col-span-2">
-              <div className="text-xs opacity-70 mb-1">Contacted</div>
-              <Select
-                value={contacted}
-                onChange={(e) => {
-                  setContacted(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="">Any</option>
-                <option value="1">Contacted</option>
-                <option value="0">Not contacted</option>
-              </Select>
-            </div>
-
-            <div className="md:col-span-2">
-              <div className="text-xs opacity-70 mb-1">Tag contains</div>
-              <Input value={tag} onChange={(e) => { setTag(e.target.value); setPage(1); setActiveViewId(null); }} placeholder="e.g. saas" />
-            </div>
-
-            <div className="md:col-span-1 flex gap-2">
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setQ("");
-                  setStatus("all");
-                  setStage("all");
-                  setListId("all");
-                  setOwnerUserId("all");
-                  setTasksFilter("");
-                  setTag("");
-                  setContacted("");
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-              >
-                Reset
+              <Button variant="ghost" className="bg-white/15 text-white border-white/25 hover:bg-white/25" onClick={() => setShowImport(true)}>
+                Import wizard
+              </Button>
+              <Button variant="ghost" className="bg-white/15 text-white border-white/25 hover:bg-white/25" onClick={openCompanyEnrichModal}>
+                ✨ Enrich by website
+              </Button>
+              <Button variant="ghost" className="bg-white/15 text-white border-white/25 hover:bg-white/25" onClick={openAiSegmentsModal}>
+                ✨ AI segments
               </Button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-            <div className="md:col-span-3">
-              <div className="text-xs opacity-70 mb-1">Stage</div>
-              <Select
-                value={stage}
-                onChange={(e) => {
-                  setStage(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="all">All</option>
-                <option value="new">New</option>
-                <option value="enriched">Enriched</option>
-                <option value="verified">Verified</option>
-                <option value="ready">Ready</option>
-                <option value="contacted">Contacted</option>
-                <option value="replied">Replied</option>
-                <option value="interested">Interested</option>
-                <option value="not_fit">Not fit</option>
-              </Select>
-            </div>
-
-            <div className="md:col-span-3">
-              <div className="text-xs opacity-70 mb-1">List</div>
-              <Select
-                value={listId}
-                onChange={(e) => {
-                  setListId(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="all">All</option>
-                {lists.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="md:col-span-3">
-              <div className="text-xs opacity-70 mb-1">Owner</div>
-              <Select
-                value={ownerUserId}
-                onChange={(e) => {
-                  setOwnerUserId(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="all">All</option>
-                {owners.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name || u.email || u.id}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="md:col-span-2">
-              <div className="text-xs opacity-70 mb-1">Tasks</div>
-              <Select
-                value={tasksFilter}
-                onChange={(e) => {
-                  setTasksFilter(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="">Any</option>
-                <option value="overdue">Overdue</option>
-                <option value="due_7d">Due in 7 days</option>
-                <option value="none">No open tasks</option>
-              </Select>
-            </div>
-
-            <div className="md:col-span-1">
-              <div className="text-xs opacity-70 mb-1">Snooze</div>
-              <Select
-                value={snoozedFilter}
-                onChange={(e) => {
-                  setSnoozedFilter(e.target.value);
-                  setPage(1);
-                  setActiveViewId(null);
-                }}
-                className="h-10 w-full rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-3 text-sm"
-              >
-                <option value="hide">Hide snoozed</option>
-                <option value="include">Include snoozed</option>
-                <option value="only">Only snoozed</option>
-              </Select>
-            </div>
-
-            <div className="md:col-span-1">
-              <div className="text-xs opacity-70 mb-1">View</div>
-              <div className="inline-flex w-full rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
-                <button
-                  className={`h-10 flex-1 px-3 text-sm ${viewMode === "table" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10"}`}
-                  onClick={() => setViewMode("table")}
-                >
-                  Table
-                </button>
-                <button
-                  className={`h-10 flex-1 px-3 text-sm border-l border-black/10 dark:border-white/10 ${viewMode === "kanban" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent hover:bg-black/5 dark:hover:bg-white/10"}`}
-                  onClick={() => setViewMode("kanban")}
-                >
-                  Kanban
-                </button>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-2">
+            {[
+              { label: "Total", value: pageStats.total, hint: "all leads" },
+              { label: "Active", value: pageStats.active, hint: "ready to work" },
+              { label: "Replied", value: pageStats.replied, hint: "warm conversations" },
+              { label: "Selected", value: pageStats.selected, hint: "bulk actions" },
+            ].map((m) => (
+              <div key={m.label} className="rounded-3xl border border-white/20 bg-white/15 p-4 backdrop-blur-xl shadow-lg shadow-black/5">
+                <div className="text-xs uppercase tracking-[0.18em] text-white/65">{m.label}</div>
+                <div className="mt-1 text-3xl font-semibold">{m.value}</div>
+                <div className="text-xs text-white/65">{m.hint}</div>
               </div>
-            </div>
+            ))}
           </div>
+        </div>
+      </section>
 
-          {/* Bulk bar */}
-          {selectedIds.length ? (
-            <div className="glass p-3 flex items-center justify-between flex-wrap gap-2">
-              <div className="text-sm">
-                <span className="font-medium">{selectedIds.length}</span> selected
+      <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="space-y-4">
+          <div className="rounded-[1.5rem] border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur sticky top-4">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Workspace</div>
+                <div className="text-xs text-slate-500">Views and tools</div>
               </div>
-              <div className="flex items-center flex-wrap gap-2">
-                <Button variant="ghost" onClick={openAiTagsModal}>
-                  ✨ AI tags
-                </Button>
-                <Button variant="ghost" onClick={openAiEnrichModal}>
-                  ✨ AI enrich
-                </Button>
-                <Button
-                  variant="ghost"
-                  disabled={bulkBusy}
-                  onClick={async () => {
-                    const hint = prompt("Optional hint for enrichment (e.g. ICP/job titles to focus on):", "") ?? null;
-                    if (hint === null) return;
-                    const overwrite = confirm("Overwrite existing first/last/company/website fields if AI suggests changes?\n\nOK = overwrite\nCancel = fill only missing fields");
-                    try {
-                      setBulkBusy(true);
-                      const r = await fetch("/api/leads/ai/enrich-apply", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ ids: selectedIds, hint, overwrite }),
-                      });
-                      if (!r.ok) throw new Error(await r.text());
-                      const d = await r.json();
-                      notify(`✅ Enriched ${Number(d.updated || 0)} leads`);
-                      setRefreshKey((k) => k + 1);
-                    } catch (e: any) {
-                      notify(`❌ Bulk enrich failed: ${clip(String(e?.message || e), 140)}`);
-                    } finally {
-                      setBulkBusy(false);
-                    }
-                  }}
-                >
-                  {bulkBusy ? "Enriching…" : "⚡ Bulk enrich"}
-                </Button>
+              <Badge>{loading ? "Loading…" : `${total} leads`}</Badge>
+            </div>
 
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    // lightweight verification pass: MX + heuristics (+ optional SMTP based on server settings)
-                    bulk("verify_email", { verifyMode: "no_smtp", requireMailbox: false });
-                  }}
-                >
-                  Verify emails
-                </Button>
+            <div className="mt-4 grid gap-2">
+              <Button variant="primary" className="w-full justify-center" onClick={openAddModal}>+ Add lead</Button>
+              <Button variant="ghost" className="w-full justify-center" onClick={() => setShowImport(true)}>Import wizard</Button>
+              <Button variant="ghost" className="w-full justify-center" onClick={() => setShowLists(true)}>Lists</Button>
+              <Button variant="ghost" className="w-full justify-center" onClick={() => setShowDuplicates(true)}>Duplicates</Button>
+              <Button variant="ghost" className="w-full justify-center" onClick={() => setShowSuppressions(true)}>Suppressions</Button>
+            </div>
 
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    setBulkTaskTitle("");
-                    setBulkTaskDueDate("");
-                    setShowBulkTask(true);
-                  }}
-                >
-                  + Task
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    setBulkSnoozeUntil(plusDaysISOLocal(3).slice(0, 10));
-                    setBulkSnoozeReason("");
-                    setShowBulkSnooze(true);
-                  }}
-                >
-                  Snooze
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    if (confirm("Unsnooze selected leads?")) bulk("unsnooze");
-                  }}
-                >
-                  Unsnooze
-                </Button>
-
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={bulkStage}
-                    onChange={(e) => setBulkStage(e.target.value)}
-                    className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
+            <div className="mt-5 border-t border-slate-200 pt-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Quick views</div>
+              <div className="flex flex-wrap gap-2">
+                {presets.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => applyViewPayload(p.payload, null)}
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
                   >
-                    <option value="">Set stage…</option>
-                    <option value="new">New</option>
-                    <option value="enriched">Enriched</option>
-                    <option value="verified">Verified</option>
-                    <option value="ready">Ready</option>
-                    <option value="contacted">Contacted</option>
-                    <option value="replied">Replied</option>
-                    <option value="interested">Interested</option>
-                    <option value="not_fit">Not fit</option>
-                  </Select>
-                  <Button variant="ghost" disabled={!bulkStage} onClick={() => bulk("set_stage", { stage: bulkStage })}>
-                    Apply
-                  </Button>
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {views.length ? (
+              <div className="mt-5 border-t border-slate-200 pt-4">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Saved views</div>
+                  <button className="text-xs text-indigo-600 hover:text-indigo-700" onClick={saveCurrentView}>Save</button>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={bulkOwner}
-                    onChange={(e) => setBulkOwner(e.target.value)}
-                    className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
-                  >
-                    <option value="">Assign owner…</option>
-                    <option value="__clear__">(Clear)</option>
-                    {owners.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name || u.email || u.id}
-                      </option>
-                    ))}
-                  </Select>
-                  <Button
-                    variant="ghost"
-                    disabled={!bulkOwner}
-                    onClick={() => bulk("assign_owner", { ownerUserId: bulkOwner === "__clear__" ? "" : bulkOwner })}
-                  >
-                    Apply
-                  </Button>
+                <div className="grid gap-2">
+                  {views.map((v) => (
+                    <button
+                      key={v.id}
+                      onClick={() => applyViewPayload(v.payload, v.id)}
+                      className={`rounded-2xl border px-3 py-2 text-left text-sm transition ${activeViewId === v.id ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"}`}
+                    >
+                      {v.name}
+                    </button>
+                  ))}
                 </div>
+                {activeViewId ? (
+                  <Button variant="danger" className="mt-3 w-full" onClick={deleteActiveView}>Delete active view</Button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+                Save a filtered view to reuse it with your team.
+                <button className="mt-2 block font-semibold text-indigo-600" onClick={saveCurrentView}>Save current view →</button>
+              </div>
+            )}
+          </div>
+        </aside>
 
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={bulkList}
-                    onChange={(e) => setBulkList(e.target.value)}
-                    className="h-9 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2 text-sm"
-                  >
-                    <option value="">Move to list…</option>
-                    <option value="__clear__">(Remove)</option>
-                    {lists.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.name}
-                      </option>
-                    ))}
-                  </Select>
-                  <Button
-                    variant="ghost"
-                    disabled={!bulkList}
-                    onClick={() => bulk("move_list", { listId: bulkList === "__clear__" ? "" : bulkList })}
-                  >
-                    Apply
-                  </Button>
-                </div>
+        <main className="min-w-0 space-y-4">
+          <Card className="overflow-hidden rounded-[1.5rem] border border-slate-200/80 bg-white/85 shadow-xl shadow-slate-200/70" title="Pipeline overview" subtitle="Live health of this page and your current filters.">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <Kpi label="Total leads" value={pageStats.total} />
+              <Kpi label="On page" value={pageStats.pageTotal} tone="info" />
+              <Kpi label="Selected" value={pageStats.selected} tone={pageStats.selected ? "warning" : "neutral"} />
+              <Kpi label="Active" value={pageStats.active} tone="info" />
+              <Kpi label="Replied" value={pageStats.replied} tone="success" />
+              <Kpi label="Bounced" value={pageStats.bounced} tone={pageStats.bounced ? "danger" : "neutral"} />
+            </div>
+          </Card>
+
+          <Card className="rounded-[1.5rem] border border-slate-200/80 bg-white/90 shadow-xl shadow-slate-200/70" title="Find and focus" subtitle="Filters are grouped so the table stays calm, even when the workflow gets busy." right={
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="ghost" onClick={saveCurrentView}>Save view</Button>
+              <Select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+                className="h-10 min-w-[140px] rounded-xl border border-slate-200 bg-white px-3 text-sm"
+              >
+                <option value={50}>50 / page</option>
+                <option value={100}>100 / page</option>
+                <option value={200}>200 / page</option>
+              </Select>
+            </div>
+          }>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+              <div className="lg:col-span-5">
+                <div className="text-xs font-medium text-slate-500 mb-1">Search leads</div>
+                <Input className="h-12 text-base" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); setActiveViewId(null); }} placeholder="email, name, company, website, tags…" />
+              </div>
+              <div className="lg:col-span-2">
+                <div className="text-xs font-medium text-slate-500 mb-1">Status</div>
+                <Select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); setActiveViewId(null); }} className="h-12">
+                  <option value="all">All statuses</option>
+                  <option value="active">Active</option>
+                  <option value="replied">Replied</option>
+                  <option value="unsubscribed">Unsubscribed</option>
+                  <option value="bounced">Bounced</option>
+                  <option value="suppressed">Suppressed (DNC)</option>
+                </Select>
+              </div>
+              <div className="lg:col-span-2">
+                <div className="text-xs font-medium text-slate-500 mb-1">Stage</div>
+                <Select value={stage} onChange={(e) => { setStage(e.target.value); setPage(1); setActiveViewId(null); }} className="h-12">
+                  <option value="all">All stages</option>
+                  <option value="new">New</option>
+                  <option value="enriched">Enriched</option>
+                  <option value="verified">Verified</option>
+                  <option value="ready">Ready</option>
+                  <option value="contacted">Contacted</option>
+                  <option value="replied">Replied</option>
+                  <option value="interested">Interested</option>
+                  <option value="not_fit">Not fit</option>
+                </Select>
+              </div>
+              <div className="lg:col-span-2">
+                <div className="text-xs font-medium text-slate-500 mb-1">Contacted</div>
+                <Select value={contacted} onChange={(e) => { setContacted(e.target.value); setPage(1); setActiveViewId(null); }} className="h-12">
+                  <option value="">Any</option>
+                  <option value="1">Contacted</option>
+                  <option value="0">Not contacted</option>
+                </Select>
+              </div>
+              <div className="lg:col-span-1 flex items-end">
                 <Button
                   variant="ghost"
+                  className="h-12 w-full"
                   onClick={() => {
-                    const t = prompt("Add tags (comma separated):", "");
-                    if (t === null) return;
-                    bulk("tag_add", { tags: t });
+                    setQ(""); setStatus("all"); setStage("all"); setListId("all"); setOwnerUserId("all"); setTasksFilter(""); setTag(""); setContacted(""); setPage(1); setActiveViewId(null);
                   }}
                 >
-                  + Tag
+                  Reset
                 </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    const t = prompt("Remove tags (comma separated):", "");
-                    if (t === null) return;
-                    bulk("tag_remove", { tags: t });
-                  }}
-                >
-                  − Tag
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    const s = prompt("Set status (active/replied/unsubscribed/bounced/suppressed):", "active");
-                    if (s === null) return;
-                    bulk("set_status", { status: s });
-                  }}
-                >
-                  Set status
-                </Button>
-                <Button variant="ghost" onClick={openEnrollModal}>
-                  Add to campaign
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    if (confirm("Stop ALL campaign enrollments for selected leads?")) bulk("stop_campaigns");
-                  }}
-                >
-                  Stop campaigns
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    // download CSV from server
-                    (async () => {
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">List</div>
+                <Select value={listId} onChange={(e) => { setListId(e.target.value); setPage(1); setActiveViewId(null); }} className="h-11">
+                  <option value="all">All lists</option>
+                  {lists.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">Owner</div>
+                <Select value={ownerUserId} onChange={(e) => { setOwnerUserId(e.target.value); setPage(1); setActiveViewId(null); }} className="h-11">
+                  <option value="all">All owners</option>
+                  {owners.map((u) => <option key={u.id} value={u.id}>{u.name || u.email || u.id}</option>)}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">Tasks</div>
+                <Select value={tasksFilter} onChange={(e) => { setTasksFilter(e.target.value); setPage(1); setActiveViewId(null); }} className="h-11">
+                  <option value="">Any tasks</option>
+                  <option value="overdue">Overdue</option>
+                  <option value="due_7d">Due in 7 days</option>
+                  <option value="none">No open tasks</option>
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">Tag contains</div>
+                <Input value={tag} onChange={(e) => { setTag(e.target.value); setPage(1); setActiveViewId(null); }} placeholder="e.g. saas" className="h-11" />
+              </div>
+              <div>
+                <div className="text-xs font-medium text-slate-500 mb-1">Snooze</div>
+                <Select value={snoozedFilter} onChange={(e) => { setSnoozedFilter(e.target.value); setPage(1); setActiveViewId(null); }} className="h-11">
+                  <option value="hide">Hide snoozed</option>
+                  <option value="include">Include snoozed</option>
+                  <option value="only">Only snoozed</option>
+                </Select>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="rounded-[1.5rem] border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-200/70" title="Lead list" subtitle="Clean table for scanning. Use the drawer for deeper timeline, messages, and campaign history." right={
+            <div className="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
+              <button className={`rounded-xl px-4 py-2 text-sm font-medium transition ${viewMode === "table" ? "bg-slate-950 text-white shadow" : "text-slate-600 hover:text-slate-900"}`} onClick={() => setViewMode("table")}>Table</button>
+              <button className={`rounded-xl px-4 py-2 text-sm font-medium transition ${viewMode === "kanban" ? "bg-slate-950 text-white shadow" : "text-slate-600 hover:text-slate-900"}`} onClick={() => setViewMode("kanban")}>Kanban</button>
+            </div>
+          }>
+            {selectedIds.length ? (
+              <div className="mb-4 overflow-hidden rounded-3xl border border-indigo-200 bg-gradient-to-r from-indigo-50 via-white to-sky-50 p-3 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">{selectedIds.length} selected</div>
+                    <div className="text-xs text-slate-500">Choose a bulk action without losing your place.</div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="primary" onClick={openAiTagsModal}>✨ AI tags</Button>
+                    <Button variant="ghost" onClick={openAiEnrichModal}>✨ AI enrich</Button>
+                    <Button variant="ghost" disabled={bulkBusy} onClick={async () => {
+                      const hint = prompt("Optional hint for enrichment (e.g. ICP/job titles to focus on):", "") ?? null;
+                      if (hint === null) return;
+                      const overwrite = confirm("Overwrite existing first/last/company/website fields if AI suggests changes?\n\nOK = overwrite\nCancel = fill only missing fields");
                       try {
-                        const r = await fetch("/api/leads/export", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ ids: selectedIds }),
-                        });
+                        setBulkBusy(true);
+                        const r = await fetch("/api/leads/ai/enrich-apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: selectedIds, hint, overwrite }) });
                         if (!r.ok) throw new Error(await r.text());
-                        const blob = await r.blob();
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
+                        const d = await r.json();
+                        notify(`✅ Enriched ${d.updated ?? selectedIds.length} leads`);
+                        setRefreshKey((k) => k + 1);
                       } catch (e: any) {
-                        notify(`❌ Export failed: ${clip(String(e?.message || e), 140)}`);
-                      }
-                    })();
-                  }}
-                >
-                  Export CSV
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => {
-                    if (confirm("Mark selected leads as DNC (suppressed)?")) bulk("dnc", { reason: "manual" });
-                  }}
-                >
-                  DNC
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    if (confirm("Unsuppress selected leads (remove from suppression list)?")) bulk("unsuppress");
-                  }}
-                >
-                  Unsuppress
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => {
-                    if (confirm("Delete selected leads? This cannot be undone.")) bulk("delete");
-                  }}
-                >
-                  Delete
-                </Button>
+                        notify(`❌ Bulk enrich failed: ${clip(String(e?.message || e), 140)}`);
+                      } finally { setBulkBusy(false); }
+                    }}>{bulkBusy ? "Enriching…" : "⚡ Bulk enrich"}</Button>
+                    <Button variant="ghost" onClick={() => bulk("verify_email", { verifyMode: "no_smtp", requireMailbox: false })}>Verify emails</Button>
+                    <Button variant="ghost" onClick={() => { setBulkTaskTitle(""); setBulkTaskDueDate(""); setShowBulkTask(true); }}>+ Task</Button>
+                    <Button variant="ghost" onClick={() => { setBulkSnoozeUntil(plusDaysISOLocal(3).slice(0, 10)); setBulkSnoozeReason(""); setShowBulkSnooze(true); }}>Snooze</Button>
+                    <Button variant="ghost" onClick={openEnrollModal}>Add to campaign</Button>
+                    <Button variant="danger" onClick={() => { if (confirm("Mark selected leads as DNC (suppressed)?")) bulk("dnc", { reason: "manual" }); }}>DNC</Button>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 lg:grid-cols-3">
+                  <div className="flex gap-2">
+                    <Select value={bulkStage} onChange={(e) => setBulkStage(e.target.value)} className="h-10">
+                      <option value="">Set stage…</option>
+                      <option value="new">New</option><option value="enriched">Enriched</option><option value="verified">Verified</option><option value="ready">Ready</option><option value="contacted">Contacted</option><option value="replied">Replied</option><option value="interested">Interested</option><option value="not_fit">Not fit</option>
+                    </Select>
+                    <Button variant="ghost" disabled={!bulkStage} onClick={() => bulk("set_stage", { stage: bulkStage })}>Apply</Button>
+                  </div>
+                  <div className="flex gap-2">
+                    <Select value={bulkOwner} onChange={(e) => setBulkOwner(e.target.value)} className="h-10">
+                      <option value="">Assign owner…</option><option value="__clear__">(Clear)</option>{owners.map((u) => <option key={u.id} value={u.id}>{u.name || u.email || u.id}</option>)}
+                    </Select>
+                    <Button variant="ghost" disabled={!bulkOwner} onClick={() => bulk("assign_owner", { ownerUserId: bulkOwner === "__clear__" ? "" : bulkOwner })}>Apply</Button>
+                  </div>
+                  <div className="flex gap-2">
+                    <Select value={bulkList} onChange={(e) => setBulkList(e.target.value)} className="h-10">
+                      <option value="">Move to list…</option><option value="__clear__">(Remove)</option>{lists.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </Select>
+                    <Button variant="ghost" disabled={!bulkList} onClick={() => bulk("move_list", { listId: bulkList === "__clear__" ? "" : bulkList })}>Apply</Button>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button variant="ghost" onClick={() => { if (confirm("Unsnooze selected leads?")) bulk("unsnooze"); }}>Unsnooze</Button>
+                  <Button variant="ghost" onClick={() => { const t = prompt("Add tags (comma separated):", ""); if (t === null) return; bulk("tag_add", { tags: t }); }}>+ Tag</Button>
+                  <Button variant="ghost" onClick={() => { const t = prompt("Remove tags (comma separated):", ""); if (t === null) return; bulk("tag_remove", { tags: t }); }}>− Tag</Button>
+                  <Button variant="ghost" onClick={() => { const s = prompt("Set status (active/replied/unsubscribed/bounced/suppressed):", "active"); if (s === null) return; bulk("set_status", { status: s }); }}>Set status</Button>
+                  <Button variant="ghost" onClick={() => { if (confirm("Stop ALL campaign enrollments for selected leads?")) bulk("stop_campaigns"); }}>Stop campaigns</Button>
+                  <Button variant="ghost" onClick={async () => {
+                    try {
+                      const r = await fetch("/api/leads/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: selectedIds }) });
+                      if (!r.ok) throw new Error(await r.text());
+                      const blob = await r.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                      a.href = url; a.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                    } catch (e: any) { notify(`❌ Export failed: ${clip(String(e?.message || e), 140)}`); }
+                  }}>Export CSV</Button>
+                  <Button variant="ghost" onClick={() => { if (confirm("Unsuppress selected leads (remove from suppression list)?")) bulk("unsuppress"); }}>Unsuppress</Button>
+                  <Button variant="danger" onClick={() => { if (confirm("Delete selected leads? This cannot be undone.")) bulk("delete"); }}>Delete</Button>
+                </div>
+              </div>
+            ) : null}
+
+            {viewMode === "kanban" ? (
+              <KanbanBoard items={items} selected={selected} onToggleOne={toggleOne} onOpen={(id) => setDrawerId(id)} onMoveStage={async (id, st) => { await bulk("set_stage", { stage: st }, [id]); }} />
+            ) : (
+              <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="min-w-[1120px] w-full text-sm">
+                    <thead className="bg-slate-50/90 text-xs uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-4 py-4 text-left w-[48px]"><input type="checkbox" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} /></th>
+                        <th className="px-4 py-4 text-left">Lead</th>
+                        <th className="px-4 py-4 text-left">Company</th>
+                        <th className="px-4 py-4 text-left">Stage</th>
+                        <th className="px-4 py-4 text-left">Owner</th>
+                        <th className="px-4 py-4 text-left">List</th>
+                        <th className="px-4 py-4 text-left">Tags</th>
+                        <th className="px-4 py-4 text-left">Status</th>
+                        <th className="px-4 py-4 text-left">Campaigns</th>
+                        <th className="px-4 py-4 text-left">Next task</th>
+                        <th className="px-4 py-4 text-left">Last activity</th>
+                        <th className="px-4 py-4 text-left">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {items.map((it) => {
+                        const name = [it.firstName, it.lastName].filter(Boolean).join(" ");
+                        const company = it.company || "—";
+                        const last = it.lastMessage;
+                        const lastLine = it.lastActivity?.text || (last ? `${last.status}${last.campaign?.name ? ` • ${last.campaign.name}` : ""}` : "—");
+                        const lastAt = it.lastActivity?.createdAt || last?.sentAt || last?.createdAt || it.createdAt;
+                        const snoozed = !!(it.snoozeUntil && new Date(it.snoozeUntil).getTime() > Date.now());
+                        const initial = (name || it.email || "?").trim().slice(0, 1).toUpperCase();
+                        return (
+                          <tr key={it.id} className={`transition hover:bg-indigo-50/35 ${selected[it.id] ? "bg-indigo-50/50" : "bg-white"}`}>
+                            <td className="px-4 py-4 align-top"><input type="checkbox" checked={!!selected[it.id]} onChange={() => toggleOne(it.id)} /></td>
+                            <td className="px-4 py-4 align-top">
+                              <div className="flex min-w-[250px] items-start gap-3">
+                                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-100 to-sky-100 text-sm font-semibold text-indigo-700">{initial}</div>
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-slate-900">{it.email}</div>
+                                  <div className="text-xs text-slate-500">{name || "No name yet"}</div>
+                                  {snoozed ? <div className="mt-1 text-xs"><Pill tone="warning">Snoozed</Pill><span className="ml-2 text-slate-500">until {fmtDate(it.snoozeUntil || undefined)}</span></div> : null}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-4 align-top">
+                              <div className="font-medium text-slate-900">{clip(company, 28)}</div>
+                              <div className="text-xs text-slate-500">{it.website ? clip(it.website, 34) : "No website"}</div>
+                            </td>
+                            <td className="px-4 py-4 align-top"><Pill tone="neutral">{it.stage || "new"}</Pill></td>
+                            <td className="px-4 py-4 align-top text-xs text-slate-600">{it.owner?.name || it.owner?.email || "—"}</td>
+                            <td className="px-4 py-4 align-top text-xs text-slate-600">{it.list?.name || "—"}</td>
+                            <td className="px-4 py-4 align-top"><div className="flex max-w-[170px] flex-wrap gap-1">{it.tags?.length ? it.tags.slice(0, 3).map((t) => <Badge key={t}>{t}</Badge>) : <span className="text-slate-400">—</span>}{it.tags?.length > 3 ? <Badge>+{it.tags.length - 3}</Badge> : null}</div></td>
+                            <td className="px-4 py-4 align-top"><Pill tone={toneForStatus(it.status)}>{it.status}</Pill></td>
+                            <td className="px-4 py-4 align-top"><div className="flex max-w-[190px] flex-wrap gap-1">{it.campaigns?.length ? it.campaigns.slice(0, 2).map((c) => <Badge key={c.id}>{clip(c.name, 18)}</Badge>) : <span className="text-slate-400">—</span>}{it.campaigns?.length > 2 ? <Badge>+{it.campaigns.length - 2}</Badge> : null}</div></td>
+                            <td className="px-4 py-4 align-top">{it.nextTask ? <div><div className="text-xs font-medium text-slate-700">{clip(it.nextTask.title, 26)}</div><div className="text-xs text-slate-500">{it.nextTask.dueAt ? fmtDate(it.nextTask.dueAt) : "No due"}</div></div> : <span className="text-slate-400">—</span>}</td>
+                            <td className="px-4 py-4 align-top"><div className="text-xs text-slate-700">{lastLine}</div><div className="text-xs text-slate-500">{fmtDate(lastAt)}</div></td>
+                            <td className="px-4 py-4 align-top">
+                              <div className="flex gap-2">
+                                <Button variant="ghost" onClick={() => setDrawerId(it.id)}>View</Button>
+                                <Button variant="ghost" onClick={() => {
+                                  if (snoozed) { if (confirm("Unsnooze this lead?")) bulk("unsnooze", {}, [it.id]); return; }
+                                  const def = plusDaysISOLocal(3).slice(0, 10); const v = prompt("Snooze until (YYYY-MM-DD):", def); if (!v) return;
+                                  const iso = isoFromDateInputLocal(v); if (!iso) { notify("⚠️ Invalid date"); return; }
+                                  const reason = prompt("Reason (optional):", "") ?? ""; bulk("snooze", { until: iso, reason }, [it.id]);
+                                }}>{snoozed ? "Unsnooze" : "Snooze"}</Button>
+                                <Button variant="ghost" onClick={() => { if (confirm("Mark this lead as DNC (suppressed)?")) { (async () => { try { const r = await fetch("/api/leads/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [it.id], action: "dnc", reason: "manual" }) }); if (!r.ok) throw new Error(await r.text()); notify("✅ Marked as DNC"); setRefreshKey((k) => k + 1); } catch (e: any) { notify(`❌ Failed: ${clip(String(e?.message || e), 140)}`); } })(); } }}>DNC</Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {!loading && items.length === 0 ? <EmptyState title="No leads found" subtitle="Try adjusting your filters, enrich by website, or import a CSV to get started." /> : null}
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-sm text-slate-600">Page <span className="font-semibold text-slate-900">{page}</span> of <span className="font-semibold text-slate-900">{totalPages}</span></div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onClick={() => setPage(1)} disabled={page <= 1}>First</Button>
+                <Button variant="ghost" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>Prev</Button>
+                <Button variant="ghost" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>Next</Button>
+                <Button variant="ghost" onClick={() => setPage(totalPages)} disabled={page >= totalPages}>Last</Button>
               </div>
             </div>
-          ) : null}
-
-          {/* Table / Kanban */}
-          {viewMode === "kanban" ? (
-            <KanbanBoard
-              items={items}
-              selected={selected}
-              onToggleOne={toggleOne}
-              onOpen={(id) => setDrawerId(id)}
-              onMoveStage={async (id, st) => {
-                await bulk("set_stage", { stage: st }, [id]);
-              }}
-            />
-          ) : (
-          <div className="table-wrap">
-            <table className="min-w-[1060px] w-full text-sm">
-              <thead className="table-head">
-                <tr>
-                  <th className="table-cell text-left w-[44px]">
-                    <input type="checkbox" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} />
-                  </th>
-                  <th className="table-cell text-left">Lead</th>
-                  <th className="table-cell text-left">Company</th>
-                  <th className="table-cell text-left">Stage</th>
-                  <th className="table-cell text-left">Owner</th>
-                  <th className="table-cell text-left">List</th>
-                  <th className="table-cell text-left">Tags</th>
-                  <th className="table-cell text-left">Status</th>
-                  <th className="table-cell text-left">Campaigns</th>
-                  <th className="table-cell text-left">Next task</th>
-                  <th className="table-cell text-left">Last activity</th>
-                  <th className="table-cell text-left">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((it) => {
-                  const name = [it.firstName, it.lastName].filter(Boolean).join(" ");
-                  const company = it.company || "—";
-                  const last = it.lastMessage;
-                  const lastLine = it.lastActivity?.text || (last ? `${last.status}${last.campaign?.name ? ` • ${last.campaign.name}` : ""}` : "—");
-                  const lastAt = it.lastActivity?.createdAt || last?.sentAt || last?.createdAt || it.createdAt;
-                  const snoozed = !!(it.snoozeUntil && new Date(it.snoozeUntil).getTime() > Date.now());
-                  return (
-                    <tr key={it.id} className="table-row">
-                      <td className="table-cell">
-                        <input type="checkbox" checked={!!selected[it.id]} onChange={() => toggleOne(it.id)} />
-                      </td>
-                      <td className="table-cell">
-                        <div className="font-medium">{it.email}</div>
-                        <div className="text-xs opacity-70">{name || "—"}</div>
-                        {snoozed ? (
-                          <div className="text-xs mt-1">
-                            <Pill tone="warning">Snoozed</Pill>
-                            <span className="ml-2 opacity-70">until {fmtDate(it.snoozeUntil || undefined)}</span>
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className="table-cell">
-                        <div className="font-medium">{clip(company, 28)}</div>
-                        <div className="text-xs opacity-70">{it.website ? clip(it.website, 34) : "—"}</div>
-                      </td>
-                      <td className="table-cell">
-                        <Pill tone="neutral">{it.stage || "new"}</Pill>
-                      </td>
-                      <td className="table-cell">
-                        <div className="text-xs opacity-80">{it.owner?.name || it.owner?.email || "—"}</div>
-                      </td>
-                      <td className="table-cell">
-                        <div className="text-xs opacity-80">{it.list?.name || "—"}</div>
-                      </td>
-                      <td className="table-cell">
-                        <div className="flex flex-wrap gap-1">
-                          {it.tags?.length ? it.tags.slice(0, 3).map((t) => <Badge key={t}>{t}</Badge>) : <span className="opacity-60">—</span>}
-                          {it.tags?.length > 3 ? <Badge>+{it.tags.length - 3}</Badge> : null}
-                        </div>
-                      </td>
-                      <td className="table-cell">
-                        <Pill tone={toneForStatus(it.status)}>{it.status}</Pill>
-                      </td>
-                      <td className="table-cell">
-                        <div className="flex flex-wrap gap-1">
-                          {it.campaigns?.length ? it.campaigns.slice(0, 2).map((c) => <Badge key={c.id}>{clip(c.name, 18)}</Badge>) : <span className="opacity-60">—</span>}
-                          {it.campaigns?.length > 2 ? <Badge>+{it.campaigns.length - 2}</Badge> : null}
-                        </div>
-                      </td>
-                      <td className="table-cell">
-                        {it.nextTask ? (
-                          <div>
-                            <div className="text-xs opacity-80">{clip(it.nextTask.title, 26)}</div>
-                            <div className="text-xs opacity-60">{it.nextTask.dueAt ? fmtDate(it.nextTask.dueAt) : "No due"}</div>
-                          </div>
-                        ) : (
-                          <span className="opacity-60">—</span>
-                        )}
-                      </td>
-                      <td className="table-cell">
-                        <div className="text-xs opacity-80">{lastLine}</div>
-                        <div className="text-xs opacity-60">{fmtDate(lastAt)}</div>
-                      </td>
-                      <td className="table-cell">
-                        <div className="flex gap-2">
-                          <Button variant="ghost" onClick={() => setDrawerId(it.id)}>
-                            View
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() => {
-                              if (snoozed) {
-                                if (confirm("Unsnooze this lead?")) bulk("unsnooze", {}, [it.id]);
-                                return;
-                              }
-                              const def = plusDaysISOLocal(3).slice(0, 10);
-                              const v = prompt("Snooze until (YYYY-MM-DD):", def);
-                              if (!v) return;
-                              const iso = isoFromDateInputLocal(v);
-                              if (!iso) {
-                                notify("⚠️ Invalid date");
-                                return;
-                              }
-                              const reason = prompt("Reason (optional):", "") ?? "";
-                              bulk("snooze", { until: iso, reason }, [it.id]);
-                            }}
-                          >
-                            {snoozed ? "Unsnooze" : "Snooze"}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() => {
-                              if (
-                                confirm("Mark this lead as DNC (suppressed)?")
-                              ) {
-                                (async () => {
-                                  try {
-                                    const r = await fetch("/api/leads/bulk", {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ ids: [it.id], action: "dnc", reason: "manual" }),
-                                    });
-                                    if (!r.ok) throw new Error(await r.text());
-                                    notify("✅ Marked as DNC");
-                                    setRefreshKey((k) => k + 1);
-                                  } catch (e: any) {
-                                    notify(`❌ Failed: ${clip(String(e?.message || e), 140)}`);
-                                  }
-                                })();
-                              }
-                            }}
-                          >
-                            DNC
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          )}
-
-          {!loading && items.length === 0 ? <EmptyState title="No leads found" subtitle="Try adjusting your filters, or import a CSV to get started." /> : null}
-
-          {/* Pagination */}
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="text-sm opacity-70">
-              Page {page} of {totalPages}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" onClick={() => setPage(1)} disabled={page <= 1}>
-                First
-              </Button>
-              <Button variant="ghost" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
-                Prev
-              </Button>
-              <Button variant="ghost" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
-                Next
-              </Button>
-              <Button variant="ghost" onClick={() => setPage(totalPages)} disabled={page >= totalPages}>
-                Last
-              </Button>
-            </div>
-          </div>
-        </div>
-      </Card>
+          </Card>
+        </main>
+      </div>
 
       {drawerId ? <LeadDrawer id={drawerId} onClose={() => setDrawerId(null)} onToast={notify} /> : null}
 

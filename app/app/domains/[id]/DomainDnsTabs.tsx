@@ -59,12 +59,59 @@ function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
           setOk(true);
           setTimeout(() => setOk(false), 900);
         } catch {
-          // ignore
+          // ignore clipboard failures
         }
       }}
     >
       {ok ? "Copied" : label}
     </Button>
+  );
+}
+
+function TabButton({ active, children, onClick }: { active: boolean; children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
+        active
+          ? "bg-slate-950 text-white shadow-lg shadow-slate-950/15"
+          : "border border-slate-200 bg-white/85 text-slate-700 shadow-sm hover:bg-white"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1.5">
+      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</span>
+      {children}
+      {hint ? <span className="text-xs leading-5 text-slate-500">{hint}</span> : null}
+    </label>
+  );
+}
+
+function DnsRecordCard({ row }: { row: DnsRow }) {
+  return (
+    <div className="rounded-[1.35rem] border border-slate-200/80 bg-white/90 p-4 shadow-sm">
+      <div className="flex flex-wrap items-start gap-2">
+        <Badge>{row.type}</Badge>
+        <div className="min-w-0 flex-1">
+          <div className="break-all text-sm font-semibold text-slate-950">{row.name}</div>
+          <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+            {typeof row.ttl === "number" ? <span>TTL {row.ttl}</span> : null}
+            {typeof row.priority === "number" ? <span>Priority {row.priority}</span> : null}
+          </div>
+        </div>
+        <Copy text={row.value} label="Copy value" />
+      </div>
+      <pre className="mt-3 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-800">
+        {row.value}
+      </pre>
+    </div>
   );
 }
 
@@ -94,11 +141,7 @@ export default function DomainDnsTabs({
   const [tab, setTab] = useState<"cloudflare" | "manual">("cloudflare");
   const [busySync, setBusySync] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-
-  // Security UX: never prefill the real Cloudflare token into the DOM.
-  // If a token exists (saved from Mailstack tab), show a masked indicator and allow replacement.
   const [replaceCloudflareToken, setReplaceCloudflareToken] = useState(false);
-
   const [outIps, setOutIps] = useState(safeTrim(outboundIpsText));
   const [detectMsg, setDetectMsg] = useState<string>("");
   const [detectBusy, setDetectBusy] = useState(false);
@@ -123,9 +166,9 @@ export default function DomainDnsTabs({
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(String(j?.error || j?.message || "DNS_SYNC_FAILED"));
-      setMsg(`✅ DNS sync queued (job: ${j?.jobId || "?"}). Refresh in ~10–30s.`);
+      setMsg(`DNS sync queued (job: ${j?.jobId || "?"}). Refresh in around 10-30 seconds.`);
     } catch (e: any) {
-      setMsg(`❌ ${String(e?.message || e || "DNS_SYNC_FAILED")}`);
+      setMsg(String(e?.message || e || "DNS_SYNC_FAILED"));
     } finally {
       setBusySync(false);
     }
@@ -144,195 +187,162 @@ export default function DomainDnsTabs({
       setOutIps(picked.join("\n"));
       setDetectMsg(`Detected ${picked.length} IP${picked.length === 1 ? "" : "s"} from this server.`);
     } catch (e: any) {
-      setDetectMsg(`❌ ${String(e?.message || e || "FAILED")}`);
+      setDetectMsg(String(e?.message || e || "FAILED"));
     } finally {
       setDetectBusy(false);
     }
   }
 
+  const statusPills = (
+    <div className="flex flex-wrap items-center gap-2">
+      {tenantName ? <Badge>tenant: {tenantName}</Badge> : <Badge>no tenant linked</Badge>}
+      {tab === "cloudflare" ? (
+        hasCloudflareToken ? <Pill tone="success">Cloudflare connected</Pill> : <Pill tone="warning">Cloudflare not connected</Pill>
+      ) : (
+        <Pill tone="info">manual copy mode</Pill>
+      )}
+      <Badge>{parsed.uniq.length} outbound IP{parsed.uniq.length === 1 ? "" : "s"}</Badge>
+    </div>
+  );
+
   return (
     <DnsTabCtx.Provider value={{ tab }}>
-    <div className="grid gap-4">
-      <div className="flex items-center gap-2 flex-wrap">
-        <button
-          type="button"
-          onClick={() => setTab("cloudflare")}
-          className={`px-3 py-1.5 rounded-xl text-sm border ${
-            tab === "cloudflare" ? "bg-slate-900 text-white border-slate-900" : "bg-white border-slate-200"
-          }`}
-        >
-          Cloudflare DNS
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("manual")}
-          className={`px-3 py-1.5 rounded-xl text-sm border ${
-            tab === "manual" ? "bg-slate-900 text-white border-slate-900" : "bg-white border-slate-200"
-          }`}
-        >
-          Manual DNS
-        </button>
-        <div className="ml-auto flex items-center gap-2">
-          {tenantName ? <Badge>tenant: {tenantName}</Badge> : <Badge>no tenant linked</Badge>}
-          {tab === "cloudflare" ? (
-            hasCloudflareToken ? <Badge>cloudflare: connected</Badge> : <Badge>cloudflare: not connected</Badge>
-          ) : (
-            <Badge>manual DNS</Badge>
-          )}
-          <Badge>{parsed.uniq.length} outbound IP{parsed.uniq.length === 1 ? "" : "s"}</Badge>
-        </div>
-      </div>
+      <div className="grid gap-6">
+        <section className="rounded-[1.8rem] border border-white/70 bg-white/86 p-4 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur-xl">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <TabButton active={tab === "cloudflare"} onClick={() => setTab("cloudflare")}>Cloudflare cockpit</TabButton>
+              <TabButton active={tab === "manual"} onClick={() => setTab("manual")}>Manual DNS records</TabButton>
+            </div>
+            {statusPills}
+          </div>
+        </section>
 
-      {tab === "cloudflare" ? (
-        <div className="grid gap-4">
-          <Card title="Cloudflare DNS + sending defaults">
-            <p className="text-sm opacity-80">
-              Connect Cloudflare for <b>one‑click DNS sync</b> (SPF/DKIM/DMARC/MX/A) and keep your <b>outbound IP pool</b> here so SPF suggestions are correct.
-            </p>
-
-            <div className="mt-4 grid gap-3">
-              <form className="grid gap-3" action="/api/domains/cloudflare/save" method="post">
-                <input type="hidden" name="domainId" value={domainId} />
-                <input type="hidden" name="redirectTo" value={redirectPath} />
-
-                <div className="grid md:grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">Server IP (for mail.{domainName} A record)</div>
-                    <Input name="serverIp" defaultValue={safeTrim(defaultServerIp)} placeholder="51.38.38.222" />
-                    <div className="text-xs opacity-60 mt-1">Used for A/MX defaults and Mailstack provisioning.</div>
-                  </div>
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">Cloudflare API token</div>
-                    {hasCloudflareToken && !replaceCloudflareToken ? (
-                      <div className="flex items-center gap-2">
-                        {/* Masked indicator (not submitted) */}
-                        <Input value="•••••••••••• (saved)" disabled aria-label="Cloudflare token saved" />
-                        <Button type="button" variant="ghost" onClick={() => setReplaceCloudflareToken(true)}>
-                          Replace
-                        </Button>
-                      </div>
-                    ) : (
-                      <Input
-                        name="cloudflareToken"
-                        placeholder={hasCloudflareToken ? "Paste new token to replace" : "CF API token"}
-                        autoComplete="off"
-                      />
-                    )}
-                    <div className="text-xs opacity-60 mt-1">
-                      Permissions: <b>Zone:Read</b> + <b>DNS:Edit</b>. {hasCloudflareToken ? "(Using token saved in Mailstack settings.)" : ""}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-xs opacity-70 mb-1">Outbound IPs (one per line — used in SPF suggestions)</div>
-                    <div className="ml-auto">
-                      <Button type="button" variant="ghost" onClick={detectOutboundIps} disabled={detectBusy}>
-                        {detectBusy ? "Detecting…" : "Detect from server"}
-                      </Button>
-                    </div>
-                  </div>
-                  <Textarea name="outboundIps" value={outIps} onChange={(e) => setOutIps(e.target.value)} rows={4} placeholder={`51.38.38.222\n51.38.38.223`} />
-                  {detectMsg ? <div className="text-xs opacity-70 mt-1">{detectMsg}</div> : null}
-                  {parsed.invalid.length ? (
-                    <div className="text-xs text-red-700 mt-1">Invalid lines ignored: {parsed.invalid.slice(0, 6).join(", ")}{parsed.invalid.length > 6 ? "…" : ""}</div>
-                  ) : (
-                    <div className="text-xs opacity-60 mt-1">Saved as workspace defaults (used for SPF suggestions before a tenant IP pool exists).</div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Button type="submit">Save settings</Button>
-                  <Copy text={safeTrim(defaultServerIp)} label="Copy server IP" />
-                  <Copy text={zoneText} label="Copy all DNS records" />
-                  {parsed.invalid.length ? <Pill tone="danger">{parsed.invalid.length} invalid IP line{parsed.invalid.length === 1 ? "" : "s"}</Pill> : null}
-                </div>
-              </form>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                <form action="/api/domains/cloudflare/init" method="post">
+        {tab === "cloudflare" ? (
+          <div className="grid gap-6">
+            <Card title="Cloudflare DNS cockpit" subtitle="Connect Cloudflare, save defaults, preview records, and push the required DNS bundle from one clean workspace.">
+              <div className="grid gap-5 2xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+                <form className="grid gap-5 rounded-[1.6rem] border border-slate-200/80 bg-white/90 p-5" action="/api/domains/cloudflare/save" method="post">
                   <input type="hidden" name="domainId" value={domainId} />
                   <input type="hidden" name="redirectTo" value={redirectPath} />
-                  <Button type="submit" variant="ghost">Initialize Cloudflare for SSL automation</Button>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Field label={`Server IP for mail.${domainName}`} hint="Used for A/MX defaults and mailbox provisioning.">
+                      <Input name="serverIp" defaultValue={safeTrim(defaultServerIp)} placeholder="51.38.38.222" />
+                    </Field>
+                    <Field label="Cloudflare API token" hint="Needs Zone:Read and DNS:Edit permissions.">
+                      {hasCloudflareToken && !replaceCloudflareToken ? (
+                        <div className="flex items-center gap-2">
+                          <Input value="Saved token" disabled aria-label="Cloudflare token saved" />
+                          <Button type="button" variant="ghost" onClick={() => setReplaceCloudflareToken(true)}>Replace</Button>
+                        </div>
+                      ) : (
+                        <Input name="cloudflareToken" placeholder={hasCloudflareToken ? "Paste new token to replace" : "CF API token"} autoComplete="off" />
+                      )}
+                    </Field>
+                  </div>
+
+                  <Field label="Outbound IP pool" hint="These IPs are used for SPF and Mailstack sending rotation.">
+                    <div className="grid gap-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-slate-500">One IP per line</span>
+                        <Button type="button" variant="ghost" onClick={detectOutboundIps} disabled={detectBusy}>
+                          {detectBusy ? "Detecting…" : "Detect from server"}
+                        </Button>
+                      </div>
+                      <Textarea name="outboundIps" value={outIps} onChange={(e) => setOutIps(e.target.value)} rows={6} placeholder={`51.38.38.222\n51.38.38.223`} className="font-mono text-sm" />
+                    </div>
+                    {detectMsg ? <span className="text-xs text-slate-500">{detectMsg}</span> : null}
+                    {parsed.invalid.length ? (
+                      <span className="text-xs text-red-700">Invalid IP lines ignored: {parsed.invalid.slice(0, 6).join(", ")}{parsed.invalid.length > 6 ? "…" : ""}</span>
+                    ) : null}
+                  </Field>
+
+                  <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+                    <Button type="submit">Save DNS defaults</Button>
+                    <Copy text={safeTrim(defaultServerIp)} label="Copy server IP" />
+                    <Copy text={zoneText} label="Copy all records" />
+                  </div>
                 </form>
 
-                {tenantId ? (
-                  <Button type="button" onClick={syncNow} disabled={busySync || !hasCloudflareToken}>
-                    {busySync ? "Syncing…" : "Sync DNS now"}
-                  </Button>
-                ) : null}
-              </div>
-
-              {msg ? <div className="text-sm">{msg}</div> : null}
-            </div>
-          </Card>
-
-          {children}
-        </div>
-      ) : (
-        <div className="grid gap-4">
-          <Card title="Sending defaults (SPF builder)">
-            <p className="text-sm opacity-80">
-              Store your <b>outbound IP pool</b> here so SPF suggestions stay accurate across all domains in this workspace.
-            </p>
-            <form className="mt-4 grid gap-3" action="/api/domains/dns-defaults/save" method="post">
-              <input type="hidden" name="domainId" value={domainId} />
-              <input type="hidden" name="redirectTo" value={redirectPath} />
-              <div className="grid md:grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs opacity-70 mb-1">Server IP (for mail.{domainName} A record)</div>
-                  <Input name="serverIp" defaultValue={safeTrim(defaultServerIp)} placeholder="51.38.38.222" />
-                </div>
-                <div>
-                  <div className="text-xs opacity-70 mb-1">Outbound IPs (one per line)</div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-xs opacity-70">Detect from server to avoid wrong IPs.</div>
-                    <div className="ml-auto">
-                      <Button type="button" variant="ghost" onClick={detectOutboundIps} disabled={detectBusy}>
-                        {detectBusy ? "Detecting…" : "Detect"}
-                      </Button>
+                <div className="grid gap-4 content-start">
+                  <div className="rounded-[1.6rem] border border-slate-900/10 bg-slate-950 p-5 text-white shadow-[0_20px_70px_rgba(15,23,42,0.16)]">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold">One-click DNS sync</div>
+                        <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-300">
+                          After defaults are saved, push SPF, DKIM, DMARC, MX, and A records through Cloudflare.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                        <form action="/api/domains/cloudflare/init" method="post">
+                          <input type="hidden" name="domainId" value={domainId} />
+                          <input type="hidden" name="redirectTo" value={redirectPath} />
+                          <Button type="submit" variant="ghost" className="bg-white/10 text-white border-white/15 hover:bg-white/15">Initialize SSL</Button>
+                        </form>
+                        {tenantId ? (
+                          <Button type="button" onClick={syncNow} disabled={busySync || !hasCloudflareToken}>
+                            {busySync ? "Syncing…" : "Sync DNS now"}
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
+                    {msg ? <div className="mt-4 rounded-2xl border border-white/10 bg-white/10 p-3 text-xs leading-5 text-slate-100">{msg}</div> : null}
                   </div>
-                  <Textarea name="outboundIps" value={outIps} onChange={(e) => setOutIps(e.target.value)} rows={4} placeholder={`51.38.38.222\n51.38.38.223`} />
-                  {detectMsg ? <div className="text-xs opacity-70 mt-1">{detectMsg}</div> : null}
-                  {parsed.invalid.length ? (
-                    <div className="text-xs text-red-700 mt-1">Invalid lines ignored: {parsed.invalid.slice(0, 6).join(", ")}{parsed.invalid.length > 6 ? "…" : ""}</div>
-                  ) : null}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <Button type="submit">Save defaults</Button>
-                <Copy text={zoneText} label="Copy all records" />
-              </div>
-            </form>
-          </Card>
 
-          <Card title="Manual DNS (copy/paste)">
-            <p className="text-sm opacity-80">Use these records in your DNS provider. TTL suggestions are included.</p>
-
-            <div className="mt-4 grid gap-3">
-              {dnsRows.map((r, idx) => (
-                <div key={idx} className="rounded-2xl border border-slate-200 bg-white p-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Badge>{r.type}</Badge>
-                    <div className="font-medium break-all">{r.name}</div>
-                    <div className="ml-auto flex items-center gap-2">
-                      {typeof r.ttl === "number" ? <Badge>TTL {r.ttl}</Badge> : null}
-                      {typeof r.priority === "number" ? <Badge>prio {r.priority}</Badge> : null}
-                      <Copy text={r.value} />
+                  <div className="rounded-[1.6rem] border border-slate-200/80 bg-white/90 p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-950">DNS bundle preview</div>
+                        <div className="mt-1 text-xs text-slate-500">Long values are scroll-safe and will not break the layout.</div>
+                      </div>
+                      <Copy text={zoneText} label="Copy bundle" />
                     </div>
+                    <pre className="mt-3 max-h-80 overflow-auto rounded-2xl border border-slate-800 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100 whitespace-pre">
+                      {zoneText}
+                    </pre>
                   </div>
-                  <Textarea readOnly rows={r.type === "TXT" ? 3 : 2} value={r.value} className="mt-2" />
                 </div>
-              ))}
-            </div>
-          </Card>
+              </div>
+            </Card>
 
-          {children}
-        </div>
-      )}
-    </div>
+            {children}
+          </div>
+        ) : (
+          <div className="grid gap-6">
+            <Card title="Manual DNS workspace" subtitle="Copy exact records to any DNS provider, then run a health check above.">
+              <div className="grid gap-5 2xl:grid-cols-[minmax(320px,0.55fr)_minmax(0,1.45fr)]">
+                <form className="grid gap-4 rounded-[1.6rem] border border-slate-200/80 bg-white/90 p-5 content-start" action="/api/domains/dns-defaults/save" method="post">
+                  <input type="hidden" name="domainId" value={domainId} />
+                  <input type="hidden" name="redirectTo" value={redirectPath} />
+                  <Field label="Server IP">
+                    <Input name="serverIp" defaultValue={safeTrim(defaultServerIp)} placeholder="51.38.38.222" />
+                  </Field>
+                  <Field label="Outbound IPs" hint="One IP per line; used for SPF suggestions.">
+                    <div className="grid gap-2">
+                      <div className="flex justify-end">
+                        <Button type="button" variant="ghost" onClick={detectOutboundIps} disabled={detectBusy}>{detectBusy ? "Detecting…" : "Detect"}</Button>
+                      </div>
+                      <Textarea name="outboundIps" value={outIps} onChange={(e) => setOutIps(e.target.value)} rows={6} placeholder={`51.38.38.222\n51.38.38.223`} className="font-mono text-sm" />
+                    </div>
+                    {detectMsg ? <span className="text-xs text-slate-500">{detectMsg}</span> : null}
+                  </Field>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="submit">Save defaults</Button>
+                    <Copy text={zoneText} label="Copy all records" />
+                  </div>
+                </form>
+
+                <div className="grid gap-3">
+                  {dnsRows.map((r, idx) => <DnsRecordCard key={idx} row={r} />)}
+                </div>
+              </div>
+            </Card>
+
+            {children}
+          </div>
+        )}
+      </div>
     </DnsTabCtx.Provider>
   );
 }
