@@ -10,6 +10,10 @@ function safeJson(v: any) {
   try { return JSON.parse(String(v || "{}")); } catch { return null; }
 }
 
+function isManualLookupJob(job: any) {
+  return safeJson(job?.payload)?.source === "manual_lookup";
+}
+
 export async function GET() {
   let s: any;
   try { s = await requireSession(); } catch { return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 }); }
@@ -22,8 +26,9 @@ export async function GET() {
     select: { id: true, status: true, payload: true, lastError: true, createdAt: true, lockedAt: true },
   });
 
-  const pendingJobs = jobs.filter((j: any) => j.status === "queued" || j.status === "running");
-  const latestDone = jobs.find((j: any) => j.status === "done" || j.status === "failed") || null;
+  const fleetJobs = jobs.filter((j: any) => !isManualLookupJob(j));
+  const pendingJobs = fleetJobs.filter((j: any) => j.status === "queued" || j.status === "running");
+  const latestDone = fleetJobs.find((j: any) => j.status === "done" || j.status === "failed") || null;
   const latestResult = latestDone ? safeJson(latestDone.lastError) : null;
   const byKey = new Map<string, any>();
   if (Array.isArray(latestResult?.results)) {

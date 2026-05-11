@@ -1,8 +1,8 @@
-# ColdMailPro v2.0.12
+# ColdMailPro v2.0.15
 
 A self-hosted cold email, lead management, warmup, deliverability, blacklist monitoring, and MailStack operations platform built with **Next.js 14**, **Prisma**, **MariaDB/MySQL**, and a Node.js worker.
 
-ColdMailPro v2.0.12 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor with explicit private resolver support.
+ColdMailPro v2.0.15 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor with explicit private resolver support.
 
 > ColdMailPro is proprietary software. See [License](#license) before deploying, modifying, redistributing, or selling access.
 
@@ -751,6 +751,8 @@ sudo systemctl restart coldmail-worker
 
 ColdMailPro v2.0.7 adds a dedicated **Blacklist Monitor** at:
 
+Manual lookup mode is also available on the Blacklist Monitor page. It lets operators test any custom domain or IPv4 address without saving it in the app, while still showing the exact provider, DNS query, resolver, raw output, and final interpretation.
+
 ```text
 /app/blacklist
 ```
@@ -1333,6 +1335,24 @@ This project is governed by the **ColdMailPro Proprietary License (MTA)** in `LI
 ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare, Google, OpenAI, or any mail provider. Product names are used only to describe integrations or workflow compatibility.
 
 ## Changelog
+
+### v2.0.15 - Manual blacklist lookup build fix
+
+- Fixed a React/ESLint build issue in the manual blacklist lookup UI caused by an unescaped apostrophe in JSX text.
+- No behavior change; manual blacklist lookup from v2.0.14 remains intact.
+
+### v2.0.14 - Manual blacklist lookup
+
+- Added manual blacklist testing for custom domains and IPv4 addresses that are not saved in ColdMailPro.
+- Manual lookups use the same DNSBL/URIBL providers, private resolver support, raw DNS output, and interpretation logic as fleet blacklist scans.
+- Manual results are shown with full provider-level audit logs and are not added to Domains, Mailboxes, or MailStack assets.
+
+### v2.0.13 - Blacklist audit logs
+
+- Blacklist monitor live logs now show every provider-level check.
+- Each provider log includes the asset, provider name, DNSBL zone, exact DNS query, resolver used, timeout, duration, raw DNS output, interpretation, and whether the response counted as a confirmed blacklist hit.
+- Provider detail cards now show resolver/output/interpretation metadata so users can compare ColdMailPro results with manual `dig @resolver query` checks.
+- DNS timeouts are now treated as lookup warnings instead of silently appearing as clear/no-listing results.
 
 ### v2.0.12 - Private resolver installation documentation
 

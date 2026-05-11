@@ -183,7 +183,7 @@ function reverseIp(ip: string) {
 
 function isDnsNotListedError(err: any) {
   const code = String(err?.code || "").toUpperCase();
-  return ["ENOTFOUND", "ENODATA", "ETIMEOUT"].includes(code);
+  return ["ENOTFOUND", "ENODATA"].includes(code);
 }
 
 export function parseBlacklistResolvers(value: any): string[] {
@@ -201,16 +201,21 @@ function makeResolver(resolvers?: string[]) {
   return resolver;
 }
 
-async function resolve4WithTimeout(query: string, timeoutMs: number, resolvers?: string[]): Promise<string[]> {
+async function resolve4WithTimeout(query: string, timeoutMs: number, resolvers?: string[]): Promise<{ responses: string[]; durationMs: number }> {
   let timer: NodeJS.Timeout | null = null;
   const resolver = makeResolver(resolvers);
+  const startedAt = Date.now();
   try {
-    return await Promise.race([
+    const responses = await Promise.race([
       resolver.resolve4(query),
       new Promise<string[]>((_, reject) => {
         timer = setTimeout(() => reject(Object.assign(new Error("DNS lookup timed out"), { code: "ETIMEOUT" })), timeoutMs);
       }),
     ]);
+    return { responses, durationMs: Date.now() - startedAt };
+  } catch (err: any) {
+    err.durationMs = Date.now() - startedAt;
+    throw err;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -233,7 +238,7 @@ function explainSpamhausSpecialCode(code: string) {
   return null;
 }
 
-function interpretProviderResponse(provider: BlacklistProvider, query: string, responses: string[]) {
+function interpretProviderResponse(provider: BlacklistProvider, query: string, responses: string[], meta?: { resolverLabel?: string; timeoutMs?: number; durationMs?: number }) {
   const uniqueResponses = Array.from(new Set((responses || []).map(String))).sort();
   const expectedCodes = expectedListingCodes(provider);
   const advisoryOnly = isAdvisoryOnlyProvider(provider);
@@ -252,6 +257,11 @@ function interpretProviderResponse(provider: BlacklistProvider, query: string, r
       warningCodes,
       detail: `Confirmed listing on ${providerLabel(provider)}. Matched code(s): ${confirmedListingCodes.join(", ")}${warningCodes.length ? `. Ignored warning/policy code(s): ${warningCodes.join(", ")}` : ""}`,
       countedAsListed: true,
+      resolver: meta?.resolverLabel || "system",
+      timeoutMs: meta?.timeoutMs,
+      durationMs: meta?.durationMs,
+      rawOutput: uniqueResponses.join(", "),
+      interpretation: "confirmed listing",
     };
   }
 
@@ -269,6 +279,11 @@ function interpretProviderResponse(provider: BlacklistProvider, query: string, r
         ? `${providerLabel(provider)} returned ${uniqueResponses.join(", ")}, but this provider is treated as advisory-only in ColdMailPro to avoid false positives. It is not counted as a blacklist hit.`
         : uniqueResponses.map((code) => explainPolicyBlockedCode(provider, code)).join(" "),
       countedAsListed: false,
+      resolver: meta?.resolverLabel || "system",
+      timeoutMs: meta?.timeoutMs,
+      durationMs: meta?.durationMs,
+      rawOutput: uniqueResponses.join(", "),
+      interpretation: advisoryOnly ? "advisory-only response" : "provider warning / query blocked",
     };
   }
 
@@ -283,6 +298,11 @@ function interpretProviderResponse(provider: BlacklistProvider, query: string, r
     warningCodes: [],
     detail: `Clear on ${providerLabel(provider)}`,
     countedAsListed: false,
+    resolver: meta?.resolverLabel || "system",
+    timeoutMs: meta?.timeoutMs,
+    durationMs: meta?.durationMs,
+    rawOutput: "NXDOMAIN / no A record",
+    interpretation: "clear",
   };
 }
 
@@ -299,13 +319,20 @@ export async function checkBlacklistAsset(asset: BlacklistAsset, opts?: { timeou
     responses: string[];
     detail: string;
     countedAsListed?: boolean;
+    matchedCodes?: string[];
+    warningCodes?: string[];
+    resolver?: string;
+    timeoutMs?: number;
+    durationMs?: number;
+    rawOutput?: string;
+    interpretation?: string;
   }>;
 
   for (const provider of providers) {
     const query = asset.type === "ip" ? `${reverseIp(asset.value)}.${provider.zone}` : `${asset.value}.${provider.zone}`;
     try {
-      const responses = await resolve4WithTimeout(query, timeoutMs, resolvers);
-      checks.push(interpretProviderResponse(provider, query, responses));
+      const resolved = await resolve4WithTimeout(query, timeoutMs, resolvers);
+      checks.push(interpretProviderResponse(provider, query, resolved.responses, { resolverLabel: resolvers.length ? resolvers.join(", ") : "system", timeoutMs, durationMs: resolved.durationMs }));
     } catch (err: any) {
       if (isDnsNotListedError(err)) {
         checks.push({
@@ -317,6 +344,11 @@ export async function checkBlacklistAsset(asset: BlacklistAsset, opts?: { timeou
           responses: [],
           detail: `Clear on ${providerLabel(provider)}; no DNSBL record returned.`,
           countedAsListed: false,
+          resolver: resolvers.length ? resolvers.join(", ") : "system",
+          timeoutMs,
+          durationMs: Number(err?.durationMs || 0),
+          rawOutput: String(err?.code || "NXDOMAIN"),
+          interpretation: "clear",
         });
       } else {
         checks.push({
@@ -328,6 +360,11 @@ export async function checkBlacklistAsset(asset: BlacklistAsset, opts?: { timeou
           responses: [],
           detail: `${providerLabel(provider)} lookup error: ${String(err?.message || err)}`,
           countedAsListed: false,
+          resolver: resolvers.length ? resolvers.join(", ") : "system",
+          timeoutMs,
+          durationMs: Number(err?.durationMs || 0),
+          rawOutput: String(err?.code || err?.message || "lookup error"),
+          interpretation: "lookup error",
         });
       }
     }
@@ -370,6 +407,17 @@ export async function runBlacklistCheck(assets: BlacklistAsset[], opts?: { timeo
       await opts?.onProgress?.(`Checking ${asset.type.toUpperCase()} ${asset.value} against ${providers.length} providers: ${providers.map(providerLabel).join(", ")}.`);
       const result = await checkBlacklistAsset(asset, { timeoutMs, resolvers });
       results.push(result);
+
+      for (const check of (result.checks || []) as any[]) {
+        const response = Array.isArray(check.responses) && check.responses.length ? check.responses.join(", ") : (check.rawOutput || "NXDOMAIN / no listing");
+        const counted = check.status === "listed" && check.countedAsListed !== false ? "yes" : "no";
+        await opts?.onProgress?.(`↳ ${asset.value} :: ${check.provider} (${check.zone})`);
+        await opts?.onProgress?.(`   query=${check.query}`);
+        await opts?.onProgress?.(`   resolver=${check.resolver || (resolvers.length ? resolvers.join(", ") : "system")} timeout=${check.timeoutMs || timeoutMs}ms duration=${Number(check.durationMs || 0)}ms`);
+        await opts?.onProgress?.(`   output=${response}`);
+        await opts?.onProgress?.(`   interpreted=${check.interpretation || check.status} counted_as_blacklist_hit=${counted}`);
+        await opts?.onProgress?.(`   detail=${check.detail}`);
+      }
 
       const listed = (result.checks || []).filter((c: any) => c.status === "listed" && c.countedAsListed !== false);
       const blocked = (result.checks || []).filter((c: any) => c.status === "blocked");

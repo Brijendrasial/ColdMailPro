@@ -1,1 +1,1 @@
-v2.0.12-private-resolver-readme-installation
+v2.0.15-blacklist-manual-lookup-eslint-fix

@@ -8,6 +8,10 @@ function safeJson(v: any) {
   try { return JSON.parse(String(v || "{}")); } catch { return null; }
 }
 
+function isManualLookupJob(job: any) {
+  return safeJson(job?.payload)?.source === "manual_lookup";
+}
+
 async function loadInitial(workspaceId: string) {
   const assets = await collectBlacklistAssets(prisma, workspaceId);
   const jobs = await prisma.job.findMany({
@@ -16,8 +20,9 @@ async function loadInitial(workspaceId: string) {
     take: 50,
     select: { id: true, status: true, payload: true, lastError: true, createdAt: true, lockedAt: true },
   });
-  const pendingJob = jobs.find((j: any) => j.status === "queued" || j.status === "running") || null;
-  const latestJob = jobs.find((j: any) => j.status === "done" || j.status === "failed") || null;
+  const fleetJobs = jobs.filter((j: any) => !isManualLookupJob(j));
+  const pendingJob = fleetJobs.find((j: any) => j.status === "queued" || j.status === "running") || null;
+  const latestJob = fleetJobs.find((j: any) => j.status === "done" || j.status === "failed") || null;
   const latestResult = latestJob ? safeJson(latestJob.lastError) : null;
   const byKey = new Map<string, any>();
   if (Array.isArray(latestResult?.results)) for (const r of latestResult.results) byKey.set(`${r.type}:${r.value}`, r);

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Pill, Input, Select } from "@/components/ui";
+import { Button, Pill, Input, Select, Textarea } from "@/components/ui";
 
 type Asset = {
   type: "ip" | "domain";
@@ -46,6 +46,13 @@ export default function BlacklistClient({ initial }: { initial: Payload }) {
   const [jobId, setJobId] = useState<string | null>(initial.pendingJob?.id || null);
   const [jobStatus, setJobStatus] = useState<string | null>(initial.pendingJob?.status || null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [manualInput, setManualInput] = useState("");
+  const [manualType, setManualType] = useState("auto");
+  const [manualJobId, setManualJobId] = useState<string | null>(null);
+  const [manualJobStatus, setManualJobStatus] = useState<string | null>(null);
+  const [manualLogs, setManualLogs] = useState<string[]>([]);
+  const [manualResults, setManualResults] = useState<any[]>([]);
+  const [manualLoading, setManualLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [type, setType] = useState("all");
   const [status, setStatus] = useState("all");
@@ -81,6 +88,42 @@ export default function BlacklistClient({ initial }: { initial: Payload }) {
     }
   }
 
+  function parseManualTargets() {
+    return manualInput
+      .split(/[\n,;\s]+/g)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 25)
+      .map((value) => ({ type: manualType, value }));
+  }
+
+  async function startManualCheck() {
+    const customTargets = parseManualTargets();
+    if (!customTargets.length) {
+      setManualLogs(["Enter at least one domain or IPv4 address to test."]);
+      return;
+    }
+    setManualLoading(true);
+    setManualLogs([]);
+    setManualResults([]);
+    try {
+      const res = await fetch("/api/blacklist/check", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ customTargets }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Could not start manual blacklist lookup");
+      setManualJobId(json.jobId);
+      setManualJobStatus(json.status || "queued");
+      setManualLogs([`Queued manual lookup for ${json.targetCount || customTargets.length} custom asset(s).`]);
+    } catch (e: any) {
+      setManualLogs([`Error: ${String(e?.message || e)}`]);
+    } finally {
+      setManualLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!jobId) return;
     let stop = false;
@@ -104,6 +147,28 @@ export default function BlacklistClient({ initial }: { initial: Payload }) {
     tick();
     return () => { stop = true; };
   }, [jobId]);
+
+  useEffect(() => {
+    if (!manualJobId) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/blacklist/check/status?jobId=${encodeURIComponent(manualJobId)}`, { cache: "no-store" });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Manual lookup status failed");
+        if (stop) return;
+        setManualJobStatus(json?.job?.status || null);
+        setManualLogs((json?.logs || []).map((l: any) => String(l.line || "")));
+        if (Array.isArray(json?.result?.results)) setManualResults(json.result.results);
+        if (json?.job?.status === "done" || json?.job?.status === "failed") return;
+        setTimeout(tick, 1800);
+      } catch (e: any) {
+        if (!stop) setManualLogs((prev) => [...prev, `Manual status error: ${String(e?.message || e)}`]);
+      }
+    };
+    tick();
+    return () => { stop = true; };
+  }, [manualJobId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -157,6 +222,20 @@ export default function BlacklistClient({ initial }: { initial: Payload }) {
         ) : null}
       </section>
 
+
+      <ManualLookupPanel
+        manualInput={manualInput}
+        setManualInput={setManualInput}
+        manualType={manualType}
+        setManualType={setManualType}
+        startManualCheck={startManualCheck}
+        manualLoading={manualLoading}
+        manualJobStatus={manualJobStatus}
+        manualJobId={manualJobId}
+        manualLogs={manualLogs}
+        manualResults={manualResults}
+      />
+
       <section className="rounded-[2rem] border border-white/70 bg-white/82 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.07)] backdrop-blur-xl">
         <div className="grid gap-3 lg:grid-cols-[1fr_180px_200px]">
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search domain, IP, or source..." />
@@ -184,6 +263,108 @@ export default function BlacklistClient({ initial }: { initial: Payload }) {
       </section>
     </div>
   );
+}
+
+
+function ManualLookupPanel({
+  manualInput,
+  setManualInput,
+  manualType,
+  setManualType,
+  startManualCheck,
+  manualLoading,
+  manualJobStatus,
+  manualJobId,
+  manualLogs,
+  manualResults,
+}: {
+  manualInput: string;
+  setManualInput: (value: string) => void;
+  manualType: string;
+  setManualType: (value: string) => void;
+  startManualCheck: () => void;
+  manualLoading: boolean;
+  manualJobStatus: string | null;
+  manualJobId: string | null;
+  manualLogs: string[];
+  manualResults: any[];
+}) {
+  const running = manualJobStatus === "queued" || manualJobStatus === "running";
+  const status = running ? manualJobStatus : manualResults.length ? summarizeManualStatus(manualResults) : "unknown";
+
+  return (
+    <section className="rounded-[2rem] border border-white/70 bg-white/82 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.07)] backdrop-blur-xl">
+      <div className="grid gap-5 xl:grid-cols-[minmax(360px,0.95fr)_minmax(420px,1.05fr)] xl:items-start">
+        <div>
+          <div className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-500">Manual blacklist lookup</div>
+          <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">Test any custom domain or IP</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Paste domains or IPv4 addresses that are not saved in ColdMailPro. The lookup uses the same providers, resolver, raw DNS output, and interpretation rules as the fleet monitor.
+          </p>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-[180px_1fr]">
+            <Select value={manualType} onChange={(e) => setManualType(e.target.value)}>
+              <option value="auto">Auto-detect</option>
+              <option value="domain">Domain only</option>
+              <option value="ip">IP only</option>
+            </Select>
+            <Textarea
+              value={manualInput}
+              onChange={(e) => setManualInput(e.target.value)}
+              placeholder={"example.com\n46.105.154.97\n51.38.27.217"}
+              className="min-h-[120px] font-mono text-sm"
+            />
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button onClick={startManualCheck} disabled={manualLoading || running}>{running ? "Testing..." : "Test custom assets"}</Button>
+            <Pill tone={statusTone(String(status))}>{running ? `Manual ${manualJobStatus}` : statusLabel(String(status))}</Pill>
+            {manualJobId ? <span className="text-xs text-slate-500">Job {manualJobId.slice(0, 8)}</span> : null}
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/70 p-3 text-xs leading-5 text-indigo-900">
+            Manual tests are not added to your Domains, Mailboxes, or MailStack assets. They are saved only in this lookup job audit log.
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {(running || manualLogs.length > 0) ? (
+            <div className="rounded-[1.5rem] border border-slate-800 bg-slate-950 p-4 text-xs text-slate-200 shadow-inner">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="font-semibold text-white">Manual lookup log</div>
+                <div className="text-slate-400">{manualJobId ? `Job ${manualJobId.slice(0, 8)}` : "No job"}</div>
+              </div>
+              <div className="max-h-64 space-y-1 overflow-auto font-mono leading-5">
+                {(manualLogs.length ? manualLogs : ["Waiting for worker..."]).map((line, i) => <div key={i}>{line}</div>)}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50/80 p-6 text-sm leading-6 text-slate-600">
+              Run a manual lookup to see the full provider-by-provider audit trail here.
+            </div>
+          )}
+
+          {manualResults.length ? (
+            <div className="grid gap-3">
+              {manualResults.map((result: any) => (
+                <AssetCard
+                  key={`manual:${result.type}:${result.value}`}
+                  asset={{ type: result.type, value: result.value, label: result.label || result.value, sources: result.sources || ["Manual lookup"], check: result }}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function summarizeManualStatus(results: any[]) {
+  if (results.some((r) => r?.status === "listed")) return "listed";
+  if (results.some((r) => r?.status === "warning")) return "warning";
+  if (results.length && results.every((r) => r?.status === "clear")) return "clear";
+  return "unknown";
 }
 
 function Metric({ label, value, hint, danger = false, warn = false }: { label: string; value: React.ReactNode; hint: string; danger?: boolean; warn?: boolean }) {
@@ -260,11 +441,15 @@ function AssetCard({ asset }: { asset: Asset }) {
                   </div>
                   <Pill tone={statusTone(String(c.status))}>{statusLabel(String(c.status))}</Pill>
                 </div>
-                <div className="mt-2 grid gap-2 text-xs lg:grid-cols-[90px_1fr]">
+                <div className="mt-2 grid gap-2 text-xs lg:grid-cols-[110px_1fr]">
                   <div className="font-semibold text-slate-500">Query</div>
                   <div className="break-all rounded-xl bg-slate-50 px-2 py-1 font-mono text-slate-700">{c.query}</div>
-                  <div className="font-semibold text-slate-500">Response</div>
-                  <div className="break-all rounded-xl bg-slate-50 px-2 py-1 font-mono text-slate-700">{Array.isArray(c.responses) && c.responses.length ? c.responses.join(", ") : "NXDOMAIN / no listing"}</div>
+                  <div className="font-semibold text-slate-500">Resolver</div>
+                  <div className="break-all rounded-xl bg-slate-50 px-2 py-1 font-mono text-slate-700">{c.resolver || "system"} · timeout {c.timeoutMs || "—"}ms · duration {c.durationMs ?? "—"}ms</div>
+                  <div className="font-semibold text-slate-500">Raw output</div>
+                  <div className="break-all rounded-xl bg-slate-50 px-2 py-1 font-mono text-slate-700">{Array.isArray(c.responses) && c.responses.length ? c.responses.join(", ") : (c.rawOutput || "NXDOMAIN / no listing")}</div>
+                  <div className="font-semibold text-slate-500">Interpretation</div>
+                  <div className="break-all rounded-xl bg-slate-50 px-2 py-1 text-slate-700">{c.interpretation || c.status} · counted as blacklist hit: {(c.status === "listed" && c.countedAsListed !== false) ? "yes" : "no"}</div>
                 </div>
                 <div className="mt-2 text-xs leading-5 text-slate-600">{c.detail}</div>
               </div>
