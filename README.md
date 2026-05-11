@@ -1,8 +1,8 @@
-# ColdMailPro v2.0.15
+# ColdMailPro v2.0.16
 
 A self-hosted cold email, lead management, warmup, deliverability, blacklist monitoring, and MailStack operations platform built with **Next.js 14**, **Prisma**, **MariaDB/MySQL**, and a Node.js worker.
 
-ColdMailPro v2.0.15 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor with explicit private resolver support.
+ColdMailPro v2.0.16 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor with explicit private resolver support.
 
 > ColdMailPro is proprietary software. See [License](#license) before deploying, modifying, redistributing, or selling access.
 
@@ -749,6 +749,24 @@ sudo systemctl restart coldmail-worker
 
 ## Blacklist monitoring
 
+### Reputation Intelligence Center (v2.0.16)
+
+The Blacklist tab is now a full reputation operations workspace, not only a listed/clear checker. It includes:
+
+- Fleet reputation score for all configured domains and outbound IPs.
+- Per-domain/IP reputation score and severity.
+- Resolver diagnostics so users can see whether private DNSBL lookups are working.
+- Provider diagnostics with exact DNS query, resolver, timeout, lookup duration, raw DNS output, and interpretation.
+- Provider-specific meaning, impact notes, and delisting/help links.
+- Asset impact view showing which ColdMailPro sources are connected to the domain or IP.
+- Auto remediation checklist for listed assets, resolver warnings, rDNS/PTR issues, SPF/DMARC issues, and SMTP port 25 issues.
+- IP infrastructure checks: PTR/rDNS, forward-confirmed rDNS, and SMTP port 25 banner probe.
+- Domain infrastructure checks: A, MX, SPF, and DMARC.
+- Exportable CSV and JSON reports for the current filtered view.
+- Manual blacklist lookup for custom domains and IPs that are not saved in ColdMailPro.
+
+This makes the tab useful for daily deliverability operations, client reporting, troubleshooting resolver false positives, and deciding which sending assets should be paused or remediated first.
+
 ColdMailPro v2.0.7 adds a dedicated **Blacklist Monitor** at:
 
 Manual lookup mode is also available on the Blacklist Monitor page. It lets operators test any custom domain or IPv4 address without saving it in the app, while still showing the exact provider, DNS query, resolver, raw output, and final interpretation.
@@ -1335,6 +1353,18 @@ This project is governed by the **ColdMailPro Proprietary License (MTA)** in `LI
 ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare, Google, OpenAI, or any mail provider. Product names are used only to describe integrations or workflow compatibility.
 
 ## Changelog
+
+
+### v2.0.16 - Blacklist Reputation Intelligence Center
+
+- Added fleet and per-asset reputation scoring.
+- Added resolver diagnostics/provider test mode to separate true blacklist hits from DNSBL resolver issues.
+- Added provider-specific explanations, severity, impact notes, and delisting/help links.
+- Added asset impact view and remediation checklist.
+- Added IP infrastructure checks: PTR/rDNS, forward-confirmed rDNS, and SMTP port 25 banner probe.
+- Added domain infrastructure checks: A, MX, SPF, and DMARC.
+- Added exportable blacklist reports in CSV and JSON from the UI.
+- Expanded live logs so every DNSBL, infrastructure, and resolver diagnostic is auditable.
 
 ### v2.0.15 - Manual blacklist lookup build fix
 
