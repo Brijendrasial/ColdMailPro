@@ -1,8 +1,8 @@
-# ColdMailPro v2.0.7
+# ColdMailPro v2.0.12
 
-A self-hosted cold email, lead management, warmup, deliverability, and MailStack operations platform built with **Next.js 14**, **Prisma**, **MariaDB/MySQL**, and a Node.js worker.
+A self-hosted cold email, lead management, warmup, deliverability, blacklist monitoring, and MailStack operations platform built with **Next.js 14**, **Prisma**, **MariaDB/MySQL**, and a Node.js worker.
 
-ColdMailPro v2.0.9 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor for sending domains and outbound IPs.
+ColdMailPro v2.0.12 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor with explicit private resolver support.
 
 > ColdMailPro is proprietary software. See [License](#license) before deploying, modifying, redistributing, or selling access.
 
@@ -25,11 +25,12 @@ ColdMailPro v2.0.9 is the redesigned command-center release with full-app UI upg
 13. [Warmup setup](#warmup-setup)
 14. [Upgrade instructions](#upgrade-instructions)
 15. [Blacklist monitoring](#blacklist-monitoring)
-16. [Troubleshooting](#troubleshooting)
-17. [Security checklist](#security-checklist)
-18. [v2.0.0 release notes](#v200-release-notes)
-19. [Patch history](#patch-history)
-20. [License](#license)
+16. [Private DNS resolver for blacklist monitoring](#private-dns-resolver-for-blacklist-monitoring)
+17. [Troubleshooting](#troubleshooting)
+18. [Security checklist](#security-checklist)
+19. [v2.0.0 release notes](#v200-release-notes)
+20. [Patch history](#patch-history)
+21. [License](#license)
 
 ---
 
@@ -169,6 +170,9 @@ SHADOW_DATABASE_URL="mysql://coldmail:ColdmailPass123@127.0.0.1:3306/coldmail_sh
 MAILSTACK_SCRIPT=./scripts/mailstack.sh
 MAILSTACK_ADDON_SCRIPT=./scripts/mailstack-addon.sh
 MAILSTACK_ACME_EMAIL=you@yourdomain.com
+
+# Recommended for accurate blacklist checks after installing Unbound
+BLACKLIST_DNS_RESOLVERS=127.0.0.1
 ```
 
 Generate secure secrets:
@@ -813,19 +817,144 @@ Recommended production behavior:
 > Note: DNSBL providers can occasionally rate-limit or block lookups from some DNS resolvers. If a provider returns repeated lookup errors, try using a trusted recursive resolver on the server and rerun the check.
 
 
-### Blacklist monitor resolver accuracy
+## Private DNS resolver for blacklist monitoring
 
-For reliable DNSBL/URIBL checks, use a local recursive resolver such as Unbound and set:
+DNSBL and URIBL providers often block, rate-limit, or return policy responses for shared datacenter resolvers. For example, a VPS provider resolver can make Spamhaus/URIBL checks look blocked even when your domain or IP is clean.
+
+For production blacklist monitoring, install a private local recursive resolver and make ColdMailPro use it directly.
+
+### Recommended: install Unbound
+
+```bash
+sudo dnf install -y unbound bind-utils
+
+sudo tee /etc/unbound/unbound.conf >/dev/null <<'EOF'
+server:
+    interface: 127.0.0.1
+    port: 53
+    access-control: 127.0.0.0/8 allow
+
+    do-ip4: yes
+    do-ip6: no
+    do-udp: yes
+    do-tcp: yes
+
+    hide-identity: yes
+    hide-version: yes
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: no
+
+    prefetch: yes
+    qname-minimisation: yes
+    cache-min-ttl: 60
+    cache-max-ttl: 86400
+
+    num-threads: 2
+    msg-cache-size: 64m
+    rrset-cache-size: 128m
+EOF
+
+sudo systemctl enable --now unbound
+sudo systemctl restart unbound
+```
+
+### Fix systemd notify issue if Unbound fails to start
+
+Some minimal VPS images fail with `sd_notify failed /run/systemd/notify`. If that happens, add a systemd override:
+
+```bash
+sudo mkdir -p /etc/systemd/system/unbound.service.d
+
+sudo tee /etc/systemd/system/unbound.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Type=simple
+NotifyAccess=none
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl reset-failed unbound
+sudo systemctl restart unbound
+sudo systemctl status unbound --no-pager -l
+```
+
+### Test the private resolver
+
+```bash
+dig @127.0.0.1 google.com A +short
+```
+
+A working resolver should return IP addresses.
+
+Test a Spamhaus DBL domain lookup:
+
+```bash
+dig @127.0.0.1 example.com.dbl.spamhaus.org A
+```
+
+For a clean domain, `NXDOMAIN` or no answer means it is not listed.
+
+Test an IP against Spamhaus ZEN by reversing the IP octets:
+
+```bash
+# Example for 46.105.154.97
+dig @127.0.0.1 97.154.105.46.zen.spamhaus.org A
+```
+
+For a clean IP, `NXDOMAIN` or no answer means it is not listed.
+
+### Force ColdMailPro to use the private resolver
+
+Add this to `.env`:
 
 ```env
 BLACKLIST_DNS_RESOLVERS=127.0.0.1
 ```
 
-This forces ColdMailPro blacklist checks to query the local resolver directly instead of relying on the operating system resolver. It avoids stale results from shared datacenter resolvers and makes the app match manual checks like:
+Then restart the app and worker:
 
 ```bash
-dig @127.0.0.1 articlesprey.com.dbl.spamhaus.org A
+sudo systemctl restart coldmail-pro-dev
+sudo systemctl restart coldmail-worker
 ```
+
+Run a blacklist check again from:
+
+```text
+/app/blacklist
+```
+
+The live log should show:
+
+```text
+Using blacklist DNS resolver(s): 127.0.0.1
+```
+
+### Optional: make `/etc/resolv.conf` use Unbound
+
+ColdMailPro can use `BLACKLIST_DNS_RESOLVERS=127.0.0.1` even if the whole server still uses another resolver. If you also want the server itself to use Unbound, update `/etc/resolv.conf`:
+
+```bash
+sudo cp /etc/resolv.conf /etc/resolv.conf.backup
+
+sudo tee /etc/resolv.conf >/dev/null <<'EOF'
+nameserver 127.0.0.1
+EOF
+```
+
+If your server uses cloud-init and `/etc/resolv.conf` is overwritten on reboot, disable cloud-init network resolver rewriting:
+
+```bash
+sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg >/dev/null <<'EOF'
+network: {config: disabled}
+EOF
+```
+
+Then set `/etc/resolv.conf` again and restart Unbound.
+
+### Optional: Spamhaus DQS
+
+For high-volume or commercial blacklist monitoring, use Spamhaus DQS instead of public mirrors. DQS reduces public resolver blocks and gives more reliable Spamhaus responses. If you use DQS, configure its provider-specific query zone according to your Spamhaus account instructions.
 
 Provider policy responses such as Spamhaus `127.255.255.x` are shown as provider warnings and are not counted as confirmed blacklist hits.
 
@@ -1204,6 +1333,14 @@ This project is governed by the **ColdMailPro Proprietary License (MTA)** in `LI
 ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare, Google, OpenAI, or any mail provider. Product names are used only to describe integrations or workflow compatibility.
 
 ## Changelog
+
+### v2.0.12 - Private resolver installation documentation
+
+- Added a full Unbound private resolver installation guide for blacklist monitoring.
+- Documented `BLACKLIST_DNS_RESOLVERS=127.0.0.1` in production installation steps.
+- Added resolver tests for normal DNS, Spamhaus DBL, and Spamhaus ZEN lookups.
+- Added systemd override instructions for VPS images where Unbound fails with `sd_notify failed`.
+- Added cloud-init `/etc/resolv.conf` persistence notes.
 
 ### v2.0.5 - Preserve reply thread subject
 
