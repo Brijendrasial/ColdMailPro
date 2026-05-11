@@ -47,6 +47,14 @@ const schema = z.object({
   DOMAIN_DNSCHECK_POLL_MINUTES: z.coerce.number().int().positive().default(720), // 12h
   DOMAIN_DNSCHECK_STALE_HOURS: z.coerce.number().int().positive().default(24),
 
+  // --- Blacklist/reputation monitoring ---
+  AUTO_BLACKLIST_CHECK_ENABLED: z.coerce.boolean().default(true),
+  BLACKLIST_CHECK_POLL_MINUTES: z.coerce.number().int().positive().default(720), // 12h
+  BLACKLIST_CHECK_STALE_HOURS: z.coerce.number().int().positive().default(24),
+  BLACKLIST_DNS_TIMEOUT_MS: z.coerce.number().int().positive().default(4500),
+  BLACKLIST_CHECK_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  BLACKLIST_DNS_RESOLVERS: z.string().optional(),
+
   // Warmup suite
   AUTO_WARMUP_ENABLED: z.coerce.boolean().default(true),
   // Enable verbose warmup logs in worker.
@@ -176,6 +184,12 @@ export const env = schema.parse({
   AUTO_DOMAIN_DNSCHECK_ENABLED: process.env.AUTO_DOMAIN_DNSCHECK_ENABLED,
   DOMAIN_DNSCHECK_POLL_MINUTES: process.env.DOMAIN_DNSCHECK_POLL_MINUTES,
   DOMAIN_DNSCHECK_STALE_HOURS: process.env.DOMAIN_DNSCHECK_STALE_HOURS,
+  AUTO_BLACKLIST_CHECK_ENABLED: process.env.AUTO_BLACKLIST_CHECK_ENABLED,
+  BLACKLIST_CHECK_POLL_MINUTES: process.env.BLACKLIST_CHECK_POLL_MINUTES,
+  BLACKLIST_CHECK_STALE_HOURS: process.env.BLACKLIST_CHECK_STALE_HOURS,
+  BLACKLIST_DNS_TIMEOUT_MS: process.env.BLACKLIST_DNS_TIMEOUT_MS,
+  BLACKLIST_CHECK_CONCURRENCY: process.env.BLACKLIST_CHECK_CONCURRENCY,
+  BLACKLIST_DNS_RESOLVERS: process.env.BLACKLIST_DNS_RESOLVERS,
 
   // Warmup suite
   AUTO_WARMUP_ENABLED: process.env.AUTO_WARMUP_ENABLED,

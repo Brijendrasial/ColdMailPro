@@ -1,14 +1,8 @@
-## v2.0.6 replies sync update
-
-- Added **Sync inbox now** on the Replies page.
-- Replies refresh now queues immediate IMAP sync jobs instead of only refreshing saved database rows.
-- Default reply polling is faster and supports optional `IMAP_POLL_SECONDS=30`.
-
-# ColdMailPro v2.0.0
+# ColdMailPro v2.0.7
 
 A self-hosted cold email, lead management, warmup, deliverability, and MailStack operations platform built with **Next.js 14**, **Prisma**, **MariaDB/MySQL**, and a Node.js worker.
 
-ColdMailPro v2.0.0 is the redesigned command-center release. It includes a full product UI refresh, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, live operational logs, and clearer production installation guidance.
+ColdMailPro v2.0.9 is the redesigned command-center release with full-app UI upgrades, improved MailStack operations, selectable Roundcube updates, better DNS workflows, stronger lead enrichment, faster Replies sync, and an improved Blacklist Monitor for sending domains and outbound IPs.
 
 > ColdMailPro is proprietary software. See [License](#license) before deploying, modifying, redistributing, or selling access.
 
@@ -30,10 +24,11 @@ ColdMailPro v2.0.0 is the redesigned command-center release. It includes a full 
 12. [Optional email verification](#optional-email-verification)
 13. [Warmup setup](#warmup-setup)
 14. [Upgrade instructions](#upgrade-instructions)
-15. [Troubleshooting](#troubleshooting)
-16. [Security checklist](#security-checklist)
-17. [v2.0.0 release notes](#v200-release-notes)
-18. [Patch history](#patch-history)
+15. [Blacklist monitoring](#blacklist-monitoring)
+16. [Troubleshooting](#troubleshooting)
+17. [Security checklist](#security-checklist)
+18. [v2.0.0 release notes](#v200-release-notes)
+19. [Patch history](#patch-history)
 20. [License](#license)
 
 ---
@@ -49,6 +44,7 @@ Core modules:
 - **Leads** — lead database, CSV import, dedupe, suppression checks, stages, saved views, enrichment, email discovery, and valid-only import.
 - **Mailboxes** — SMTP/IMAP sender management, health checks, test sends, warmup controls, pools, routing, cooldowns, throttles, and mailbox-level stats.
 - **Domains** — SPF/DKIM/DMARC/MX setup, Cloudflare DNS sync, DKIM rotation, outbound IP pools, DNS checks, and MailStack provisioning.
+- **Blacklist Monitor** — checks all configured sending domains, MailStack domains, outbound IPs, tenant IPs, and mailbox-bound IPs against common DNSBL/URIBL providers.
 - **Replies** — shared inbox, reply triage, conversation timeline, lead context, AI draft assistance, assignment, snooze, and reply sending.
 - **Analytics** — sending trends, reply/open/bounce stats, campaign leaderboards, mailbox reputation, funnel views, heatmaps, and event streams.
 - **Logs** — observability cockpit for DB writes, worker jobs, mail sends, webhooks, UI/API errors, and message attempts.
@@ -747,6 +743,92 @@ sudo systemctl restart coldmail-worker
 
 ---
 
+## Blacklist monitoring
+
+ColdMailPro v2.0.7 adds a dedicated **Blacklist Monitor** at:
+
+```text
+/app/blacklist
+```
+
+It watches the assets already configured inside the software:
+
+- Sending domains from the Domains module
+- Sender domains from mailbox `fromEmail` addresses
+- MailStack tenant domains
+- MailStack server IP
+- MailStack outbound IP pool
+- MailStack tenant IPs
+- Mailbox-bound local sending IPs
+
+The monitor checks IPs against common DNSBL providers and domains against common domain/URI blacklist providers. Results are stored in the job history and shown with provider-level details.
+
+### Blacklist result accuracy notes
+
+Blacklist providers can return both reputation hits and provider-side query warnings. ColdMailPro v2.0.9 separates these so the app does not mark an asset as blacklisted just because a provider blocked the lookup.
+
+Important behavior:
+
+- Provider details show the exact provider name, zone, DNS query, DNS response, and interpretation.
+- Spamhaus `127.255.255.0/24` responses are treated as provider/query warnings, not blacklist hits.
+- Spamhaus `127.255.255.254` usually means the query was made through a public/open resolver or generic reverse DNS.
+- Spamhaus `127.255.255.255` usually means excessive query volume or resolver usage limits.
+- These provider warnings should be fixed by using a proper local recursive resolver or Spamhaus DQS, but they should not be counted as listed assets.
+
+### Manual check
+
+Open:
+
+```text
+/app/blacklist
+```
+
+Click:
+
+```text
+Check blacklist now
+```
+
+The page shows live worker logs, asset status, provider hits, warnings, and last checked time.
+
+### Automatic checks
+
+The worker can run blacklist checks automatically. Add or adjust these `.env` values:
+
+```env
+AUTO_BLACKLIST_CHECK_ENABLED=true
+BLACKLIST_CHECK_POLL_MINUTES=720
+BLACKLIST_CHECK_STALE_HOURS=24
+BLACKLIST_DNS_TIMEOUT_MS=4500
+BLACKLIST_CHECK_CONCURRENCY=5
+```
+
+Recommended production behavior:
+
+- Run automatic checks every 12 hours.
+- Treat any listed domain/IP as a deliverability incident.
+- Pause or reduce sending from affected mailboxes until the cause is fixed.
+- Check rDNS, HELO, SPF, DKIM, DMARC, bounce rate, complaint risk, and IP warmup state before requesting delisting.
+
+> Note: DNSBL providers can occasionally rate-limit or block lookups from some DNS resolvers. If a provider returns repeated lookup errors, try using a trusted recursive resolver on the server and rerun the check.
+
+
+### Blacklist monitor resolver accuracy
+
+For reliable DNSBL/URIBL checks, use a local recursive resolver such as Unbound and set:
+
+```env
+BLACKLIST_DNS_RESOLVERS=127.0.0.1
+```
+
+This forces ColdMailPro blacklist checks to query the local resolver directly instead of relying on the operating system resolver. It avoids stale results from shared datacenter resolvers and makes the app match manual checks like:
+
+```bash
+dig @127.0.0.1 articlesprey.com.dbl.spamhaus.org A
+```
+
+Provider policy responses such as Spamhaus `127.255.255.x` are shown as provider warnings and are not counted as confirmed blacklist hits.
+
 ## Troubleshooting
 
 ### Build fails because Tailwind class does not exist
@@ -940,7 +1022,37 @@ ColdMailPro v2.0.0 is the full redesigned command-center release.
 
 ## Patch history
 
+
+### v2.0.10 - Conservative blacklist provider code handling
+
+- Treats provider policy/query-block DNSBL responses as warnings, not blacklist hits.
+- Only counts high-confidence provider return codes as real listings.
+- Prevents false positives from shared/public datacenter resolvers such as OVH resolver `213.186.33.99`.
+- Shows exact provider, zone, query, response, matched codes, and warning codes in the Blacklist Monitor.
+
+### v2.0.9
+
+- Improved Blacklist Monitor transparency with exact provider names, DNS zones, query names, and DNS responses.
+- Fixed false positive Spamhaus results by treating `127.255.255.0/24` return codes as provider/query warnings instead of blacklist hits.
+- Live blacklist logs now list every provider checked and show which provider returned a real listing versus a blocked/query warning.
+- Blacklist cards now show all provider-level checks instead of only a short summary.
+
 This section summarizes the important patch line that led to the v2 series.
+
+
+
+### v2.0.8
+
+- Added missing blacklist monitor environment variables to `.env.example`.
+- Documented automatic blacklist sweep controls for domains and outbound IPs.
+
+### v2.0.7 — Blacklist Monitor
+
+- Added new `/app/blacklist` Blacklist Monitor page.
+- Checks all configured sending domains, MailStack tenant domains, outbound IP pool IPs, tenant IPs, and mailbox-bound IPs.
+- Added manual **Check blacklist now** action with live worker logs.
+- Added automatic worker sweep controls via `AUTO_BLACKLIST_CHECK_ENABLED`, `BLACKLIST_CHECK_POLL_MINUTES`, and related environment variables.
+- Added provider-level DNSBL/URIBL results for each domain/IP.
 
 ### v1.75 foundation
 
@@ -1098,3 +1210,10 @@ ColdMailPro is not affiliated with Instantly.ai, Mailgun, Roundcube, Cloudflare,
 - AI automatic replies now preserve the original inbound/outbound thread subject instead of using an AI-generated subject.
 - Manual and AI reply send paths keep `In-Reply-To` and `References` headers while reusing the existing conversation subject.
 - Prevents second and later AI replies from changing the email subject and splitting the conversation into multiple threads.
+
+
+### v2.0.11
+
+- Added `BLACKLIST_DNS_RESOLVERS` so blacklist checks can force a local resolver like `127.0.0.1`.
+- Blacklist live logs now show whether system DNS or explicit resolver configuration is being used.
+- Helps match manual `dig @127.0.0.1 ...` DNSBL checks and avoid stale/provider-warning confusion.

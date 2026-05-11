@@ -22,6 +22,7 @@ import * as dns from "node:dns/promises";
 import { writeTenantFiles } from "@/lib/mailstack";
 import { encrypt } from "@/lib/crypto";
 import nodemailer from "nodemailer";
+import { collectBlacklistAssets, parseBlacklistResolvers, runBlacklistCheck, type BlacklistAsset } from "@/lib/blacklist";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1938,6 +1939,8 @@ async function executeJob(job: any, payload: any) {
     await handleMailboxTestSend(job.id, payload);
   } else if (job.type === "domain_dns_check") {
     await handleDomainDnsCheck(job.id, payload);
+  } else if (job.type === "blacklist_check") {
+    await handleBlacklistCheck(job.id, payload);
   } else if (job.type === "warmup_tick") {
     await handleWarmupTick(job.id, payload);
   } else if (job.type === "warmup_reply") {
@@ -3075,6 +3078,100 @@ async function enqueueDomainDnsCheckSweep() {
   console.log("[domain-dns] sweep", { total: domains.length, enqueued, skipped, staleHours: env.DOMAIN_DNSCHECK_STALE_HOURS });
 }
 
+async function handleBlacklistCheck(jobId: string, payload: any) {
+  const workspaceId = String(payload?.workspaceId || "");
+  if (!workspaceId) throw new Error("workspaceId missing");
+
+  let assets: BlacklistAsset[] = [];
+  if (Array.isArray(payload?.targets) && payload.targets.length) {
+    assets = payload.targets
+      .map((t: any) => ({
+        type: String(t?.type || "") === "ip" ? "ip" : "domain",
+        value: String(t?.value || "").trim().toLowerCase(),
+        label: String(t?.label || t?.value || ""),
+        sources: Array.isArray(t?.sources) ? t.sources.map((x: any) => String(x)) : ["Manual"],
+      }))
+      .filter((t: any) => t.value && (t.type === "ip" || t.type === "domain"));
+  } else {
+    assets = await collectBlacklistAssets(prisma, workspaceId);
+  }
+
+  if (!assets.length) {
+    const emptyResult = {
+      kind: "blacklist_check",
+      checkedAt: new Date().toISOString(),
+      summary: { status: "clear", totalAssets: 0, listedAssets: 0, warningAssets: 0, clearAssets: 0, totalListedProviders: 0, ipAssets: 0, domainAssets: 0 },
+      results: [],
+    };
+    await updateJobSafe(jobId, { lastError: JSON.stringify(emptyResult) }, "store empty blacklist result");
+    await logJob(jobId, "No domains or IPs found for blacklist check.");
+    return;
+  }
+
+  await logJob(jobId, `Starting blacklist check for ${assets.length} asset(s).`);
+  const result = await runBlacklistCheck(assets, {
+    timeoutMs: Number(process.env.BLACKLIST_DNS_TIMEOUT_MS || 4500),
+    concurrency: Number(process.env.BLACKLIST_CHECK_CONCURRENCY || 5),
+    resolvers: parseBlacklistResolvers(process.env.BLACKLIST_DNS_RESOLVERS || ""),
+    onProgress: async (line) => logJob(jobId, line),
+  });
+
+  await updateJobSafe(jobId, { lastError: JSON.stringify(result) }, "store blacklist result");
+  await logJob(jobId, `✅ Blacklist check complete: ${result.summary.status} (${result.summary.listedAssets} listed asset(s), ${result.summary.totalListedProviders} real provider hit(s), ${result.summary.totalProviderWarnings || 0} provider warning(s)).`);
+  await appLogAsync({
+    level: result.summary.listedAssets ? "warn" : "info",
+    category: "deliverability",
+    event: "blacklist_check_complete",
+    workspaceId,
+    message: `Blacklist check complete: ${result.summary.status}`,
+    data: result.summary,
+    entityType: "blacklist_check",
+    entityId: jobId,
+  }).catch(() => null);
+}
+
+async function enqueueBlacklistCheckSweep() {
+  if (!env.AUTO_BLACKLIST_CHECK_ENABLED) return;
+  const workspaces = await prisma.workspace.findMany({ select: { id: true }, take: 1000 }).catch(() => []);
+  const staleCutoff = new Date(Date.now() - env.BLACKLIST_CHECK_STALE_HOURS * 60 * 60 * 1000);
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const ws of workspaces as any[]) {
+    if (enqueued >= 50) break;
+    const workspaceId = String(ws.id || "");
+    if (!workspaceId) continue;
+
+    const pending = await prisma.job.findFirst({
+      where: { type: "blacklist_check", status: { in: ["queued", "running"] }, payload: { contains: workspaceId } },
+      select: { id: true },
+    }).catch(() => null);
+    if (pending) { skipped++; continue; }
+
+    const last = await prisma.job.findFirst({
+      where: { type: "blacklist_check", status: { in: ["done", "failed"] }, payload: { contains: workspaceId } },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true, lastError: true },
+    }).catch(() => null);
+
+    let should = !last || last.createdAt < staleCutoff;
+    try {
+      const r = last?.lastError ? JSON.parse(String(last.lastError)) : null;
+      if (Number(r?.summary?.listedAssets || 0) > 0) should = true;
+    } catch {}
+    if (!should) continue;
+
+    const assets = await collectBlacklistAssets(prisma, workspaceId).catch(() => []);
+    if (!assets.length) continue;
+    await prisma.job.create({
+      data: { type: "blacklist_check", payload: JSON.stringify({ workspaceId, source: "auto" }), runAt: new Date(), status: "queued" },
+    }).catch(() => null);
+    enqueued++;
+  }
+
+  console.log("[blacklist] sweep", { workspaces: workspaces.length, enqueued, skipped, staleHours: env.BLACKLIST_CHECK_STALE_HOURS });
+}
+
 function cleanMsgId(v: any): string | null {
   if (!v) return null;
   const s = String(v).trim();
@@ -3793,6 +3890,7 @@ async function main() {
   let lastImapSweep = 0;
   let lastHealthSweep = 0;
   let lastDomainSweep = 0;
+  let lastBlacklistSweep = 0;
   let lastWarmupSweep = 0;
   let lastWarmupSeedSweep = 0;
   let lastWarmupMailboxSweep = 0;
@@ -3856,6 +3954,12 @@ async function main() {
       await enqueueDomainDnsCheckSweep().catch(() => {});
     }
 
+    // periodic blacklist/reputation sweep
+    if (now - lastBlacklistSweep > env.BLACKLIST_CHECK_POLL_MINUTES * 60 * 1000) {
+      lastBlacklistSweep = now;
+      await enqueueBlacklistCheckSweep().catch(() => {});
+    }
+
     // periodic warmup sweep
     if (now - lastWarmupSweep > env.WARMUP_POLL_MINUTES * 60 * 1000) {
       lastWarmupSweep = now;
@@ -3907,7 +4011,7 @@ async function main() {
 
       await updateJobSafe(
         job.id,
-        job.type === "domain_dns_check"
+        job.type === "domain_dns_check" || job.type === "blacklist_check"
           ? { status: "done", lockedAt: null }
           : { status: "done", lockedAt: null, lastError: null },
         "mark done"
@@ -3923,7 +4027,7 @@ async function main() {
       await executeJob(job, payload);
       await updateJobSafe(
         job.id,
-        job.type === "domain_dns_check"
+        job.type === "domain_dns_check" || job.type === "blacklist_check"
           ? { status: "done", lockedAt: null }
           : { status: "done", lockedAt: null, lastError: null },
         "mark done after AutoFix retry"
