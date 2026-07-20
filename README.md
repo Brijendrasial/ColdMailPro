@@ -8,6 +8,8 @@ ColdMailPro v2.0.16 is the redesigned command-center release with full-app UI up
 
 ---
 
+DEMO: https://demo.coldmailpro.io/
+
 ## Table of contents
 
 1. [What this software does](#what-this-software-does)
